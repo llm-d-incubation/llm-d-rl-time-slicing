@@ -1,6 +1,6 @@
 # Project configuration
 # TODO: Replace {{PROJECT_NAME}} with your project name
-PROJECT_NAME ?= {{PROJECT_NAME}}
+PROJECT_NAME ?= llm-d-rl-time-slicing
 REGISTRY ?= ghcr.io/llm-d
 IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
