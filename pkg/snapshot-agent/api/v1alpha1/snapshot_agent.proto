@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package snapshot_agent.v1alpha1;
+
+option go_package = "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1;v1alpha1";
+
+// SnapshotAgentService provides APIs for managing accelerator snapshots.
+service SnapshotAgentService {
+  // Snapshot triggers an asynchronous snapshot of the accelerator context for a job.
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse);
+
+  // Restore triggers an asynchronous restoration of the accelerator context for a job.
+  rpc Restore(RestoreRequest) returns (RestoreResponse);
+
+  // GetOperation polls the status of a long-running snapshot or restore operation.
+  rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);
+
+  // Status returns the current state of jobs and accelerators on the node.
+  rpc Status(StatusRequest) returns (StatusResponse);
+
+  // Health returns the health status of the agent.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message SnapshotRequest {
+  string job_id = 1;
+  string group = 2;
+}
+
+message SnapshotResponse {
+  string operation_id = 1;
+}
+
+message RestoreRequest {
+  string job_id = 1;
+  string group = 2;
+}
+
+message RestoreResponse {
+  string operation_id = 1;
+}
+
+message GetOperationRequest {
+  string operation_id = 1;
+}
+
+enum OperationStatus {
+  OPERATION_STATUS_UNSPECIFIED = 0;
+  OPERATION_STATUS_PENDING = 1;
+  OPERATION_STATUS_COMPLETE = 2;
+  OPERATION_STATUS_FAILED = 3;
+}
+
+message GetOperationResponse {
+  OperationStatus status = 1;
+  // storage_bytes is set on COMPLETE
+  optional int64 storage_bytes = 2;
+  // snapshot_device_bytes is set on COMPLETE
+  optional int64 snapshot_device_bytes = 3;
+  int64 elapsed_ms = 4;
+  // error is set on FAILED
+  optional string error = 5;
+}
+
+message StatusRequest {}
+
+enum JobState {
+    JOB_STATE_UNSPECIFIED = 0;
+    JOB_STATE_IDLE = 1;
+    JOB_STATE_RUNNING = 2;
+    JOB_STATE_TRANSITIONING = 3;
+    JOB_STATE_SAVED = 4;
+    JOB_STATE_FAULTED = 5;
+}
+
+message JobStatus {
+    string job_id = 1;
+    JobState state = 2;
+}
+
+message AcceleratorStatus {
+    string id = 1;
+    int64 memory_used_bytes = 2;
+    int64 memory_total_bytes = 3;
+}
+
+message StatusResponse {
+  repeated JobStatus job_statuses = 1;
+  repeated AcceleratorStatus accelerator_statuses = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+}
