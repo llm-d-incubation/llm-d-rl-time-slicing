@@ -1,0 +1,158 @@
+syntax = "proto3";
+
+package accelerator_orchestrator.v1alpha1;
+
+option go_package = "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1;v1alpha1";
+
+// AcceleratorOrchestratorService provides APIs for managing accelerator orchestration.
+// It coordinates access to shared accelerators among multiple jobs in a time-slice group.
+service AcceleratorOrchestratorService {
+  // Acquire requests exclusive access to a time-slice group.
+  // This call blocks until access is granted.
+  // If the group is idle and the job's context is already RUNNING on the accelerator,
+  // it returns immediately. Otherwise, it queues the job and waits for the current
+  // holder to yield, then drives the snapshot/restore cycle.
+  rpc Acquire(AcquireRequest) returns (AcquireResponse);
+
+  // Yield releases exclusive access to a time-slice group.
+  // It returns immediately to the caller, allowing the job to continue CPU-bound work
+  // without waiting for the snapshot to complete.
+  // If no other job is waiting in the queue, the snapshot is deferred (skipped)
+  // and the context remains live on the accelerator.
+  rpc Yield(YieldRequest) returns (YieldResponse);
+
+  // Heartbeat is sent periodically by the client to signal that the job is still alive.
+  // If a heartbeat lapses, the orchestrator will evict the job. If the job held the lock,
+  // the lock is released and the group is marked FAULTED.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // ListGroups returns a list of all known time-slice group IDs.
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
+
+  // GetGroupStatus returns the detailed status of a specific time-slice group,
+  // including the current lock holder, waiter queue depth, and individual job context states.
+  rpc GetGroupStatus(GetGroupStatusRequest) returns (GetGroupStatusResponse);
+}
+
+// AcquireRequest is the request to acquire exclusive access to a group.
+message AcquireRequest {
+  // job_id is the unique identifier of the job requesting access.
+  // Must match the timeslice.io/job-id annotation on the pod.
+  string job_id = 1;
+
+  // group_id is the unique identifier of the time-slice group.
+  // Must match the timeslice.io/group annotation on the pod.
+  string group_id = 2;
+}
+
+// AcquireResponse is the response after acquiring access.
+message AcquireResponse {
+  // success indicates whether the acquisition was successful.
+  bool success = 1;
+
+  // waited_ms is the duration in milliseconds the job spent waiting in the queue.
+  int64 waited_ms = 2;
+
+  // context_restored indicates whether the job's accelerator context was physically
+  // restored from host memory. If false, it means the context was already live (e.g., zero-overhead path).
+  bool context_restored = 3; 
+}
+
+// YieldRequest is the request to release access to a group.
+message YieldRequest {
+  // job_id is the unique identifier of the job yielding access.
+  string job_id = 1;
+
+  // group_id is the unique identifier of the time-slice group being yielded.
+  string group_id = 2;
+}
+
+// YieldResponse is the response after yielding access.
+message YieldResponse {
+  // success indicates whether the yield was successful.
+  bool success = 1;
+
+  // pending_waiters is the number of jobs currently waiting in the queue for this group.
+  int64 pending_waiters = 2;
+
+  // snapshot_deferred indicates whether the physical snapshot was skipped because
+  // there were no waiting jobs in the queue.
+  bool snapshot_deferred = 3;
+}
+
+// HeartbeatRequest is the periodic heartbeat signal from the client.
+message HeartbeatRequest {
+  // job_id is the unique identifier of the job sending the heartbeat.
+  string job_id = 1;
+
+  // group_id is the unique identifier of the group the job is active in.
+  string group_id = 2;
+}
+
+// HeartbeatResponse is the response to a heartbeat signal.
+message HeartbeatResponse {
+}
+
+// ListGroupsRequest is the request to list active groups.
+message ListGroupsRequest {}
+
+// ListGroupsResponse is the response containing active groups.
+message ListGroupsResponse {
+  // group_ids is a list of all active time-slice group IDs.
+  repeated string group_ids = 1;
+}
+
+// GetGroupStatusRequest is the request to get status of a group.
+message GetGroupStatusRequest {
+  // group_id is the unique identifier of the group to query.
+  string group_id = 1;
+}
+
+// GetGroupStatusResponse is the response containing group status.
+message GetGroupStatusResponse {
+  // group contains the high-level status of the group (holder, queue depth).
+  GroupStatus group = 1;
+
+  // agent_job_states contains the detailed state of this job across all
+  // node-local snapshot agents participating in the group.
+  repeated SnapshotAgentJobState agent_job_states = 2;
+}
+
+// GroupStatus represents the high-level status of a time-slice group lock.
+message GroupStatus {
+  // group_id is the unique identifier of the group.
+  string group_id = 1;
+
+  // holder is the job_id of the job currently holding the group lock.
+  // Empty if the group is currently idle (unlocked).
+  string holder = 2;
+
+  // waiter_queue_depth is the number of jobs currently waiting in the queue.
+  int64 waiter_queue_depth = 3;
+}
+
+// SnapshotAgentJobState represents the state of a job's accelerator context
+// on a specific node-local Snapshot Agent.
+message SnapshotAgentJobState {
+  // agent is the identifier of the Snapshot Agent (typically the node name).
+  string agent = 1;
+
+  // State defines the possible states of a job's accelerator context.
+  enum State {
+    // STATE_UNSPECIFIED is the default unspecified state.
+    STATE_UNSPECIFIED = 0;
+    // STATE_IDLE indicates the job is known but has no accelerator context yet.
+    STATE_IDLE = 1;
+    // STATE_RUNNING indicates the job's context is active on the accelerator.
+    STATE_RUNNING = 2;
+    // STATE_TRANSITIONING indicates a snapshot or restore operation is in progress.
+    STATE_TRANSITIONING = 3;
+    // STATE_SAVED indicates the context is saved to host memory and device memory is freed.
+    STATE_SAVED = 4;
+    // STATE_FAULTED indicates the last operation failed and requires operator intervention.
+    STATE_FAULTED = 5;
+  }
+
+  // job_state is the current state of the job's context on this agent.
+  State job_state = 2;
+}
