@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -52,19 +53,36 @@ func (s *Server) GetGroupStatus(ctx context.Context, req *pb.GetGroupStatusReque
 	return nil, status.Errorf(codes.Unimplemented, "method GetGroupStatus not implemented")
 }
 
-// StartServer starts the gRPC server on the specified port.
-func StartServer(port int) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+// StartServer starts the gRPC server on the specified port and handles graceful shutdown when the context is canceled.
+func StartServer(ctx context.Context, port int) error {
+	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return fmt.Errorf("failed to listen: %v", err)
+		return fmt.Errorf("failed to listen: %w", err)
 	}
 
 	s := grpc.NewServer()
 	pb.RegisterAcceleratorOrchestratorServiceServer(s, NewServer())
 
-	log.Printf("Starting gRPC server on port %d...", port)
-	if err := s.Serve(lis); err != nil {
-		return fmt.Errorf("failed to serve: %v", err)
+	errChan := make(chan error, 1)
+	go func() {
+		log.Printf("Starting gRPC server on port %d...", port)
+		if err := s.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			errChan <- fmt.Errorf("failed to serve: %w", err)
+		}
+		close(errChan)
+	}()
+
+	select {
+	case err := <-errChan:
+		if err != nil {
+			return err
+		}
+	case <-ctx.Done():
+		log.Println("Context canceled, shutting down gRPC server gracefully...")
+		s.GracefulStop()
+		<-errChan
+		log.Println("Server stopped")
 	}
+
 	return nil
 }

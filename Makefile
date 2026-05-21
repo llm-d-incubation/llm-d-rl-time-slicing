@@ -3,6 +3,8 @@
 PROJECT_NAME ?= llm-d-rl-time-slicing
 REGISTRY ?= ghcr.io/llm-d
 IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)
+ORCHESTRATOR_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/acceleratororchestrator
+ORCHESTRATOR_DOCKERFILE ?= docker/acceleratororchestrator/Dockerfile
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 PLATFORMS ?= linux/amd64,linux/arm64
 
@@ -95,11 +97,32 @@ image-push: ## Build and push multi-arch container image
 		--tag $(IMAGE):latest \
 		.
 
+.PHONY: image-build-orchestrator
+image-build-orchestrator: ## Build acceleratororchestrator container image (local only)
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--tag $(ORCHESTRATOR_IMAGE):$(VERSION) \
+		--tag $(ORCHESTRATOR_IMAGE):latest \
+		-f $(ORCHESTRATOR_DOCKERFILE) \
+		.
+
+.PHONY: image-push-orchestrator
+image-push-orchestrator: ## Build and push acceleratororchestrator container image
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--push \
+		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
+		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+		--tag $(ORCHESTRATOR_IMAGE):$(VERSION) \
+		--tag $(ORCHESTRATOR_IMAGE):latest \
+		-f $(ORCHESTRATOR_DOCKERFILE) \
+		.
+
 ##@ CI Helpers
 
 .PHONY: ci-lint
 ci-lint: ## CI: install and run golangci-lint
-	@which golangci-lint > /dev/null 2>&1 || go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@which golangci-lint > /dev/null 2>&1 || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	golangci-lint run
 
 .PHONY: clean
