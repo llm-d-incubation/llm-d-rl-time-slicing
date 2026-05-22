@@ -8,25 +8,15 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-serviceAccount:
-  create: true
-  annotations: {}
-  name: ""
-
 podAnnotations: {}
 
-podSecurityContext: {}
-
-securityContext:
-  privileged: false
-
-resources:
-  limits:
-    cpu: 500m
-    memory: 1Gi
-  requests:
-    cpu: 100m
-    memory: 256Mi
+resources: {}
+#  limits:
+#    cpu: 500m
+#    memory: 1Gi
+#  requests:
+#    cpu: 100m
+#    memory: 256Mi
 
 nodeSelector: {}
 
