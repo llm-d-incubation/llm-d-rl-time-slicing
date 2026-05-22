@@ -3,7 +3,7 @@
 PROJECT_NAME ?= llm-d-rl-time-slicing
 REGISTRY ?= ghcr.io/llm-d
 IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)
-SNAPSHOT_AGENT_IMAGE ?= $(IMAGE)/snapshot-agent
+SNAPSHOT_AGENT_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/snapshot-agent
 SNAPSHOT_AGENT_DOCKERFILE ?= docker/snapshot-agent/Dockerfile
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 PLATFORMS ?= linux/amd64,linux/arm64
