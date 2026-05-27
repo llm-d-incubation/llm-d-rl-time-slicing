@@ -54,9 +54,9 @@ func (s *Server) Health(ctx context.Context, req *pb.HealthRequest) (*pb.HealthR
 
 // StartServer starts the gRPC server on the specified port.
 func StartServer(port int) error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		return fmt.Errorf("failed to listen: %v", err)
+		return fmt.Errorf("failed to listen: %w", err)
 	}
 
 	s := grpc.NewServer()
@@ -64,7 +64,7 @@ func StartServer(port int) error {
 
 	log.Printf("Starting gRPC server on port %d...", port)
 	if err := s.Serve(lis); err != nil {
-		return fmt.Errorf("failed to serve: %v", err)
+		return fmt.Errorf("failed to serve: %w", err)
 	}
 	return nil
 }
