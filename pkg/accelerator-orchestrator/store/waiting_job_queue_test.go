@@ -1,10 +1,12 @@
-package store
+package store_test
 
 import (
 	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 )
 
 func TestWaitingJobQueue_BasicAndDuplicates(t *testing.T) {
@@ -49,26 +51,26 @@ func TestWaitingJobQueue_BasicAndDuplicates(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			q := NewWaitingJobQueue()
+			queue := store.NewWaitingJobQueue()
 			for i, step := range tc.steps {
 				switch step.action {
 				case "enqueue":
-					got := q.Enqueue(step.val)
+					got := queue.Enqueue(step.val)
 					if got != step.wantBool {
 						t.Fatalf("step %d: Enqueue(%q) = %t, want %t", i, step.val, got, step.wantBool)
 					}
 				case "dequeue":
-					gotVal, ok := q.Dequeue()
+					gotVal, ok := queue.Dequeue()
 					if ok != step.wantBool || gotVal != step.wantVal {
 						t.Fatalf("step %d: Dequeue() = (%q, %t), want (%q, %t)", i, gotVal, ok, step.wantVal, step.wantBool)
 					}
 				case "exists":
-					got := q.Exists(step.val)
+					got := queue.Exists(step.val)
 					if got != step.wantBool {
 						t.Fatalf("step %d: Exists(%q) = %t, want %t", i, step.val, got, step.wantBool)
 					}
 				case "len":
-					got := q.Len()
+					got := queue.Len()
 					if got != step.wantInt {
 						t.Fatalf("step %d: Len() = %d, want %d", i, got, step.wantInt)
 					}
@@ -82,7 +84,7 @@ func TestWaitingJobQueue_Reset(t *testing.T) {
 	tests := []struct {
 		name        string
 		initial     []string
-		resetInput  []WaitingJob
+		resetInput  []store.WaitingJob
 		expectedIDs []string
 	}{
 		{
@@ -94,7 +96,7 @@ func TestWaitingJobQueue_Reset(t *testing.T) {
 		{
 			name:    "reset empty queue with populated values",
 			initial: nil,
-			resetInput: []WaitingJob{
+			resetInput: []store.WaitingJob{
 				{JobID: "job-1", QueuedSince: time.Now()},
 				{JobID: "job-2", QueuedSince: time.Now()},
 			},
@@ -103,7 +105,7 @@ func TestWaitingJobQueue_Reset(t *testing.T) {
 		{
 			name:    "reset and deduplicate",
 			initial: []string{"old-job"},
-			resetInput: []WaitingJob{
+			resetInput: []store.WaitingJob{
 				{JobID: "job-1", QueuedSince: time.Now()},
 				{JobID: "job-2", QueuedSince: time.Now()},
 				{JobID: "job-1", QueuedSince: time.Now().Add(time.Second)}, // duplicate
@@ -114,19 +116,19 @@ func TestWaitingJobQueue_Reset(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			q := NewWaitingJobQueue()
+			queue := store.NewWaitingJobQueue()
 			for _, id := range tc.initial {
-				_ = q.Enqueue(id)
+				_ = queue.Enqueue(id)
 			}
 
-			q.Reset(tc.resetInput)
+			queue.Reset(tc.resetInput)
 
-			if q.Len() != len(tc.expectedIDs) {
-				t.Fatalf("after Reset, Len() = %d, want %d", q.Len(), len(tc.expectedIDs))
+			if queue.Len() != len(tc.expectedIDs) {
+				t.Fatalf("after Reset, Len() = %d, want %d", queue.Len(), len(tc.expectedIDs))
 			}
 
 			// Check order and existence
-			list := q.List()
+			list := queue.List()
 			if len(list) != len(tc.expectedIDs) {
 				t.Fatalf("after Reset, List() returned %d items, want %d", len(list), len(tc.expectedIDs))
 			}
@@ -139,7 +141,7 @@ func TestWaitingJobQueue_Reset(t *testing.T) {
 
 			// Ensure old jobs are removed
 			for _, old := range tc.initial {
-				if q.Exists(old) {
+				if queue.Exists(old) {
 					// Unless it was explicitly part of reset
 					stillExpected := false
 					for _, exp := range tc.expectedIDs {
@@ -158,7 +160,7 @@ func TestWaitingJobQueue_Reset(t *testing.T) {
 }
 
 func TestWaitingJobQueue_Concurrency(t *testing.T) {
-	q := NewWaitingJobQueue()
+	queue := store.NewWaitingJobQueue()
 	var wg sync.WaitGroup
 
 	numWorkers := 100
@@ -171,19 +173,19 @@ func TestWaitingJobQueue_Concurrency(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < jobsPerWorker; j++ {
 				jobID := fmt.Sprintf("worker-%d-job-%d", workerID, j)
-				q.Enqueue(jobID)
+				queue.Enqueue(jobID)
 			}
 		}(i)
 	}
 	wg.Wait()
 
 	expectedLen := numWorkers * jobsPerWorker
-	if q.Len() != expectedLen {
-		t.Errorf("Concurrent unique enqueue got len %d, want %d", q.Len(), expectedLen)
+	if queue.Len() != expectedLen {
+		t.Errorf("Concurrent unique enqueue got len %d, want %d", queue.Len(), expectedLen)
 	}
 
 	// 2. Concurrent enqueue of the SAME job (only 1 should succeed)
-	q = NewWaitingJobQueue()
+	queue = store.NewWaitingJobQueue()
 	wg.Add(numWorkers)
 	successCount := 0
 	var countMu sync.Mutex
@@ -191,7 +193,7 @@ func TestWaitingJobQueue_Concurrency(t *testing.T) {
 	for i := 0; i < numWorkers; i++ {
 		go func() {
 			defer wg.Done()
-			if q.Enqueue("single-job") {
+			if queue.Enqueue("single-job") {
 				countMu.Lock()
 				successCount++
 				countMu.Unlock()
@@ -200,8 +202,8 @@ func TestWaitingJobQueue_Concurrency(t *testing.T) {
 	}
 	wg.Wait()
 
-	if q.Len() != 1 {
-		t.Errorf("Concurrent duplicate enqueue got len %d, want 1", q.Len())
+	if queue.Len() != 1 {
+		t.Errorf("Concurrent duplicate enqueue got len %d, want 1", queue.Len())
 	}
 	if successCount != 1 {
 		t.Errorf("Concurrent duplicate enqueue reported %d successes, want 1", successCount)

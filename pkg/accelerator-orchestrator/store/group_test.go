@@ -1,4 +1,4 @@
-package store
+package store_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 )
 
 func TestGroup_GettersAndSetters(t *testing.T) {
@@ -39,39 +40,39 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			g := NewGroup(tc.groupID)
-			g.SetNodes(tc.nodes)
+			group := store.NewGroup(tc.groupID)
+			group.SetNodes(tc.nodes)
 
-			if g.ID() != tc.groupID {
-				t.Errorf("ID() = %q, want %q", g.ID(), tc.groupID)
+			if group.ID() != tc.groupID {
+				t.Errorf("ID() = %q, want %q", group.ID(), tc.groupID)
 			}
 
-			if !reflect.DeepEqual(g.Nodes(), tc.nodes) {
-				t.Errorf("Nodes() = %+v, want %+v", g.Nodes(), tc.nodes)
+			if !reflect.DeepEqual(group.Nodes(), tc.nodes) {
+				t.Errorf("Nodes() = %+v, want %+v", group.Nodes(), tc.nodes)
 			}
 
 			// Verify deep copy/mutation protection for Nodes
 			if len(tc.nodes) > 0 {
-				mutatedNodes := g.Nodes()
+				mutatedNodes := group.Nodes()
 				mutatedNodes[0] = "mutated"
-				if reflect.DeepEqual(g.Nodes(), mutatedNodes) {
+				if reflect.DeepEqual(group.Nodes(), mutatedNodes) {
 					t.Errorf("mutating returned Nodes slice modified the internal state")
 				}
 			}
 
-			g.SetLockingJob(tc.lockingJob)
-			if g.LockingJob() != tc.lockingJob {
-				t.Errorf("LockingJob() = %q, want %q", g.LockingJob(), tc.lockingJob)
+			group.SetLockingJob(tc.lockingJob)
+			if group.LockingJob() != tc.lockingJob {
+				t.Errorf("LockingJob() = %q, want %q", group.LockingJob(), tc.lockingJob)
 			}
 
-			g.SetActiveJob(tc.activeJob)
-			if g.ActiveJob() != tc.activeJob {
-				t.Errorf("ActiveJob() = %q, want %q", g.ActiveJob(), tc.activeJob)
+			group.SetActiveJob(tc.activeJob)
+			if group.ActiveJob() != tc.activeJob {
+				t.Errorf("ActiveJob() = %q, want %q", group.ActiveJob(), tc.activeJob)
 			}
 
 			beforeSet := time.Now()
-			g.SetState(tc.state)
-			gotState, gotTimestamp := g.State()
+			group.SetState(tc.state)
+			gotState, gotTimestamp := group.State()
 
 			if gotState != tc.state {
 				t.Errorf("State() state = %v, want %v", gotState, tc.state)
@@ -95,7 +96,7 @@ func TestGroup_LockAndUnlock(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		lockStore LockStore
+		lockStore store.LockStore
 		steps     []step
 	}{
 		{
@@ -111,12 +112,12 @@ func TestGroup_LockAndUnlock(t *testing.T) {
 		},
 		{
 			name:      "lock/unlock sequence with MemLockStore",
-			lockStore: NewMemLockStore(),
+			lockStore: store.NewMemLockStore(),
 			steps: []step{
 				{op: "lock", jobID: "job-a", expectedErr: nil, wantLocked: "job-a"},
-				{op: "lock", jobID: "job-b", expectedErr: ErrAlreadyLocked, wantLocked: "job-a"},
+				{op: "lock", jobID: "job-b", expectedErr: store.ErrAlreadyLocked, wantLocked: "job-a"},
 				{op: "lock", jobID: "job-a", expectedErr: nil, wantLocked: "job-a"}, // idempotent
-				{op: "unlock", jobID: "job-b", expectedErr: ErrNotLockHolder, wantLocked: "job-a"},
+				{op: "unlock", jobID: "job-b", expectedErr: store.ErrNotLockHolder, wantLocked: "job-a"},
 				{op: "unlock", jobID: "job-a", expectedErr: nil, wantLocked: ""},
 				{op: "unlock", jobID: "job-a", expectedErr: nil, wantLocked: ""}, // idempotent unlock
 			},
@@ -125,24 +126,29 @@ func TestGroup_LockAndUnlock(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			g := NewGroup("group-1")
-			g.lockStore = tc.lockStore
+			group := store.NewGroup("group-1")
+
+			// Associate it with the lockStore via Put in GroupStore
+			groupStore := store.NewGroupStore(tc.lockStore)
+			if err := groupStore.Put(ctx, group); err != nil {
+				t.Fatalf("failed to put group: %v", err)
+			}
 
 			for i, s := range tc.steps {
 				var err error
 				switch s.op {
 				case "lock":
-					err = g.Lock(ctx, s.jobID)
+					err = group.Lock(ctx, s.jobID)
 				case "unlock":
-					err = g.Unlock(ctx, s.jobID)
+					err = group.Unlock(ctx, s.jobID)
 				}
 
 				if !errors.Is(err, s.expectedErr) {
 					t.Fatalf("step %d: %s with %q returned error %v, want %v", i, s.op, s.jobID, err, s.expectedErr)
 				}
 
-				if g.LockingJob() != s.wantLocked {
-					t.Errorf("step %d: after %s, LockingJob() = %q, want %q", i, s.op, g.LockingJob(), s.wantLocked)
+				if group.LockingJob() != s.wantLocked {
+					t.Errorf("step %d: after %s, LockingJob() = %q, want %q", i, s.op, group.LockingJob(), s.wantLocked)
 				}
 			}
 		})

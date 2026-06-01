@@ -1,10 +1,11 @@
-package store
+package store_test
 
 import (
 	"context"
 	"errors"
 	"testing"
 
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -30,9 +31,9 @@ func TestConfigMapLockStore_LockAndUnlock(t *testing.T) {
 				{op: "lock", group: "group-1", job: "job-a", expectedErr: nil},
 				{op: "get", group: "group-1", expectedLock: "job-a"},
 				{op: "get", group: "group-2", expectedLock: ""}, // group-2 shouldn't have lock
-				{op: "lock", group: "group-1", job: "job-b", expectedErr: ErrAlreadyLocked},
+				{op: "lock", group: "group-1", job: "job-b", expectedErr: store.ErrAlreadyLocked},
 				{op: "lock", group: "group-1", job: "job-a", expectedErr: nil}, // idempotent lock
-				{op: "unlock", group: "group-1", job: "job-b", expectedErr: ErrNotLockHolder},
+				{op: "unlock", group: "group-1", job: "job-b", expectedErr: store.ErrNotLockHolder},
 				{op: "get", group: "group-1", expectedLock: "job-a"},
 				{op: "unlock", group: "group-1", job: "job-a", expectedErr: nil},
 				{op: "get", group: "group-1", expectedLock: ""},
@@ -45,7 +46,7 @@ func TestConfigMapLockStore_LockAndUnlock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			client := fake.NewSimpleClientset()
-			s := NewConfigMapLockStore(client)
+			s := store.NewConfigMapLockStore(client)
 
 			for i, step := range tc.steps {
 				var err error
@@ -93,8 +94,8 @@ func TestConfigMapLockStore_GetLockScenarios(t *testing.T) {
 			name: "ConfigMap with nil Data",
 			configMap: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      ConfigMapName,
-					Namespace: Namespace,
+					Name:      store.ConfigMapName,
+					Namespace: store.Namespace,
 				},
 				Data: nil,
 			},
@@ -106,8 +107,8 @@ func TestConfigMapLockStore_GetLockScenarios(t *testing.T) {
 			name: "ConfigMap with existing lock",
 			configMap: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      ConfigMapName,
-					Namespace: Namespace,
+					Name:      store.ConfigMapName,
+					Namespace: store.Namespace,
 				},
 				Data: map[string]string{
 					"group-1": "job-a",
@@ -121,8 +122,8 @@ func TestConfigMapLockStore_GetLockScenarios(t *testing.T) {
 			name: "ConfigMap exists but group key is missing",
 			configMap: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      ConfigMapName,
-					Namespace: Namespace,
+					Name:      store.ConfigMapName,
+					Namespace: store.Namespace,
 				},
 				Data: map[string]string{
 					"group-1": "job-a",
@@ -138,10 +139,10 @@ func TestConfigMapLockStore_GetLockScenarios(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			client := fake.NewSimpleClientset()
-			s := NewConfigMapLockStore(client)
+			s := store.NewConfigMapLockStore(client)
 
 			if tc.configMap != nil {
-				_, err := client.CoreV1().ConfigMaps(Namespace).Create(ctx, tc.configMap, metav1.CreateOptions{})
+				_, err := client.CoreV1().ConfigMaps(store.Namespace).Create(ctx, tc.configMap, metav1.CreateOptions{})
 				if err != nil {
 					t.Fatalf("failed to pre-create ConfigMap: %v", err)
 				}

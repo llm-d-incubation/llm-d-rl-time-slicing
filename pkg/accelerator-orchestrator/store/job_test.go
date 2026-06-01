@@ -1,10 +1,11 @@
-package store
+package store_test
 
 import (
 	"reflect"
 	"testing"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 )
 
 func TestJob_GettersAndSetters(t *testing.T) {
@@ -36,41 +37,41 @@ func TestJob_GettersAndSetters(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			j := NewJob(tc.jobID, tc.groupID)
+			job := store.NewJob(tc.jobID, tc.groupID)
 
-			if j.JobID() != tc.jobID {
-				t.Errorf("JobID() = %q, want %q", j.JobID(), tc.jobID)
+			if job.JobID() != tc.jobID {
+				t.Errorf("JobID() = %q, want %q", job.JobID(), tc.jobID)
 			}
-			if j.GroupID() != tc.groupID {
-				t.Errorf("GroupID() = %q, want %q", j.GroupID(), tc.groupID)
-			}
-
-			j.SetPods(tc.pods)
-			if !reflect.DeepEqual(j.Pods(), tc.pods) {
-				t.Errorf("Pods() = %+v, want %+v", j.Pods(), tc.pods)
+			if job.GroupID() != tc.groupID {
+				t.Errorf("GroupID() = %q, want %q", job.GroupID(), tc.groupID)
 			}
 
-			j.SetContextState(tc.contextState)
-			if !reflect.DeepEqual(j.ContextState(), tc.contextState) {
-				t.Errorf("ContextState() = %+v, want %+v", j.ContextState(), tc.contextState)
+			job.SetPods(tc.pods)
+			if !reflect.DeepEqual(job.Pods(), tc.pods) {
+				t.Errorf("Pods() = %+v, want %+v", job.Pods(), tc.pods)
+			}
+
+			job.SetContextState(tc.contextState)
+			if !reflect.DeepEqual(job.ContextState(), tc.contextState) {
+				t.Errorf("ContextState() = %+v, want %+v", job.ContextState(), tc.contextState)
 			}
 
 			// Verify deep copy/mutation protection for Pods
 			if len(tc.pods) > 0 {
-				mutatedPods := j.Pods()
+				mutatedPods := job.Pods()
 				mutatedPods[0] = "mutated"
-				if reflect.DeepEqual(j.Pods(), mutatedPods) {
+				if reflect.DeepEqual(job.Pods(), mutatedPods) {
 					t.Errorf("mutating returned Pods slice modified the internal state")
 				}
 			}
 
 			// Verify deep copy/mutation protection for ContextState
 			if len(tc.contextState) > 0 {
-				mutatedState := j.ContextState()
+				mutatedState := job.ContextState()
 				for k := range mutatedState {
 					mutatedState[k] = pb.SnapshotAgentJobState_STATE_UNSPECIFIED
 				}
-				if reflect.DeepEqual(j.ContextState(), mutatedState) {
+				if reflect.DeepEqual(job.ContextState(), mutatedState) {
 					t.Errorf("mutating returned ContextState map modified the internal state")
 				}
 			}
@@ -122,13 +123,13 @@ func TestJob_UpdateContextState(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			j := NewJob("job-1", "group-1")
-			j.SetContextState(tc.initialState)
+			job := store.NewJob("job-1", "group-1")
+			job.SetContextState(tc.initialState)
 
-			j.UpdateContextState(tc.updateNode, tc.updateVal)
+			job.UpdateContextState(tc.updateNode, tc.updateVal)
 
-			if !reflect.DeepEqual(j.ContextState(), tc.expectedState) {
-				t.Errorf("ContextState() after UpdateContextState = %+v, want %+v", j.ContextState(), tc.expectedState)
+			if !reflect.DeepEqual(job.ContextState(), tc.expectedState) {
+				t.Errorf("ContextState() after UpdateContextState = %+v, want %+v", job.ContextState(), tc.expectedState)
 			}
 		})
 	}
