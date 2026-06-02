@@ -10,11 +10,16 @@ import (
 
 // Group represents the in-memory and persistent state of a time-slice group.
 type Group struct {
-	mu             sync.RWMutex
-	id             string
-	nodes          []string
-	lockingJob     string // job_id holding the lock, empty if none
-	activeJob      string // job_id whose context is active, empty if none
+	mu    sync.RWMutex
+	id    string
+	nodes []string
+	// activeJob is the job_id holding the lock, empty if none.
+	lockingJob string
+	// activeJob is the job_id whose context is active, empty if none.
+	// The primary situation where the active job is not locking is the
+	// STATE_IDLE_YIELDED state where the job has yielded, but snapshotting
+	// is delayed because no other job has requested to lock the group.
+	activeJob      string
 	state          pb.GroupStatus_State
 	stateTimestamp time.Time
 	queue          *WaitingJobQueue
@@ -38,9 +43,6 @@ func (g *Group) ID() string {
 func (g *Group) Nodes() []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if g.nodes == nil {
-		return nil
-	}
 	return append([]string(nil), g.nodes...)
 }
 

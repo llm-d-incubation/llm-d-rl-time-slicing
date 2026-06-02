@@ -17,11 +17,18 @@ func TestJob_GettersAndSetters(t *testing.T) {
 		contextState map[string]pb.SnapshotAgentJobState_State
 	}{
 		{
-			name:         "empty/nil values",
+			name:         "nil values",
 			jobID:        "",
 			groupID:      "",
 			pods:         nil,
 			contextState: nil,
+		},
+		{
+			name:         "empty values",
+			jobID:        "",
+			groupID:      "",
+			pods:         []string{},
+			contextState: map[string]pb.SnapshotAgentJobState_State{},
 		},
 		{
 			name:    "populated values",
@@ -37,7 +44,7 @@ func TestJob_GettersAndSetters(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			job := store.NewJob(tc.jobID, tc.groupID)
+			job := store.NewJob(tc.groupID, tc.jobID)
 
 			if job.JobID() != tc.jobID {
 				t.Errorf("JobID() = %q, want %q", job.JobID(), tc.jobID)
@@ -46,14 +53,30 @@ func TestJob_GettersAndSetters(t *testing.T) {
 				t.Errorf("GroupID() = %q, want %q", job.GroupID(), tc.groupID)
 			}
 
+			// Verify initial empty states
+			if job.Pods() != nil {
+				t.Errorf("Initial Pods() = %+v, want nil", job.Pods())
+			}
+			if !reflect.DeepEqual(job.ContextState(), map[string]pb.SnapshotAgentJobState_State{}) {
+				t.Errorf("Initial ContextState() = %+v, want empty map", job.ContextState())
+			}
+
 			job.SetPods(tc.pods)
-			if !reflect.DeepEqual(job.Pods(), tc.pods) {
-				t.Errorf("Pods() = %+v, want %+v", job.Pods(), tc.pods)
+			expectedPods := tc.pods
+			if len(expectedPods) == 0 {
+				expectedPods = nil
+			}
+			if !reflect.DeepEqual(job.Pods(), expectedPods) {
+				t.Errorf("Pods() = %+v, want %+v", job.Pods(), expectedPods)
 			}
 
 			job.SetContextState(tc.contextState)
-			if !reflect.DeepEqual(job.ContextState(), tc.contextState) {
-				t.Errorf("ContextState() = %+v, want %+v", job.ContextState(), tc.contextState)
+			expectedContextState := tc.contextState
+			if expectedContextState == nil {
+				expectedContextState = map[string]pb.SnapshotAgentJobState_State{}
+			}
+			if !reflect.DeepEqual(job.ContextState(), expectedContextState) {
+				t.Errorf("ContextState() = %+v, want %+v", job.ContextState(), expectedContextState)
 			}
 
 			// Verify deep copy/mutation protection for Pods
@@ -123,7 +146,7 @@ func TestJob_UpdateContextState(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			job := store.NewJob("job-1", "group-1")
+			job := store.NewJob("group-1", "job-1")
 			job.SetContextState(tc.initialState)
 
 			job.UpdateContextState(tc.updateNode, tc.updateVal)

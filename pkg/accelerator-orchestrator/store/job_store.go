@@ -10,7 +10,7 @@ import (
 // JobStore manages Job state in memory.
 type JobStore struct {
 	mu   sync.RWMutex
-	jobs map[string]*Job // key: jobID + ":" + groupID
+	jobs map[string]*Job // key: groupID + ":" + jobID
 }
 
 // NewJobStore creates a new JobStore.
@@ -20,16 +20,16 @@ func NewJobStore() *JobStore {
 	}
 }
 
-func makeJobKey(jobID, groupID string) string {
-	return jobID + ":" + groupID
+func makeJobKey(groupID, jobID string) string {
+	return groupID + ":" + jobID
 }
 
 // Get returns the job with the given ID and group ID.
-func (s *JobStore) Get(ctx context.Context, jobID, groupID string) (*Job, error) {
+func (s *JobStore) Get(ctx context.Context, groupID, jobID string) (*Job, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	key := makeJobKey(jobID, groupID)
+	key := makeJobKey(groupID, jobID)
 	j, ok := s.jobs[key]
 	if !ok {
 		return nil, ErrNotFound
@@ -56,17 +56,17 @@ func (s *JobStore) Put(ctx context.Context, job *Job) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := makeJobKey(job.JobID(), job.GroupID())
+	key := makeJobKey(job.GroupID(), job.JobID())
 	s.jobs[key] = job
 	return nil
 }
 
 // Delete removes the job.
-func (s *JobStore) Delete(ctx context.Context, jobID, groupID string) error {
+func (s *JobStore) Delete(ctx context.Context, groupID, jobID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := makeJobKey(jobID, groupID)
+	key := makeJobKey(groupID, jobID)
 	delete(s.jobs, key)
 	return nil
 }
@@ -74,13 +74,13 @@ func (s *JobStore) Delete(ctx context.Context, jobID, groupID string) error {
 // UpdateContextState updates the last-known context state of a job on a specific node.
 func (s *JobStore) UpdateContextState(
 	ctx context.Context,
-	jobID, groupID, nodeName string,
+	groupID, jobID, nodeName string,
 	state pb.SnapshotAgentJobState_State,
 ) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	key := makeJobKey(jobID, groupID)
+	key := makeJobKey(groupID, jobID)
 	j, ok := s.jobs[key]
 	if !ok {
 		return ErrNotFound

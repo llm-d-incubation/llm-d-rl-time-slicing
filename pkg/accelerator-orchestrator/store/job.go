@@ -1,6 +1,7 @@
 package store
 
 import (
+	"maps"
 	"sync"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
@@ -16,7 +17,7 @@ type Job struct {
 }
 
 // NewJob creates a new Job with default values.
-func NewJob(jobID, groupID string) *Job {
+func NewJob(groupID, jobID string) *Job {
 	return &Job{
 		jobID:        jobID,
 		groupID:      groupID,
@@ -35,9 +36,6 @@ func (j *Job) GroupID() string {
 func (j *Job) Pods() []string {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
-	if j.pods == nil {
-		return nil
-	}
 	return append([]string(nil), j.pods...)
 }
 
@@ -50,34 +48,21 @@ func (j *Job) SetPods(pods []string) {
 func (j *Job) ContextState() map[string]pb.SnapshotAgentJobState_State {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
-	if j.contextState == nil {
-		return nil
-	}
-	res := make(map[string]pb.SnapshotAgentJobState_State)
-	for k, v := range j.contextState {
-		res[k] = v
-	}
-	return res
+	return maps.Clone(j.contextState)
 }
 
 func (j *Job) SetContextState(cs map[string]pb.SnapshotAgentJobState_State) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if cs == nil {
-		j.contextState = nil
+	if len(cs) == 0 {
+		j.contextState = make(map[string]pb.SnapshotAgentJobState_State)
 		return
 	}
-	j.contextState = make(map[string]pb.SnapshotAgentJobState_State)
-	for k, v := range cs {
-		j.contextState[k] = v
-	}
+	j.contextState = maps.Clone(cs)
 }
 
 func (j *Job) UpdateContextState(nodeName string, state pb.SnapshotAgentJobState_State) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.contextState == nil {
-		j.contextState = make(map[string]pb.SnapshotAgentJobState_State)
-	}
 	j.contextState[nodeName] = state
 }
