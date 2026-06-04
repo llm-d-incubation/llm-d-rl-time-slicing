@@ -55,6 +55,7 @@ func (j *Job) SetContextState(cs map[string]pb.SnapshotAgentJobState_State) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if len(cs) == 0 {
+		// ensure we never set j.contextState to nil
 		j.contextState = make(map[string]pb.SnapshotAgentJobState_State)
 		return
 	}

@@ -88,8 +88,8 @@ func (s *ConfigMapLockStore) Lock(ctx context.Context, groupID, jobID string) er
 			cm.Data = make(map[string]string)
 		}
 
-		current, ok := cm.Data[groupID]
-		if ok && current != "" && current != jobID {
+		current := cm.Data[groupID]
+		if current != "" && current != jobID {
 			return ErrAlreadyLocked
 		}
 

@@ -60,7 +60,11 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 				}
 			}
 
-			group.SetLockingJob(tc.lockingJob)
+			if tc.lockingJob != "" {
+				if err := group.Lock(context.Background(), tc.lockingJob); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+			}
 			if group.LockingJob() != tc.lockingJob {
 				t.Errorf("LockingJob() = %q, want %q", group.LockingJob(), tc.lockingJob)
 			}
@@ -70,6 +74,7 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 				t.Errorf("ActiveJob() = %q, want %q", group.ActiveJob(), tc.activeJob)
 			}
 
+			_, initialTimestamp := group.State()
 			beforeSet := time.Now()
 			group.SetState(tc.state)
 			gotState, gotTimestamp := group.State()
@@ -77,8 +82,14 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 			if gotState != tc.state {
 				t.Errorf("State() state = %v, want %v", gotState, tc.state)
 			}
-			if gotTimestamp.Before(beforeSet) || gotTimestamp.After(time.Now()) {
-				t.Errorf("State() timestamp %v is not close to set time", gotTimestamp)
+			if tc.state != pb.GroupStatus_STATE_UNSPECIFIED {
+				if gotTimestamp.Before(beforeSet) || gotTimestamp.After(time.Now()) {
+					t.Errorf("State() timestamp %v is not close to set time", gotTimestamp)
+				}
+			} else {
+				if !gotTimestamp.Equal(initialTimestamp) {
+					t.Errorf("State() timestamp %v changed from %v, want unmodified", gotTimestamp, initialTimestamp)
+				}
 			}
 		})
 	}

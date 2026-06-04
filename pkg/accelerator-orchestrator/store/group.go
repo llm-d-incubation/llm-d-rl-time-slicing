@@ -14,6 +14,7 @@ type Group struct {
 	id    string
 	nodes []string
 	// lockingJob is the job_id holding the lock, empty if none.
+	// Acts like the cached value for value stored in lockStore.
 	lockingJob string
 	// activeJob is the job_id whose context is active, empty if none.
 	// The primary situation where the active job is not locking is the
@@ -59,12 +60,6 @@ func (g *Group) LockingJob() string {
 	return g.lockingJob
 }
 
-func (g *Group) SetLockingJob(jobID string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.lockingJob = jobID
-}
-
 func (g *Group) ActiveJob() string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -86,6 +81,9 @@ func (g *Group) State() (pb.GroupStatus_State, time.Time) {
 func (g *Group) SetState(state pb.GroupStatus_State) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.state == state {
+		return
+	}
 	g.state = state
 	g.stateTimestamp = time.Now()
 }
@@ -98,21 +96,12 @@ func (g *Group) GetWaitingJobQueue() *WaitingJobQueue {
 }
 
 func (g *Group) Delete(ctx context.Context) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if g.lockStore != nil {
-		currentLock, err := g.lockStore.GetLock(ctx, g.id)
-		if err != nil {
-			return err
-		}
-		if currentLock != "" {
-			if err := g.lockStore.Unlock(ctx, g.id, currentLock); err != nil {
-				return err
-			}
-		}
+	lj := g.LockingJob()
+	if lj == "" {
+		return nil
 	}
-	return nil
+
+	return g.Unlock(ctx, lj)
 }
 
 func (g *Group) Lock(ctx context.Context, jobID string) error {
@@ -125,7 +114,6 @@ func (g *Group) Lock(ctx context.Context, jobID string) error {
 		}
 	}
 	g.lockingJob = jobID
-	g.stateTimestamp = time.Now()
 	return nil
 }
 
@@ -139,6 +127,5 @@ func (g *Group) Unlock(ctx context.Context, jobID string) error {
 		}
 	}
 	g.lockingJob = ""
-	g.stateTimestamp = time.Now()
 	return nil
 }
