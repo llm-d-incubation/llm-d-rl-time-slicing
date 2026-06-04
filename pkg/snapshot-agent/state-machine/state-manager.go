@@ -71,7 +71,7 @@ func (sm *StateManager) getOrCreateJob(jobID, group string) *Job {
 }
 
 // StartSnapshot initiates a snapshot operation if the job state allows it.
-func (sm *StateManager) StartSnapshot(jobID, group string, worker func() (int64, int64, error)) (string, error) {
+func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) (string, error) {
 	sm.mu.Lock()
 	job := sm.getOrCreateJob(jobID, group)
 	sm.mu.Unlock()
@@ -107,7 +107,7 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() (int64,
 
 	// 3. Asynchronous Workflow
 	go func() {
-		storageBytes, deviceBytes, err := worker()
+		err := worker()
 
 		job.mu.Lock()
 		defer job.mu.Unlock()
@@ -122,8 +122,7 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() (int64,
 			job.State = pb.JobState_JOB_STATE_FAULTED
 		} else {
 			op.Status = pb.OperationStatus_OPERATION_STATUS_COMPLETE
-			op.StorageBytes = storageBytes
-			op.SnapshotDeviceBytes = deviceBytes
+			op.StorageBytes = 1024
 			job.State = pb.JobState_JOB_STATE_SAVED
 		}
 	}()
@@ -189,6 +188,7 @@ func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (
 		} else {
 			op.Status = pb.OperationStatus_OPERATION_STATUS_COMPLETE
 			job.State = pb.JobState_JOB_STATE_RUNNING
+			op.SnapshotDeviceBytes = 1024
 		}
 	}()
 

@@ -24,10 +24,9 @@ import (
 
 func main() {
 	port := flag.Int("port", 9001, "The port to listen on")
-	useCriu := flag.Bool("use-criu", false, "Whether to use CRIU for snapshots")
 	flag.Parse()
 
-	cudaBackend := backends.NewCudaCheckpoint(*useCriu)
+	cudaBackend := backends.NewCudaCheckpoint()
 
 	registeredBackends := map[string]backends.Backend{
 		"cuda": cudaBackend,

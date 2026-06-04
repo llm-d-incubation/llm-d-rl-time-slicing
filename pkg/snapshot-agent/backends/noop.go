@@ -15,11 +15,11 @@ func NewNoopBackend() *NoopBackend {
 }
 
 // Snapshot simulates a snapshot operation.
-func (b *NoopBackend) Snapshot(ctx context.Context, pids []string) (int64, int64, error) {
+func (b *NoopBackend) Snapshot(ctx context.Context, pids []string) error {
 	log.Printf("NoopBackend: Snapshot called for PIDs %v", pids)
 	// Simulate some work
 	time.Sleep(500 * time.Millisecond)
-	return 100, 200, nil
+	return nil
 }
 
 // Restore simulates a restore operation.

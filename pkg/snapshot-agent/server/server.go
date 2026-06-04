@@ -48,15 +48,15 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendName)
 	}
 
-	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() (int64, int64, error) {
+	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() error {
 		log.Printf("Background: Starting snapshot for %s using backend %s", req.GetJobId(), backendName)
 		pods, err := podutils.GetLocalPods(context.Background(), req.GetJobId())
 		if err != nil {
-			return 0, 0, fmt.Errorf("failed to get local pods: %v", err)
+			return fmt.Errorf("failed to get local pods: %v", err)
 		}
 
 		if len(pods) == 0 {
-			return 0, 0, fmt.Errorf("no pods found for job %s", req.GetJobId())
+			return fmt.Errorf("no pods found for job %s", req.GetJobId())
 		}
 
 		var allPIDs []int
@@ -66,7 +66,7 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 			pids, err := podutils.GetPodPIDs(context.Background(), pod.Name, pod.Namespace)
 			log.Printf("Pod %s has PIDs: %v", pod.Name, pids)
 			if err != nil {
-				return 0, 0, fmt.Errorf("failed to get pod PIDs: %v", err)
+				return fmt.Errorf("failed to get pod PIDs: %v", err)
 			}
 			allPIDs = append(allPIDs, pids...)
 			for _, pid := range pids {
@@ -75,23 +75,23 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 		}
 
 		if len(allPIDStrings) == 0 {
-			return 0, 0, fmt.Errorf("no GPU PIDs found for job %s", req.GetJobId())
+			return fmt.Errorf("no GPU PIDs found for job %s", req.GetJobId())
 		}
 
-		storageBytes, deviceBytes, err := backend.Snapshot(context.Background(), allPIDStrings)
+		err = backend.Snapshot(context.Background(), allPIDStrings)
 		if err != nil {
-			return 0, 0, fmt.Errorf("failed to snapshot job %s: %v", req.GetJobId(), err)
+			return fmt.Errorf("failed to snapshot job %s: %v", req.GetJobId(), err)
 		}
 
 		s.state.UpdateJobPIDs(req.GetJobId(), allPIDs)
 		log.Printf("PIDs for job %s: %v", req.GetJobId(), allPIDs)
-		return storageBytes, deviceBytes, nil
+		return nil
 	})
 
 
 	if err != nil {
 		log.Printf("Failed to start snapshot for job %s: %v", req.GetJobId(), err)
-		return nil, err
+		return err
 	}
 
 	return &pb.SnapshotResponse{OperationId: opID}, nil
