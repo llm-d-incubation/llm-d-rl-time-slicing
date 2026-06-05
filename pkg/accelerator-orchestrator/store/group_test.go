@@ -40,7 +40,10 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			group := store.NewGroup(tc.groupID, nil)
+			group, err := store.NewGroup(context.Background(), tc.groupID, nil)
+			if err != nil {
+				t.Fatalf("NewGroup failed: %v", err)
+			}
 			group.SetNodes(tc.nodes)
 
 			if group.ID() != tc.groupID {
@@ -161,5 +164,27 @@ func TestGroup_LockAndUnlock(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNewGroup_InitializeLock(t *testing.T) {
+	ctx := context.Background()
+	lockStore := store.NewMemLockStore()
+	groupID := "group-test"
+	jobID := "job-lock"
+
+	// 1. Lock the group in the lockStore directly
+	if err := lockStore.Lock(ctx, groupID, jobID); err != nil {
+		t.Fatalf("failed to setup lock in lockStore: %v", err)
+	}
+
+	// 2. Create NewGroup and check if it initialized lockingJob
+	group, err := store.NewGroup(ctx, groupID, lockStore)
+	if err != nil {
+		t.Fatalf("NewGroup failed: %v", err)
+	}
+
+	if group.LockingJob() != jobID {
+		t.Errorf("NewGroup did not initialize lockingJob from lockStore, got %q, want %q", group.LockingJob(), jobID)
 	}
 }

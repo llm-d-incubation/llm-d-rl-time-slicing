@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -27,15 +28,25 @@ type Group struct {
 	lockStore      LockStore
 }
 
-// NewGroup creates a new Group with default values.
-func NewGroup(id string, lockStore LockStore) *Group {
-	return &Group{
+// NewGroup creates a new Group and initializes its locking state from the lockStore if available.
+func NewGroup(ctx context.Context, id string, lockStore LockStore) (*Group, error) {
+	g := &Group{
 		id:             id,
 		state:          pb.GroupStatus_STATE_UNSPECIFIED,
 		stateTimestamp: time.Now(),
 		queue:          NewWaitingJobQueue(),
 		lockStore:      lockStore,
 	}
+
+	if lockStore != nil {
+		lockingJob, err := lockStore.GetLock(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get lock status for group %s: %w", id, err)
+		}
+		g.lockingJob = lockingJob
+	}
+
+	return g, nil
 }
 
 func (g *Group) ID() string {

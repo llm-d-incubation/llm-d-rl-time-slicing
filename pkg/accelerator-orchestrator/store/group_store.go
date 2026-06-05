@@ -70,7 +70,11 @@ func (s *GroupStore) GetOrCreate(ctx context.Context, id string) (*Group, bool, 
 		return g, false, nil
 	}
 
-	g = NewGroup(id, s.lockStore)
+	var err error
+	g, err = NewGroup(ctx, id, s.lockStore)
+	if err != nil {
+		return nil, false, err
+	}
 	s.groups[id] = g
 	return g, true, nil
 }

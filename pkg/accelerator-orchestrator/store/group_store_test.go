@@ -198,7 +198,7 @@ func TestGroupStateEnum(t *testing.T) {
 }
 
 func newTestGroup(id string, nodes []string) *store.Group {
-	g := store.NewGroup(id, nil)
+	g, _ := store.NewGroup(context.Background(), id, nil)
 	if nodes != nil {
 		g.SetNodes(nodes)
 	}

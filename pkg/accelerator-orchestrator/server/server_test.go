@@ -23,7 +23,7 @@ var lis *bufconn.Listener
 func initGRPCServer() func() {
 	lis = bufconn.Listen(bufSize)
 	s := grpc.NewServer()
-	pb.RegisterAcceleratorOrchestratorServiceServer(s, server.NewServer())
+	pb.RegisterAcceleratorOrchestratorServiceServer(s, server.NewServer(nil))
 	go func() {
 		if err := s.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			log.Fatalf("Server exited with error: %v", err)

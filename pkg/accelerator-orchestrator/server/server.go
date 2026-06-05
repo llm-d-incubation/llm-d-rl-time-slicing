@@ -8,6 +8,7 @@ import (
 	"net"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -16,11 +17,14 @@ import (
 // Server implements the AcceleratorOrchestratorService gRPC server.
 type Server struct {
 	pb.UnimplementedAcceleratorOrchestratorServiceServer
+	ctrl *controller.Controller
 }
 
 // NewServer creates a new Server instance.
-func NewServer() *Server {
-	return &Server{}
+func NewServer(ctrl *controller.Controller) *Server {
+	return &Server{
+		ctrl: ctrl,
+	}
 }
 
 // Acquire implements AcceleratorOrchestratorService.Acquire.
@@ -48,14 +52,23 @@ func (s *Server) GetGroupStatus(ctx context.Context, req *pb.GetGroupStatusReque
 }
 
 // StartServer starts the gRPC server on the specified port and handles graceful shutdown when the context is canceled.
-func StartServer(ctx context.Context, port int) error {
+// It also starts the controller in the background.
+func StartServer(ctx context.Context, port int, ctrl *controller.Controller, workers int) error {
 	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
+	// Start controller in background
+	go func() {
+		log.Printf("Starting controller from server with %d workers...", workers)
+		if err := ctrl.Run(ctx, workers); err != nil {
+			log.Printf("Error running controller: %v", err)
+		}
+	}()
+
 	s := grpc.NewServer()
-	pb.RegisterAcceleratorOrchestratorServiceServer(s, NewServer())
+	pb.RegisterAcceleratorOrchestratorServiceServer(s, NewServer(ctrl))
 
 	errChan := make(chan error, 1)
 	go func() {
