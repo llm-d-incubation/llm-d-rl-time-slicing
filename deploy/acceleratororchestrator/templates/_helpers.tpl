@@ -49,3 +49,14 @@ Selector labels
 app.kubernetes.io/name: {{ include "acceleratororchestrator.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Create the name of the service account to use
+*/}}
+{{- define "acceleratororchestrator.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "acceleratororchestrator.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
