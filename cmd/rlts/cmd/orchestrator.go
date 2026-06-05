@@ -99,10 +99,13 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("failed to get status: %w", err)
 		}
 
+<<<<<<< HEAD
 		if resp.Group == nil {
 			return fmt.Errorf("server returned success but group status is missing")
 		}
 
+=======
+>>>>>>> 60e3183 (Add cli and update deployment)
 		fmt.Printf("Group: %s\n", resp.Group.GroupId)
 		fmt.Printf("  State: %s\n", resp.Group.GroupState)
 		if resp.Group.StateTimestamp != nil {
