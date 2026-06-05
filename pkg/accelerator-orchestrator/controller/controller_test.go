@@ -147,6 +147,7 @@ func TestControllerReconciliation(t *testing.T) {
 
 type fakeSnapshotAgentStore struct {
 	statusFunc func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
+	closeFunc  func(nodeName string) error
 }
 
 func (f *fakeSnapshotAgentStore) GetStatus(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error) {
@@ -154,6 +155,13 @@ func (f *fakeSnapshotAgentStore) GetStatus(ctx context.Context, nodeName string)
 		return f.statusFunc(ctx, nodeName)
 	}
 	return &agentpb.StatusResponse{}, nil
+}
+
+func (f *fakeSnapshotAgentStore) CloseClient(nodeName string) error {
+	if f.closeFunc != nil {
+		return f.closeFunc(nodeName)
+	}
+	return nil
 }
 
 func TestControllerReconciliation_GroupLivesWithNodes(t *testing.T) {

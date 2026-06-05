@@ -191,3 +191,58 @@ func TestGRPCSnapshotAgentStore_GetStatus_NoCaching(t *testing.T) {
 		t.Errorf("Expected 2 calls to server, got %d", fakeServer.callCount)
 	}
 }
+
+func TestGRPCSnapshotAgentStore_CloseClient(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer lis.Close()
+
+	addr := lis.Addr().String()
+
+	fakeServer := &fakeAgentServer{
+		statusResponse: &agentpb.StatusResponse{
+			JobStatuses: []*agentpb.JobStatus{
+				{JobId: "job-1", State: agentpb.JobState_JOB_STATE_RUNNING},
+			},
+		},
+	}
+
+	grpcServer := grpc.NewServer()
+	agentpb.RegisterSnapshotAgentServiceServer(grpcServer, fakeServer)
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+
+	// 1. Create store with 5s TTL
+	s := store.NewGRPCSnapshotAgentStore(5 * time.Second)
+
+	// 2. First call - succeeds and caches
+	_, err = s.GetStatus(context.Background(), addr)
+	if err != nil {
+		t.Fatalf("First GetStatus failed: %v", err)
+	}
+
+	// 3. Stop the gRPC server
+	grpcServer.GracefulStop()
+
+	// 4. Second call - should still succeed because it is cached
+	_, err = s.GetStatus(context.Background(), addr)
+	if err != nil {
+		t.Errorf("Second GetStatus (cached) failed after server stop: %v", err)
+	}
+
+	// 5. CloseClient for this address (since address is same as nodeName in tests)
+	err = s.CloseClient(addr)
+	if err != nil {
+		t.Fatalf("CloseClient failed: %v", err)
+	}
+
+	// 6. Third call - should fail because cache is cleared and server is stopped
+	_, err = s.GetStatus(context.Background(), addr)
+	if err == nil {
+		t.Error("Expected GetStatus to fail after CloseClient and server stop, but it succeeded")
+	}
+}

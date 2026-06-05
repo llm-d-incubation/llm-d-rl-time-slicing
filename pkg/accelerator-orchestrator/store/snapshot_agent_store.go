@@ -14,6 +14,12 @@ import (
 // SnapshotAgentStore defines the interface for communicating with snapshot agents.
 type SnapshotAgentStore interface {
 	GetStatus(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
+	CloseClient(nodeName string) error
+}
+
+type clientEntry struct {
+	client agentpb.SnapshotAgentServiceClient
+	conn   *grpc.ClientConn
 }
 
 type cacheEntry struct {
@@ -24,7 +30,7 @@ type cacheEntry struct {
 // GRPCSnapshotAgentStore implements SnapshotAgentStore using gRPC.
 type GRPCSnapshotAgentStore struct {
 	mu       sync.Mutex
-	clients  map[string]agentpb.SnapshotAgentServiceClient
+	clients  map[string]*clientEntry
 	cache    map[string]*cacheEntry
 	cacheTTL time.Duration
 }
@@ -33,7 +39,7 @@ type GRPCSnapshotAgentStore struct {
 // If ttl is <= 0, caching is disabled.
 func NewGRPCSnapshotAgentStore(ttl time.Duration) *GRPCSnapshotAgentStore {
 	return &GRPCSnapshotAgentStore{
-		clients:  make(map[string]agentpb.SnapshotAgentServiceClient),
+		clients:  make(map[string]*clientEntry),
 		cache:    make(map[string]*cacheEntry),
 		cacheTTL: ttl,
 	}
@@ -43,8 +49,8 @@ func (s *GRPCSnapshotAgentStore) getClient(address string) (agentpb.SnapshotAgen
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if client, ok := s.clients[address]; ok {
-		return client, nil
+	if entry, ok := s.clients[address]; ok {
+		return entry.client, nil
 	}
 
 	// Dial the agent using NewClient (preferred in newer gRPC versions)
@@ -54,7 +60,10 @@ func (s *GRPCSnapshotAgentStore) getClient(address string) (agentpb.SnapshotAgen
 	}
 
 	client := agentpb.NewSnapshotAgentServiceClient(conn)
-	s.clients[address] = client
+	s.clients[address] = &clientEntry{
+		client: client,
+		conn:   conn,
+	}
 	return client, nil
 }
 
@@ -94,6 +103,32 @@ func (s *GRPCSnapshotAgentStore) GetStatus(ctx context.Context, nodeName string)
 	}
 
 	return resp, nil
+}
+
+// CloseClient closes the gRPC connection and clears the cache for the given node.
+func (s *GRPCSnapshotAgentStore) CloseClient(nodeName string) error {
+	address := s.resolveNodeAddress(nodeName)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, ok := s.clients[address]
+	if !ok {
+		return nil // Already closed or never opened
+	}
+
+	var closeErr error
+	if entry.conn != nil {
+		closeErr = entry.conn.Close()
+	}
+
+	delete(s.clients, address)
+	delete(s.cache, address)
+
+	if closeErr != nil {
+		return fmt.Errorf("failed to close connection for node %s: %w", nodeName, closeErr)
+	}
+	return nil
 }
 
 func (s *GRPCSnapshotAgentStore) resolveNodeAddress(nodeName string) string {

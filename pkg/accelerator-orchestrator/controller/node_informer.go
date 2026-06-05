@@ -23,6 +23,7 @@ func (c *Controller) setupNodeInformer(nodeInformer corev1informers.NodeInformer
 		},
 		DeleteFunc: func(obj interface{}) {
 			c.enqueueNode(obj)
+			c.cleanupNodeClient(obj)
 		},
 	})
 }
@@ -63,4 +64,27 @@ func getGroupsFromNode(node *corev1.Node) []string {
 		}
 	}
 	return groups
+}
+
+func (c *Controller) cleanupNodeClient(obj interface{}) {
+	var node *corev1.Node
+	var ok bool
+	if node, ok = obj.(*corev1.Node); !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			utilruntime.HandleError(fmt.Errorf("error decoding object, invalid type"))
+			return
+		}
+		node, ok = tombstone.Obj.(*corev1.Node)
+		if !ok {
+			utilruntime.HandleError(fmt.Errorf("error decoding object tombstone, invalid type"))
+			return
+		}
+	}
+
+	logger := klog.FromContext(context.Background())
+	logger.Info("Node deleted, cleaning up snapshot agent client", "node", node.Name)
+	if err := c.snapshotAgentStore.CloseClient(node.Name); err != nil {
+		logger.Error(err, "Failed to close snapshot agent client", "node", node.Name)
+	}
 }
