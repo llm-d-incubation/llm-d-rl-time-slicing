@@ -13,7 +13,7 @@ import (
 )
 
 func (c *Controller) setupNodeInformer(nodeInformer corev1informers.NodeInformer) {
-	nodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, err := nodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			c.enqueueNode(obj)
 		},
@@ -26,6 +26,9 @@ func (c *Controller) setupNodeInformer(nodeInformer corev1informers.NodeInformer
 			c.cleanupNodeClient(obj)
 		},
 	})
+	if err != nil {
+		panic(fmt.Errorf("failed to add node event handler: %w", err))
+	}
 }
 
 func (c *Controller) enqueueNode(obj interface{}) {

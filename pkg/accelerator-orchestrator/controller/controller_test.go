@@ -1,11 +1,13 @@
-package controller
+package controller_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -35,7 +37,7 @@ func TestControllerReconciliation(t *testing.T) {
 			return &agentpb.StatusResponse{}, nil
 		},
 	}
-	c := NewController(clientset, nodeInformer, podInformer, groupStore, jobStore, fakeAgentStore)
+	c := controller.NewController(clientset, nodeInformer, podInformer, groupStore, jobStore, fakeAgentStore)
 
 	// No mocks, running inline placeholders
 
@@ -174,7 +176,7 @@ func TestControllerReconciliation_GroupLivesWithNodes(t *testing.T) {
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
 	fakeAgentStore := &fakeSnapshotAgentStore{}
-	c := NewController(clientset, nodeInformer, podInformer, groupStore, jobStore, fakeAgentStore)
+	c := controller.NewController(clientset, nodeInformer, podInformer, groupStore, jobStore, fakeAgentStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -224,8 +226,8 @@ func TestControllerReconciliation_GroupLivesWithNodes(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify they are in store
-	g, err := groupStore.Get(ctx, "group-a")
-	if err != nil || len(g.Nodes()) != 1 {
+	group, err := groupStore.Get(ctx, "group-a")
+	if err != nil || len(group.Nodes()) != 1 {
 		t.Fatalf("Setup failed, group-a not populated correctly: %v", err)
 	}
 	_, err = jobStore.Get(ctx, "group-a", "job-a")
@@ -244,12 +246,12 @@ func TestControllerReconciliation_GroupLivesWithNodes(t *testing.T) {
 
 	// Verify job-a is deleted
 	_, err = jobStore.Get(ctx, "group-a", "job-a")
-	if err != store.ErrNotFound {
+	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Expected job-a to be deleted (ErrNotFound), got: %v", err)
 	}
 	// Group should still exist because node-1 is still there
-	g, err = groupStore.Get(ctx, "group-a")
-	if err != nil || len(g.Nodes()) != 1 {
+	group, err = groupStore.Get(ctx, "group-a")
+	if err != nil || len(group.Nodes()) != 1 {
 		t.Errorf("Expected group-a to still exist with 1 node, got error: %v", err)
 	}
 
@@ -264,7 +266,7 @@ func TestControllerReconciliation_GroupLivesWithNodes(t *testing.T) {
 
 	// Verify group-a is deleted
 	_, err = groupStore.Get(ctx, "group-a")
-	if err != store.ErrNotFound {
+	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Expected group-a to be deleted (ErrNotFound), got: %v", err)
 	}
 }
@@ -279,7 +281,7 @@ func TestControllerReconciliation_GroupLivesWithPods(t *testing.T) {
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
 	fakeAgentStore := &fakeSnapshotAgentStore{}
-	c := NewController(clientset, nodeInformer, podInformer, groupStore, jobStore, fakeAgentStore)
+	c := controller.NewController(clientset, nodeInformer, podInformer, groupStore, jobStore, fakeAgentStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -338,11 +340,11 @@ func TestControllerReconciliation_GroupLivesWithPods(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify group-a still exists but has 0 nodes
-	g, err := groupStore.Get(ctx, "group-a")
+	group, err := groupStore.Get(ctx, "group-a")
 	if err != nil {
 		t.Errorf("Expected group-a to still exist, got error: %v", err)
-	} else if len(g.Nodes()) != 0 {
-		t.Errorf("Expected group-a to have 0 nodes, got %v", g.Nodes())
+	} else if len(group.Nodes()) != 0 {
+		t.Errorf("Expected group-a to have 0 nodes, got %v", group.Nodes())
 	}
 
 	// Verify job-a still exists
@@ -362,7 +364,7 @@ func TestControllerReconciliation_GroupLivesWithPods(t *testing.T) {
 
 	// Verify group-a is deleted
 	_, err = groupStore.Get(ctx, "group-a")
-	if err != store.ErrNotFound {
+	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("Expected group-a to be deleted (ErrNotFound), got: %v", err)
 	}
 }

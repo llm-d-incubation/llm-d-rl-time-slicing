@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
@@ -198,7 +199,10 @@ func TestGroupStateEnum(t *testing.T) {
 }
 
 func newTestGroup(id string, nodes []string) *store.Group {
-	g, _ := store.NewGroup(context.Background(), id, nil)
+	g, err := store.NewGroup(context.Background(), id, nil)
+	if err != nil {
+		panic(fmt.Errorf("failed to create new test group: %w", err))
+	}
 	if nodes != nil {
 		g.SetNodes(nodes)
 	}

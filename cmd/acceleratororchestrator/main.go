@@ -35,26 +35,9 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var config *rest.Config
-	var err error
-
-	if *kubeconfig != "" {
-		config, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
-		if err != nil {
-			return fmt.Errorf("failed to build config from kubeconfig flag: %w", err)
-		}
-	} else {
-		config, err = rest.InClusterConfig()
-		if err != nil {
-			log.Printf("In-cluster config failed, trying default local kubeconfig: %v", err)
-			loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-			configOverrides := &clientcmd.ConfigOverrides{}
-			kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-			config, err = kubeConfig.ClientConfig()
-			if err != nil {
-				return fmt.Errorf("failed to load kubernetes config: %w", err)
-			}
-		}
+	config, err := buildKubeConfig(*kubeconfig)
+	if err != nil {
+		return fmt.Errorf("failed to load kubernetes config: %w", err)
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
@@ -88,4 +71,21 @@ func run() error {
 
 	log.Printf("Starting Accelerator Orchestrator server...")
 	return server.StartServer(ctx, *port, ctrl, *controllerWorkers)
+}
+
+func buildKubeConfig(kubeconfigPath string) (*rest.Config, error) {
+	if kubeconfigPath != "" {
+		return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	}
+
+	config, err := rest.InClusterConfig()
+	if err == nil {
+		return config, nil
+	}
+
+	log.Printf("In-cluster config failed, trying default local kubeconfig: %v", err)
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	configOverrides := &clientcmd.ConfigOverrides{}
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+	return kubeConfig.ClientConfig()
 }

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -32,14 +33,14 @@ type DesiredState struct {
 
 // ActualState represents the actual state of the group.
 type ActualState struct {
-	Name  string
+	Name string
 	// Add other fields as needed (e.g., associated nodes, pods)
 }
 
 // Controller implements the reconciliation loop for groups.
 type Controller struct {
 	clientset kubernetes.Interface
-	queue     workqueue.RateLimitingInterface
+	queue     workqueue.TypedRateLimitingInterface[string]
 
 	groupStore         *store.GroupStore
 	jobStore           *store.JobStore
@@ -61,8 +62,13 @@ func NewController(
 	snapshotAgentStore store.SnapshotAgentStore,
 ) *Controller {
 	c := &Controller{
-		clientset:          clientset,
-		queue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "groups"),
+		clientset: clientset,
+		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{
+				Name: "groups",
+			},
+		),
 		groupStore:         groupStore,
 		jobStore:           jobStore,
 		snapshotAgentStore: snapshotAgentStore,
@@ -109,35 +115,27 @@ func (c *Controller) runWorker(ctx context.Context) {
 }
 
 func (c *Controller) processNextWorkItem(ctx context.Context) bool {
-	obj, shutdown := c.queue.Get()
+	key, shutdown := c.queue.Get()
 	if shutdown {
 		return false
 	}
 
 	logger := klog.FromContext(ctx)
 
-	err := func(obj interface{}) error {
-		defer c.queue.Done(obj)
-		var key string
-		var ok bool
-		if key, ok = obj.(string); !ok {
-			c.queue.Forget(obj)
-			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
-			return nil
-		}
+	err := func(key string) error {
+		defer c.queue.Done(key)
 
 		cycleLogger := logger.WithValues("group", key)
 		cycleCtx := klog.NewContext(ctx, cycleLogger)
 
 		if err := c.reconcileGroup(cycleCtx, key); err != nil {
-			c.queue.AddRateLimited(obj)
+			c.queue.AddRateLimited(key)
 			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
 		}
-		c.queue.Forget(obj)
+		c.queue.Forget(key)
 		cycleLogger.Info("Successfully synced group")
 		return nil
-	}(obj)
-
+	}(key)
 	if err != nil {
 		utilruntime.HandleError(err)
 		return true
@@ -229,7 +227,7 @@ func (c *Controller) observeGroupState(ctx context.Context, groupName string) er
 	for jobID, uids := range jobPods {
 		job, err := c.jobStore.Get(ctx, groupName, jobID)
 		if err != nil {
-			if err == store.ErrNotFound {
+			if errors.Is(err, store.ErrNotFound) {
 				job = store.NewJob(groupName, jobID)
 			} else {
 				return err
@@ -266,7 +264,7 @@ func (c *Controller) observeGroupState(ctx context.Context, groupName string) er
 		for _, js := range resp.JobStatuses {
 			// Only update if the job is known in this group
 			_, err := c.jobStore.Get(ctx, groupName, js.JobId)
-			if err == store.ErrNotFound {
+			if errors.Is(err, store.ErrNotFound) {
 				continue
 			} else if err != nil {
 				return err

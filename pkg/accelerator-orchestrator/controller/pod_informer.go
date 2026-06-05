@@ -12,7 +12,7 @@ import (
 )
 
 func (c *Controller) setupPodInformer(podInformer corev1informers.PodInformer) {
-	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, err := podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			c.enqueuePod(obj)
 		},
@@ -24,6 +24,9 @@ func (c *Controller) setupPodInformer(podInformer corev1informers.PodInformer) {
 			c.enqueuePod(obj)
 		},
 	})
+	if err != nil {
+		panic(fmt.Errorf("failed to add pod event handler: %w", err))
+	}
 }
 
 func (c *Controller) enqueuePod(obj interface{}) {

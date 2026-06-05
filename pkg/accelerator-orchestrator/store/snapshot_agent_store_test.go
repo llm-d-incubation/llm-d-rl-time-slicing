@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -30,7 +31,7 @@ func (s *fakeAgentServer) Status(ctx context.Context, req *agentpb.StatusRequest
 }
 
 func TestGRPCSnapshotAgentStore_GetStatus(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -53,7 +54,9 @@ func TestGRPCSnapshotAgentStore_GetStatus(t *testing.T) {
 	agentpb.RegisterSnapshotAgentServiceServer(grpcServer, fakeServer)
 
 	go func() {
-		_ = grpcServer.Serve(lis)
+		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			panic(err)
+		}
 	}()
 	defer grpcServer.GracefulStop()
 
@@ -83,7 +86,7 @@ func TestGRPCSnapshotAgentStore_GetStatus(t *testing.T) {
 }
 
 func TestGRPCSnapshotAgentStore_GetStatus_Caching(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -103,15 +106,17 @@ func TestGRPCSnapshotAgentStore_GetStatus_Caching(t *testing.T) {
 	agentpb.RegisterSnapshotAgentServiceServer(grpcServer, fakeServer)
 
 	go func() {
-		_ = grpcServer.Serve(lis)
+		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			panic(err)
+		}
 	}()
 	defer grpcServer.GracefulStop()
 
 	// Create store with 100ms TTL
-	s := store.NewGRPCSnapshotAgentStore(100 * time.Millisecond)
+	agentStore := store.NewGRPCSnapshotAgentStore(100 * time.Millisecond)
 
 	// 1. First call - cache miss, calls server
-	resp1, err := s.GetStatus(context.Background(), addr)
+	resp1, err := agentStore.GetStatus(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("GetStatus failed: %v", err)
 	}
@@ -120,7 +125,7 @@ func TestGRPCSnapshotAgentStore_GetStatus_Caching(t *testing.T) {
 	}
 
 	// 2. Second call (immediate) - cache hit
-	resp2, err := s.GetStatus(context.Background(), addr)
+	resp2, err := agentStore.GetStatus(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("GetStatus failed: %v", err)
 	}
@@ -136,7 +141,7 @@ func TestGRPCSnapshotAgentStore_GetStatus_Caching(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	// 4. Third call - cache miss, calls server again
-	_, err = s.GetStatus(context.Background(), addr)
+	_, err = agentStore.GetStatus(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("GetStatus failed: %v", err)
 	}
@@ -146,7 +151,7 @@ func TestGRPCSnapshotAgentStore_GetStatus_Caching(t *testing.T) {
 }
 
 func TestGRPCSnapshotAgentStore_GetStatus_NoCaching(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -166,7 +171,9 @@ func TestGRPCSnapshotAgentStore_GetStatus_NoCaching(t *testing.T) {
 	agentpb.RegisterSnapshotAgentServiceServer(grpcServer, fakeServer)
 
 	go func() {
-		_ = grpcServer.Serve(lis)
+		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			panic(err)
+		}
 	}()
 	defer grpcServer.GracefulStop()
 
@@ -193,7 +200,7 @@ func TestGRPCSnapshotAgentStore_GetStatus_NoCaching(t *testing.T) {
 }
 
 func TestGRPCSnapshotAgentStore_CloseClient(t *testing.T) {
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -213,14 +220,16 @@ func TestGRPCSnapshotAgentStore_CloseClient(t *testing.T) {
 	agentpb.RegisterSnapshotAgentServiceServer(grpcServer, fakeServer)
 
 	go func() {
-		_ = grpcServer.Serve(lis)
+		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			panic(err)
+		}
 	}()
 
 	// 1. Create store with 5s TTL
-	s := store.NewGRPCSnapshotAgentStore(5 * time.Second)
+	agentStore := store.NewGRPCSnapshotAgentStore(5 * time.Second)
 
 	// 2. First call - succeeds and caches
-	_, err = s.GetStatus(context.Background(), addr)
+	_, err = agentStore.GetStatus(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("First GetStatus failed: %v", err)
 	}
@@ -229,19 +238,19 @@ func TestGRPCSnapshotAgentStore_CloseClient(t *testing.T) {
 	grpcServer.GracefulStop()
 
 	// 4. Second call - should still succeed because it is cached
-	_, err = s.GetStatus(context.Background(), addr)
+	_, err = agentStore.GetStatus(context.Background(), addr)
 	if err != nil {
 		t.Errorf("Second GetStatus (cached) failed after server stop: %v", err)
 	}
 
 	// 5. CloseClient for this address (since address is same as nodeName in tests)
-	err = s.CloseClient(addr)
+	err = agentStore.CloseClient(addr)
 	if err != nil {
 		t.Fatalf("CloseClient failed: %v", err)
 	}
 
 	// 6. Third call - should fail because cache is cleared and server is stopped
-	_, err = s.GetStatus(context.Background(), addr)
+	_, err = agentStore.GetStatus(context.Background(), addr)
 	if err == nil {
 		t.Error("Expected GetStatus to fail after CloseClient and server stop, but it succeeded")
 	}
