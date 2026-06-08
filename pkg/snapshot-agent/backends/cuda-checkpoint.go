@@ -53,7 +53,6 @@ func (c *CudaCheckpoint) Restore(ctx context.Context, pids []string) error {
 		return fmt.Errorf("cuda-checkpoint toggle failed: %w", err)
 	}
 	logger.Info("cuda-checkpoint toggle took", "duration", time.Since(t0), "pids", pids)
-
 	return nil
 }
 
