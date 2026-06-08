@@ -1,8 +1,8 @@
-import grpc
 import logging
 
-from . import snapshot_agent_pb2
-from . import snapshot_agent_pb2_grpc
+import grpc
+
+from . import snapshot_agent_pb2, snapshot_agent_pb2_grpc
 
 logger = logging.getLogger(__name__)
 
