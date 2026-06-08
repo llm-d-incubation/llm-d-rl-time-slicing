@@ -2,104 +2,138 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"time"
 
-	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
-	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
-	"k8s.io/apimachinery/pkg/labels"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	corev1informers "k8s.io/client-go/informers/core/v1"
-	"k8s.io/client-go/kubernetes"
-	corev1listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
-	"k8s.io/klog/v2"
 )
 
-const (
-	NodeLabelPrefix = "group.timeslice.io/"
-	PodLabelKey     = "timeslice.io/group"
-)
+type loggerKey struct{}
 
-// DesiredState represents the desired state of the group.
-type DesiredState struct {
-	Name string
-	// Add other fields as needed
+// WithLogger returns a new context with the given logger.
+func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
+	return context.WithValue(ctx, loggerKey{}, logger)
 }
 
-// ActualState represents the actual state of the group.
-type ActualState struct {
-	Name string
-	// Add other fields as needed (e.g., associated nodes, pods)
+// Logger returns the logger associated with the context, or the default logger if none is found.
+func Logger(ctx context.Context) *slog.Logger {
+	if logger, ok := ctx.Value(loggerKey{}).(*slog.Logger); ok {
+		return logger
+	}
+	return slog.Default()
 }
 
-// Controller implements the reconciliation loop for groups.
+// handleCrash is a helper that recovers from panics, logs the panic and stack trace.
+// It is intended to be used in `defer` statements in goroutines.
+func handleCrash(ctx context.Context) {
+	if r := recover(); r != nil {
+		Logger(ctx).Error("Observed a panic", "panic", r, "stack", string(debug.Stack()))
+	}
+}
+
+// until runs the provided function repeatedly with a period sleep between runs.
+// It stops when the context is cancelled. It recovers from panics in the function
+// using handleCrash to ensure the worker loop continues running.
+func until(ctx context.Context, f func(context.Context), period time.Duration) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		func() {
+			defer handleCrash(ctx)
+			f(ctx)
+		}()
+
+		timer := time.NewTimer(period)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+// WorkQueue defines the interface for the work queue.
+// It contains only the methods used by the controller.
+type WorkQueue interface {
+	// Add enqueues the group ID for reconciliation.
+	Add(groupID string)
+	// AddRateLimited enqueues the group ID using a rate limiter.
+	// This is typically used to requeue a group ID after a reconciliation failure.
+	AddRateLimited(groupID string)
+	// Forget resets the rate limit tracking for the group ID,
+	// usually called after a successful reconciliation.
+	Forget(groupID string)
+	// Done signals that the reconciliation cycle for this group ID is complete.
+	// This must be called for every item retrieved from Get() to unlock it for future processing.
+	Done(groupID string)
+	// Get retrieves the next group ID to process. It blocks until an item is available.
+	// If the queue is shut down, it returns shutdown=true.
+	Get() (groupID string, shutdown bool)
+	// ShutDown shuts down the queue, preventing new items from being added and
+	// notifying all blocked readers.
+	ShutDown()
+}
+
+// InfrastructureOrchestrator defines the interface for interacting with the underlying infrastructure.
+type InfrastructureOrchestrator interface {
+	// Init initializes the infrastructure orchestrator.
+	// It should block until the orchestrator is ready or return an error.
+	Init(ctx context.Context) error
+	// ObserveGroupState observes the current state of the infrastructure for the given group
+	// and updates the groupStore and jobStore accordingly.
+	ObserveGroupState(ctx context.Context, groupID string) error
+}
+
+// Controller coordinates the reconciliation loop for slice groups.
+// It listens for changes in the infrastructure (via WorkQueue), observes the current state,
+// determines the desired state, and takes actions to align the actual state with the desired state.
 type Controller struct {
-	clientset kubernetes.Interface
-	queue     workqueue.TypedRateLimitingInterface[string]
-
-	groupStore         *store.GroupStore
-	jobStore           *store.JobStore
-	snapshotAgentStore store.SnapshotAgentStore
-
-	nodeLister corev1listers.NodeLister
-	nodeSynced cache.InformerSynced
-	podLister  corev1listers.PodLister
-	podSynced  cache.InformerSynced
+	queue             WorkQueue
+	groupStore        *store.GroupStore
+	jobStore          *store.JobStore
+	infraOrchestrator InfrastructureOrchestrator
 }
 
-// NewController creates a new Controller.
+// NewController creates a new Controller with the provided stores, queue, and infrastructure orchestrator.
 func NewController(
-	clientset kubernetes.Interface,
-	nodeInformer corev1informers.NodeInformer,
-	podInformer corev1informers.PodInformer,
 	groupStore *store.GroupStore,
 	jobStore *store.JobStore,
-	snapshotAgentStore store.SnapshotAgentStore,
+	queue WorkQueue,
+	infraOrchestrator InfrastructureOrchestrator,
 ) *Controller {
-	c := &Controller{
-		clientset: clientset,
-		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
-			workqueue.DefaultTypedControllerRateLimiter[string](),
-			workqueue.TypedRateLimitingQueueConfig[string]{
-				Name: "groups",
-			},
-		),
-		groupStore:         groupStore,
-		jobStore:           jobStore,
-		snapshotAgentStore: snapshotAgentStore,
-		nodeLister:         nodeInformer.Lister(),
-		nodeSynced:         nodeInformer.Informer().HasSynced,
-		podLister:          podInformer.Lister(),
-		podSynced:          podInformer.Informer().HasSynced,
+	return &Controller{
+		queue:             queue,
+		groupStore:        groupStore,
+		jobStore:          jobStore,
+		infraOrchestrator: infraOrchestrator,
 	}
-
-	c.setupNodeInformer(nodeInformer)
-	c.setupPodInformer(podInformer)
-
-	return c
 }
 
-// Run starts the controller.
+// Run starts the controller's reconciliation loop.
+// It initializes the infrastructure orchestrator, then starts the specified number of worker goroutines.
+// It blocks until the provided context is cancelled.
 func (c *Controller) Run(ctx context.Context, workers int) error {
-	defer utilruntime.HandleCrash()
+	defer handleCrash(ctx)
 	defer c.queue.ShutDown()
 
-	logger := klog.FromContext(ctx)
+	logger := Logger(ctx)
 	logger.Info("Starting Group controller")
 
-	logger.Info("Waiting for informer caches to sync")
-	if ok := cache.WaitForCacheSync(ctx.Done(), c.nodeSynced, c.podSynced); !ok {
-		return fmt.Errorf("failed to wait for caches to sync")
+	logger.Info("Initializing infrastructure")
+	if err := c.infraOrchestrator.Init(ctx); err != nil {
+		return fmt.Errorf("failed to initialize infrastructure: %w", err)
 	}
 
 	logger.Info("Starting workers")
 	for i := 0; i < workers; i++ {
-		go wait.UntilWithContext(ctx, c.runWorker, time.Second)
+		go until(ctx, c.runWorker, time.Second)
 	}
 
 	logger.Info("Started workers")
@@ -109,47 +143,55 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	return nil
 }
 
+// runWorker is the entry point for a worker goroutine.
+// It continuously processes work items from the queue until the queue is shut down.
 func (c *Controller) runWorker(ctx context.Context) {
 	for c.processNextWorkItem(ctx) {
 	}
 }
 
+// processNextWorkItem retrieves and processes a single work item (group ID) from the queue.
+// It returns false if the queue is shut down, signaling the worker to exit.
+// It wraps the reconciliation of a single group with error handling, rate limiting, and queue management.
 func (c *Controller) processNextWorkItem(ctx context.Context) bool {
-	key, shutdown := c.queue.Get()
+	groupID, shutdown := c.queue.Get()
 	if shutdown {
 		return false
 	}
 
-	logger := klog.FromContext(ctx)
+	logger := Logger(ctx)
 
-	err := func(key string) error {
-		defer c.queue.Done(key)
+	err := func(groupID string) error {
+		defer c.queue.Done(groupID)
 
-		cycleLogger := logger.WithValues("group", key)
-		cycleCtx := klog.NewContext(ctx, cycleLogger)
+		cycleLogger := logger.With("group", groupID)
+		cycleCtx := WithLogger(ctx, cycleLogger)
 
-		if err := c.reconcileGroup(cycleCtx, key); err != nil {
-			c.queue.AddRateLimited(key)
-			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
+		if err := c.reconcileGroup(cycleCtx, groupID); err != nil {
+			c.queue.AddRateLimited(groupID)
+			return fmt.Errorf("error syncing '%s': %s, requeuing", groupID, err.Error())
 		}
-		c.queue.Forget(key)
+		c.queue.Forget(groupID)
 		cycleLogger.Info("Successfully synced group")
 		return nil
-	}(key)
+	}(groupID)
 	if err != nil {
-		utilruntime.HandleError(err)
+		Logger(ctx).Error("Error processing work item", "error", err)
 		return true
 	}
 
 	return true
 }
 
-func (c *Controller) reconcileGroup(ctx context.Context, key string) error {
-	logger := klog.FromContext(ctx)
+// reconcileGroup performs the actual reconciliation for a single group.
+// It observes the current state of the group from the infrastructure and updates the stores.
+// Expects to be the only thread reconciling that particular group at any time.
+func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
+	logger := Logger(ctx)
 	logger.Info("Reconciling group")
 
-	// 1. Observe Current State
-	if err := c.observeGroupState(ctx, key); err != nil {
+	// 1. Observe Current State and update stores
+	if err := c.infraOrchestrator.ObserveGroupState(ctx, groupID); err != nil {
 		return fmt.Errorf("failed to observe group state: %w", err)
 	}
 
@@ -160,140 +202,4 @@ func (c *Controller) reconcileGroup(ctx context.Context, key string) error {
 	// 4. Update Status (TODO)
 
 	return nil
-}
-
-func (c *Controller) observeGroupState(ctx context.Context, groupName string) error {
-	logger := klog.FromContext(ctx)
-
-	// 1. Find nodes belonging to the group
-	selector := labels.SelectorFromSet(labels.Set{NodeLabelPrefix + groupName: "true"})
-	nodes, err := c.nodeLister.List(selector)
-	if err != nil {
-		return fmt.Errorf("failed to list nodes for group %s: %w", groupName, err)
-	}
-
-	var groupNodes []string
-	for _, node := range nodes {
-		groupNodes = append(groupNodes, node.Name)
-	}
-
-	// 2. Find pods tied to the group
-	selector = labels.SelectorFromSet(labels.Set{PodLabelKey: groupName})
-	pods, err := c.podLister.List(selector)
-	if err != nil {
-		return fmt.Errorf("failed to list pods for group %s: %w", groupName, err)
-	}
-
-	// If no nodes and no pods, we clean up the group and its jobs and return early.
-	if len(groupNodes) == 0 && len(pods) == 0 {
-		existingJobs, err := c.jobStore.ListByGroup(ctx, groupName)
-		if err != nil {
-			return err
-		}
-		for _, ej := range existingJobs {
-			if err := c.jobStore.Delete(ctx, groupName, ej.JobID()); err != nil {
-				return err
-			}
-			logger.Info("Deleted job from store because group has no nodes and no pods", "job", ej.JobID())
-		}
-
-		if err := c.groupStore.Delete(ctx, groupName); err != nil {
-			return fmt.Errorf("failed to delete group %s: %w", groupName, err)
-		}
-		logger.Info("Deleted group from store because it has no nodes and no pods", "group", groupName)
-		return nil
-	}
-
-	g, _, err := c.groupStore.GetOrCreate(ctx, groupName)
-	if err != nil {
-		return fmt.Errorf("failed to get or create group in store: %w", err)
-	}
-	g.SetNodes(groupNodes)
-	logger.Info("Updated nodes for group", "nodes", groupNodes)
-
-	jobPods := make(map[string][]string)
-	for _, pod := range pods {
-		jobID := pod.Annotations["timeslice.io/job-id"]
-		if jobID == "" {
-			jobID = pod.Labels["timeslice.io/job-id"]
-		}
-		if jobID == "" {
-			continue
-		}
-		jobPods[jobID] = append(jobPods[jobID], string(pod.UID))
-	}
-
-	// Update or create jobs
-	for jobID, uids := range jobPods {
-		job, err := c.jobStore.Get(ctx, groupName, jobID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				job = store.NewJob(groupName, jobID)
-			} else {
-				return err
-			}
-		}
-		job.SetPods(uids)
-		if err := c.jobStore.Put(ctx, job); err != nil {
-			return err
-		}
-	}
-
-	// Delete jobs that no longer have pods
-	existingJobs, err := c.jobStore.ListByGroup(ctx, groupName)
-	if err != nil {
-		return err
-	}
-	for _, ej := range existingJobs {
-		if _, ok := jobPods[ej.JobID()]; !ok {
-			if err := c.jobStore.Delete(ctx, groupName, ej.JobID()); err != nil {
-				return err
-			}
-			logger.Info("Deleted job from store because it has no pods", "job", ej.JobID())
-		}
-	}
-
-	// 3. Call snapshotagentstore status for every node in the group & populate job context
-	for _, nodeName := range groupNodes {
-		resp, err := c.snapshotAgentStore.GetStatus(ctx, nodeName)
-		if err != nil {
-			logger.Error(err, "Failed to get status from snapshot agent", "node", nodeName)
-			continue
-		}
-
-		for _, js := range resp.JobStatuses {
-			// Only update if the job is known in this group
-			_, err := c.jobStore.Get(ctx, groupName, js.JobId)
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			} else if err != nil {
-				return err
-			}
-
-			state := translateJobState(js.State)
-			if err := c.jobStore.UpdateContextState(ctx, groupName, js.JobId, nodeName, state); err != nil {
-				return err
-			}
-			logger.Info("Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
-		}
-	}
-
-	return nil
-}
-
-func translateJobState(s agentpb.JobState) pb.SnapshotAgentJobState_State {
-	switch s {
-	case agentpb.JobState_JOB_STATE_IDLE:
-		return pb.SnapshotAgentJobState_STATE_IDLE
-	case agentpb.JobState_JOB_STATE_RUNNING:
-		return pb.SnapshotAgentJobState_STATE_RUNNING
-	case agentpb.JobState_JOB_STATE_TRANSITIONING:
-		return pb.SnapshotAgentJobState_STATE_TRANSITIONING
-	case agentpb.JobState_JOB_STATE_SAVED:
-		return pb.SnapshotAgentJobState_STATE_SAVED
-	case agentpb.JobState_JOB_STATE_FAULTED:
-		return pb.SnapshotAgentJobState_STATE_FAULTED
-	default:
-		return pb.SnapshotAgentJobState_STATE_UNSPECIFIED
-	}
 }

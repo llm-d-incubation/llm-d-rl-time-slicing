@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/infrastructure"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/workqueue"
 )
 
 func main() {
@@ -56,13 +58,29 @@ func run() error {
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
 	snapshotAgentStore := store.NewGRPCSnapshotAgentStore(0)
-	ctrl := controller.NewController(
-		clientset,
+	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.DefaultTypedControllerRateLimiter[string](),
+		workqueue.TypedRateLimitingQueueConfig[string]{
+			Name: "groups",
+		},
+	)
+
+	infraOrch := infrastructure.NewKubernetesOrchestrator(
 		nodeInformerFactory.Core().V1().Nodes(),
 		podInformerFactory.Core().V1().Pods(),
 		groupStore,
 		jobStore,
 		snapshotAgentStore,
+	)
+	if err := infraOrch.Start(ctx, queue); err != nil {
+		return fmt.Errorf("failed to start infrastructure orchestrator: %w", err)
+	}
+
+	ctrl := controller.NewController(
+		groupStore,
+		jobStore,
+		queue,
+		infraOrch,
 	)
 
 	// Start informers
