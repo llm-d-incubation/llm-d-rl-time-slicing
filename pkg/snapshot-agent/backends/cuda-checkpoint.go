@@ -3,10 +3,11 @@ package backends
 import (
 	"context"
 	"fmt"
-	"log"
 	"os/exec"
 	"sync"
 	"time"
+
+	"k8s.io/klog/v2"
 )
 
 // CudaCheckpoint implements the Backend interface using cuda-checkpoint and optionally CRIU.
@@ -21,10 +22,11 @@ func NewCudaCheckpoint() *CudaCheckpoint {
 
 // Snapshot triggers a snapshot of the accelerator context for a job.
 func (c *CudaCheckpoint) Snapshot(ctx context.Context, pids []string) error {
+	logger := klog.FromContext(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	log.Printf("Snapshotting PIDs %v", pids)
+	logger.Info("Snapshotting PIDs", "pids", pids)
 
 	// 1. Lock and Checkpoint CUDA
 	t0 := time.Now()
@@ -41,13 +43,14 @@ func (c *CudaCheckpoint) Snapshot(ctx context.Context, pids []string) error {
 	if err := c.runSudoCommand(ctx, binaryPath, append([]string{"--action", "checkpoint"}, pidArgs...)...); err != nil {
 		return fmt.Errorf("cuda-checkpoint checkpoint failed: %w", err)
 	}
-	log.Printf("[Metric] cuda-checkpoint action took %v", time.Since(t0))
+	logger.Info("cuda-checkpoint action took", "duration", time.Since(t0))
 
 	return nil
 }
 
 // Restore triggers a restoration of the accelerator context for a job.
 func (c *CudaCheckpoint) Restore(ctx context.Context, pids []string) error {
+	logger := klog.FromContext(ctx)
 	if len(pids) == 0 {
 		return fmt.Errorf("at least one PID is required")
 	}
@@ -55,7 +58,7 @@ func (c *CudaCheckpoint) Restore(ctx context.Context, pids []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	log.Printf("Restoring PIDs %v", pids)
+	logger.Info("Restoring PIDs", "pids", pids)
 	t0 := time.Now()
 	binaryPath := c.getCudaCheckpointPath()
 	pidArgs := make([]string, 0, 2*len(pids))
@@ -66,7 +69,7 @@ func (c *CudaCheckpoint) Restore(ctx context.Context, pids []string) error {
 	if err := c.runSudoCommand(ctx, binaryPath, append([]string{"--toggle"}, pidArgs...)...); err != nil {
 		return fmt.Errorf("cuda-checkpoint toggle failed: %w", err)
 	}
-	log.Printf("[Metric] cuda-checkpoint toggle took %v for PIDs %v", time.Since(t0), pids)
+	logger.Info("cuda-checkpoint toggle took", "duration", time.Since(t0), "pids", pids)
 
 	return nil
 }

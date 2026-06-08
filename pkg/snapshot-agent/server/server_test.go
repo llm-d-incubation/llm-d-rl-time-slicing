@@ -2,7 +2,6 @@ package server_test
 
 import (
 	"context"
-	"log"
 	"net"
 	"testing"
 
@@ -14,6 +13,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"k8s.io/klog/v2"
 )
 
 const bufSize = 1024 * 1024
@@ -32,7 +32,7 @@ func initGRPCServer() {
 	pb.RegisterSnapshotAgentServiceServer(s, server.NewServer(backendsMap, "noop"))
 	go func() {
 		if err := s.Serve(lis); err != nil {
-			log.Fatalf("Server exited with error: %v", err)
+			klog.Fatalf("Server exited with error: %v", err)
 		}
 	}()
 }

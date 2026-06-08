@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"strconv"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/klog/v2"
 )
 
 // Server implements the SnapshotAgentService gRPC server.
@@ -36,7 +36,8 @@ func NewServer(backendMap map[string]backends.Backend, defaultBackend string) *S
 
 // Snapshot triggers an asynchronous snapshot of the accelerator context for a job.
 func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
-	log.Printf("Snapshot called: JobID=%s, Group=%s, Backend=%s", req.GetJobId(), req.GetGroup(), req.GetBackend())
+	logger := klog.FromContext(ctx)
+	logger.Info("Snapshot called", "jobID", req.GetJobId(), "group", req.GetGroup(), "backend", req.GetBackend())
 
 	backendName := req.GetBackend()
 	if backendName == "" {
@@ -50,7 +51,7 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 
 	bgCtx := context.WithoutCancel(ctx)
 	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() error {
-		log.Printf("Background: Starting snapshot for %s using backend %s", req.GetJobId(), backendName)
+		logger.Info("Background: Starting snapshot", "jobID", req.GetJobId(), "backend", backendName)
 		pods, err := podutils.GetLocalPods(bgCtx, req.GetJobId())
 		if err != nil {
 			return fmt.Errorf("failed to get local pods: %w", err)
@@ -62,11 +63,11 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 
 		var allPIDs []int
 		var allPIDStrings []string
-		log.Printf("Pods found for job %s: %v", req.GetJobId(), pods)
+		logger.Info("Pods found for job", "jobID", req.GetJobId(), "pods", pods)
 		for i := range pods {
 			pod := &pods[i]
 			pids, err := podutils.GetPodPIDs(bgCtx, pod.Name, pod.Namespace)
-			log.Printf("Pod %s has PIDs: %v", pod.Name, pids)
+			logger.Info("Pod has PIDs", "podName", pod.Name, "pids", pids)
 			if err != nil {
 				return fmt.Errorf("failed to get pod PIDs: %w", err)
 			}
@@ -86,11 +87,11 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 		}
 
 		s.state.UpdateJobPIDs(req.GetJobId(), allPIDs)
-		log.Printf("PIDs for job %s: %v", req.GetJobId(), allPIDs)
+		logger.Info("PIDs for job", "jobID", req.GetJobId(), "pids", allPIDs)
 		return nil
 	})
 	if err != nil {
-		log.Printf("Failed to start snapshot for job %s: %v", req.GetJobId(), err)
+		logger.Error(err, "Failed to start snapshot", "jobID", req.GetJobId())
 		return nil, err
 	}
 
@@ -99,7 +100,8 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 
 // Restore triggers an asynchronous restoration of the accelerator context for a job.
 func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.RestoreResponse, error) {
-	log.Printf("Restore called: JobID=%s, Group=%s, Backend=%s", req.GetJobId(), req.GetGroup(), req.GetBackend())
+	logger := klog.FromContext(ctx)
+	logger.Info("Restore called", "jobID", req.GetJobId(), "group", req.GetGroup(), "backend", req.GetBackend())
 
 	backendName := req.GetBackend()
 	if backendName == "" {
@@ -113,7 +115,7 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 
 	bgCtx := context.WithoutCancel(ctx)
 	opID, err := s.state.StartRestore(req.GetJobId(), req.GetGroup(), func() error {
-		log.Printf("Background: Starting restore for %s using backend %s", req.GetJobId(), backendName)
+		logger.Info("Background: Starting restore", "jobID", req.GetJobId(), "backend", backendName)
 
 		pids, err := s.state.GetJobPIDs(req.GetJobId())
 		if err != nil {
@@ -125,7 +127,7 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 			pidStrings = append(pidStrings, strconv.Itoa(pid))
 		}
 
-		log.Printf("Restoring PIDs %v using backend %s", pidStrings, backendName)
+		logger.Info("Restoring PIDs", "pids", pidStrings, "backend", backendName)
 		if err := backend.Restore(bgCtx, pidStrings); err != nil {
 			return fmt.Errorf("failed to restore job %s: %w", req.GetJobId(), err)
 		}
@@ -140,7 +142,8 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 
 // GetOperation polls the status of a long-running snapshot or restore operation.
 func (s *Server) GetOperation(ctx context.Context, req *pb.GetOperationRequest) (*pb.GetOperationResponse, error) {
-	log.Printf("GetOperation called: OperationID=%s", req.GetOperationId())
+	logger := klog.FromContext(ctx)
+	logger.Info("GetOperation called", "operationID", req.GetOperationId())
 
 	op, ok := s.state.GetOperation(req.GetOperationId())
 	if !ok {
@@ -174,20 +177,24 @@ func (s *Server) GetOperation(ctx context.Context, req *pb.GetOperationRequest) 
 
 // Status returns the current state of jobs and accelerators on the node.
 func (s *Server) Status(ctx context.Context, req *pb.StatusRequest) (*pb.StatusResponse, error) {
-	log.Printf("Status called")
+	logger := klog.FromContext(ctx)
+	logger.Info("Status called")
 	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
 }
 
 // Health returns the health status of the agent.
 func (s *Server) Health(ctx context.Context, req *pb.HealthRequest) (*pb.HealthResponse, error) {
-	log.Printf("Health called")
+	logger := klog.FromContext(ctx)
+	logger.Info("Health called")
 	return &pb.HealthResponse{Healthy: true}, nil
 }
 
 // StartServer starts the gRPC server on the specified port.
 func StartServer(port int, backendMap map[string]backends.Backend, defaultBackend string) error {
+	ctx := context.Background()
+	logger := klog.FromContext(ctx)
 	lc := net.ListenConfig{}
-	lis, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", port))
+	lis, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
@@ -195,7 +202,7 @@ func StartServer(port int, backendMap map[string]backends.Backend, defaultBacken
 	s := grpc.NewServer()
 	pb.RegisterSnapshotAgentServiceServer(s, NewServer(backendMap, defaultBackend))
 
-	log.Printf("Starting gRPC server on port %d...", port)
+	logger.Info("Starting gRPC server", "port", port)
 	if err := s.Serve(lis); err != nil {
 		return fmt.Errorf("failed to serve: %w", err)
 	}

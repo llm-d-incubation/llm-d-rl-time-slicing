@@ -15,16 +15,21 @@
 package main
 
 import (
+	"context"
 	"flag"
-	"log"
 
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/server"
+	"k8s.io/klog/v2"
 )
 
 func main() {
+	klog.InitFlags(nil)
 	port := flag.Int("port", 9001, "The port to listen on")
 	flag.Parse()
+
+	ctx := context.Background()
+	logger := klog.FromContext(ctx)
 
 	cudaBackend := backends.NewCudaCheckpoint()
 
@@ -33,8 +38,9 @@ func main() {
 		"noop": backends.NewNoopBackend(),
 	}
 
-	log.Printf("Starting Snapshot Agent on port %d", *port)
+	logger.Info("Starting Snapshot Agent", "port", *port)
 	if err := server.StartServer(*port, registeredBackends, "cuda"); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		logger.Error(err, "Failed to start server")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 }
