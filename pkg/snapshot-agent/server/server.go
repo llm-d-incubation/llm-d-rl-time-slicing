@@ -175,11 +175,7 @@ func (s *Server) GetOperation(ctx context.Context, req *pb.GetOperationRequest) 
 // Status returns the current state of jobs and accelerators on the node.
 func (s *Server) Status(ctx context.Context, req *pb.StatusRequest) (*pb.StatusResponse, error) {
 	log.Printf("Status called")
-	return &pb.StatusResponse{
-		JobStatuses: s.state.GetJobStatus(),
-		// TODO: Implement accelerator status discovery
-		AcceleratorStatuses: nil,
-	}, nil
+	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
 }
 
 // Health returns the health status of the agent.

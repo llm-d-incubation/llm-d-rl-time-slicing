@@ -138,8 +138,8 @@ func TestServer_Status(t *testing.T) {
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
 	_, err = client.Status(ctx, &pb.StatusRequest{})
-	if err != nil {
-		t.Errorf("Expected success, got error: %v", err)
+	if status.Code(err) != codes.Unimplemented {
+		t.Errorf("Expected Unimplemented error, got: %v", err)
 	}
 }
 
