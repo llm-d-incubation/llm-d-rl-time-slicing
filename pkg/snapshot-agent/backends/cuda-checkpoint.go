@@ -103,6 +103,7 @@ func (c *CudaCheckpoint) restorePIDs(ctx context.Context, pids []string) error {
 
 // Discover checks if the cuda-checkpoint backend is healthy.
 func (c *CudaCheckpoint) Discover(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
 	// 1. Check if cuda-checkpoint executable is available
 	binaryPath := c.getCudaCheckpointPath()
 	if _, err := exec.LookPath(binaryPath); err != nil {
@@ -113,7 +114,11 @@ func (c *CudaCheckpoint) Discover(ctx context.Context) error {
 	if ret := nvml.Init(); ret != nvml.SUCCESS {
 		return fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
 	}
-	defer nvml.Shutdown()
+	defer func() {
+		if ret := nvml.Shutdown(); ret != nvml.SUCCESS {
+			logger.Error(fmt.Errorf("%s", nvml.ErrorString(ret)), "Failed to shutdown NVML")
+		}
+	}()
 
 	// 3. Check if there are any GPUs attached to the system
 	count, ret := nvml.DeviceGetCount()
