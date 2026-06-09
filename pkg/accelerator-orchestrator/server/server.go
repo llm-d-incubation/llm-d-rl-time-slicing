@@ -9,21 +9,39 @@ import (
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// GroupStore defines the interface for group store operations needed by the server.
+type GroupStore interface {
+	Get(ctx context.Context, id string) (*store.Group, error)
+	List(ctx context.Context) ([]*store.Group, error)
+}
+
+// JobStore defines the interface for job store operations needed by the server.
+type JobStore interface {
+	Get(ctx context.Context, groupID, jobID string) (*store.Job, error)
+	ListByGroup(ctx context.Context, groupID string) ([]*store.Job, error)
+}
 
 // Server implements the AcceleratorOrchestratorService gRPC server.
 type Server struct {
 	pb.UnimplementedAcceleratorOrchestratorServiceServer
-	ctrl *controller.Controller
+	ctrl       *controller.Controller
+	groupStore GroupStore
+	jobStore   JobStore
 }
 
 // NewServer creates a new Server instance.
-func NewServer(ctrl *controller.Controller) *Server {
+func NewServer(ctrl *controller.Controller, groupStore GroupStore, jobStore JobStore) *Server {
 	return &Server{
-		ctrl: ctrl,
+		ctrl:       ctrl,
+		groupStore: groupStore,
+		jobStore:   jobStore,
 	}
 }
 
@@ -42,18 +60,75 @@ func (s *Server) Yield(ctx context.Context, req *pb.YieldRequest) (*pb.YieldResp
 // ListGroups implements AcceleratorOrchestratorService.ListGroups.
 func (s *Server) ListGroups(ctx context.Context, req *pb.ListGroupsRequest) (*pb.ListGroupsResponse, error) {
 	log.Printf("ListGroups called")
-	return nil, status.Errorf(codes.Unimplemented, "method ListGroups not implemented")
+	groups, err := s.groupStore.List(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to list groups: %v", err)
+	}
+	var ids []string
+	for _, g := range groups {
+		ids = append(ids, g.ID())
+	}
+	return &pb.ListGroupsResponse{GroupIds: ids}, nil
 }
 
 // GetGroupStatus implements AcceleratorOrchestratorService.GetGroupStatus.
 func (s *Server) GetGroupStatus(ctx context.Context, req *pb.GetGroupStatusRequest) (*pb.GetGroupStatusResponse, error) {
 	log.Printf("GetGroupStatus called: GroupID=%s", req.GetGroupId())
-	return nil, status.Errorf(codes.Unimplemented, "method GetGroupStatus not implemented")
+
+	group, err := s.groupStore.Get(ctx, req.GetGroupId())
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "group %s not found", req.GetGroupId())
+		}
+		return nil, status.Errorf(codes.Internal, "failed to get group: %v", err)
+	}
+
+	state, stateTime := group.State()
+	if state == pb.GroupStatus_STATE_UNKNOWN {
+		return nil, status.Errorf(codes.Unavailable, "group %s state is unknown", req.GetGroupId())
+	}
+
+	groupStatus := &pb.GroupStatus{
+		GroupId:          group.ID(),
+		GroupState:       state,
+		StateTimestamp:   timestamppb.New(stateTime),
+		LockingJob:       group.LockingJob(),
+		ActiveJob:        group.ActiveJob(),
+		WaiterQueueDepth: int64(group.GetWaitingJobQueue().Len()),
+	}
+
+	jobs, err := s.jobStore.ListByGroup(ctx, group.ID())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to list jobs for group %s: %v", group.ID(), err)
+	}
+
+	var agentJobStates []*pb.SnapshotAgentJobState
+	for _, job := range jobs {
+		for agent, jobState := range job.ContextState() {
+			agentJobStates = append(agentJobStates, &pb.SnapshotAgentJobState{
+				Agent:    agent,
+				JobState: jobState,
+				JobId:    job.JobID(),
+			})
+		}
+	}
+
+	return &pb.GetGroupStatusResponse{
+		Group:          groupStatus,
+		AgentJobStates: agentJobStates,
+	}, nil
 }
 
 // StartServer starts the gRPC server on the specified port and handles graceful shutdown when the context is canceled.
 // It also starts the controller in the background.
-func StartServer(ctx context.Context, port int, ctrl *controller.Controller, workers int) error {
+func StartServer(
+	ctx context.Context,
+	port int,
+	ctrl *controller.Controller,
+	groupStore GroupStore,
+	jobStore JobStore,
+	workers int,
+) error {
 	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
@@ -68,7 +143,7 @@ func StartServer(ctx context.Context, port int, ctrl *controller.Controller, wor
 	}()
 
 	s := grpc.NewServer()
-	pb.RegisterAcceleratorOrchestratorServiceServer(s, NewServer(ctrl))
+	pb.RegisterAcceleratorOrchestratorServiceServer(s, NewServer(ctrl, groupStore, jobStore))
 
 	errChan := make(chan error, 1)
 	go func() {

@@ -166,4 +166,7 @@ message SnapshotAgentJobState {
 
   // job_state is the current state of the job's context on this agent.
   State job_state = 2;
+
+  // job_id is the unique identifier of the job.
+  string job_id = 3;
 }

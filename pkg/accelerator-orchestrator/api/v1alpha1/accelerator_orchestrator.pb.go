@@ -679,7 +679,9 @@ type SnapshotAgentJobState struct {
 	// agent is the identifier of the Snapshot Agent (typically the node name).
 	Agent string `protobuf:"bytes,1,opt,name=agent,proto3" json:"agent,omitempty"`
 	// job_state is the current state of the job's context on this agent.
-	JobState      SnapshotAgentJobState_State `protobuf:"varint,2,opt,name=job_state,json=jobState,proto3,enum=accelerator_orchestrator.v1alpha1.SnapshotAgentJobState_State" json:"job_state,omitempty"`
+	JobState SnapshotAgentJobState_State `protobuf:"varint,2,opt,name=job_state,json=jobState,proto3,enum=accelerator_orchestrator.v1alpha1.SnapshotAgentJobState_State" json:"job_state,omitempty"`
+	// job_id is the unique identifier of the job.
+	JobId         string `protobuf:"bytes,3,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -728,6 +730,13 @@ func (x *SnapshotAgentJobState) GetJobState() SnapshotAgentJobState_State {
 	return SnapshotAgentJobState_STATE_UNSPECIFIED
 }
 
+func (x *SnapshotAgentJobState) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
 var File_accelerator_orchestrator_proto protoreflect.FileDescriptor
 
 const file_accelerator_orchestrator_proto_rawDesc = "" +
@@ -772,10 +781,11 @@ const file_accelerator_orchestrator_proto_rawDesc = "" +
 	"STATE_IDLE\x10\x02\x12\x16\n" +
 	"\x12STATE_IDLE_YIELDED\x10\x03\x12\x10\n" +
 	"\fSTATE_LOCKED\x10\x04\x12\x13\n" +
-	"\x0fSTATE_SWITCHING\x10\x05\"\x8a\x02\n" +
+	"\x0fSTATE_SWITCHING\x10\x05\"\xa1\x02\n" +
 	"\x15SnapshotAgentJobState\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12[\n" +
-	"\tjob_state\x18\x02 \x01(\x0e2>.accelerator_orchestrator.v1alpha1.SnapshotAgentJobState.StateR\bjobState\"~\n" +
+	"\tjob_state\x18\x02 \x01(\x0e2>.accelerator_orchestrator.v1alpha1.SnapshotAgentJobState.StateR\bjobState\x12\x15\n" +
+	"\x06job_id\x18\x03 \x01(\tR\x05jobId\"~\n" +
 	"\x05State\x12\x15\n" +
 	"\x11STATE_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
