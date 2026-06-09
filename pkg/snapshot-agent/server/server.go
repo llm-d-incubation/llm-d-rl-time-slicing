@@ -202,9 +202,7 @@ func StartServer(port int, backendMap map[backends.BackendType]backends.Backend,
 	return nil
 }
 
-func getPIDsFromPods(ctx context.Context, pods []v1.Pod) ([]int, []string, error) {
-	var allPIDs []int
-	var allPIDStrings []string
+func getPIDsFromPods(ctx context.Context, pods []v1.Pod) (allPIDs []int, allPIDStrings []string, err error) {
 	for i := range pods {
 		pod := &pods[i]
 		pids, err := podutils.GetPodPIDs(ctx, pod.Name, pod.Namespace)
