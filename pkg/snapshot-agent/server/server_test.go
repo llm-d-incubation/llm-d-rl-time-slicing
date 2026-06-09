@@ -108,9 +108,7 @@ func TestServer_GetOperation(t *testing.T) {
 func TestServer_Status(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
-	conn, err := grpc.NewClient("passthrough://bufnet",
-		grpc.WithContextDialer(bufDialer),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.DialContext(ctx, "bufnet", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
@@ -118,8 +116,8 @@ func TestServer_Status(t *testing.T) {
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
 	_, err = client.Status(ctx, &pb.StatusRequest{})
-	if status.Code(err) != codes.Unimplemented {
-		t.Errorf("Expected Unimplemented error, got: %v", err)
+	if err != nil {
+		t.Errorf("Expected success, got error: %v", err)
 	}
 }
 
