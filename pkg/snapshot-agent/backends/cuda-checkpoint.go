@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NVIDIA/go-nvml/pkg/nvml"
 	"k8s.io/klog/v2"
 )
 
@@ -97,5 +98,32 @@ func (c *CudaCheckpoint) restorePIDs(ctx context.Context, pids []string) error {
 	if err := c.runSudoCommand(ctx, binaryPath, append([]string{"--toggle"}, pidArgs...)...); err != nil {
 		return fmt.Errorf("cuda-checkpoint toggle failed: %w", err)
 	}
+	return nil
+}
+
+// Discover checks if the cuda-checkpoint backend is healthy.
+func (c *CudaCheckpoint) Discover(ctx context.Context) error {
+	// 1. Check if cuda-checkpoint executable is available
+	binaryPath := c.getCudaCheckpointPath()
+	if _, err := exec.LookPath(binaryPath); err != nil {
+		return fmt.Errorf("cuda-checkpoint executable not found: %w", err)
+	}
+
+	// 2. Initialize NVML
+	if ret := nvml.Init(); ret != nvml.SUCCESS {
+		return fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
+	}
+	defer nvml.Shutdown()
+
+	// 3. Check if there are any GPUs attached to the system
+	count, ret := nvml.DeviceGetCount()
+	if ret != nvml.SUCCESS {
+		return fmt.Errorf("failed to get device count: %v", nvml.ErrorString(ret))
+	}
+
+	if count == 0 {
+		return fmt.Errorf("no GPUs found on the system")
+	}
+
 	return nil
 }

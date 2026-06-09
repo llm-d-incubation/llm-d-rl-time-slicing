@@ -710,6 +710,7 @@ func (x *StatusResponse) GetAcceleratorStatuses() []*AcceleratorStatus {
 
 type HealthRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Backend       Backend                `protobuf:"varint,1,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -742,6 +743,13 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
 	return file_snapshot_agent_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *HealthRequest) GetBackend() Backend {
+	if x != nil {
+		return x.Backend
+	}
+	return Backend_BACKEND_UNSPECIFIED
 }
 
 type HealthResponse struct {
@@ -827,8 +835,9 @@ const file_snapshot_agent_proto_rawDesc = "" +
 	"\x12memory_total_bytes\x18\x03 \x01(\x03R\x10memoryTotalBytes\"\xb6\x01\n" +
 	"\x0eStatusResponse\x12E\n" +
 	"\fjob_statuses\x18\x01 \x03(\v2\".snapshot_agent.v1alpha1.JobStatusR\vjobStatuses\x12]\n" +
-	"\x14accelerator_statuses\x18\x02 \x03(\v2*.snapshot_agent.v1alpha1.AcceleratorStatusR\x13acceleratorStatuses\"\x0f\n" +
-	"\rHealthRequest\"*\n" +
+	"\x14accelerator_statuses\x18\x02 \x03(\v2*.snapshot_agent.v1alpha1.AcceleratorStatusR\x13acceleratorStatuses\"K\n" +
+	"\rHealthRequest\x12:\n" +
+	"\abackend\x18\x01 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendR\abackend\"*\n" +
 	"\x0eHealthResponse\x12\x18\n" +
 	"\ahealthy\x18\x01 \x01(\bR\ahealthy*4\n" +
 	"\aBackend\x12\x17\n" +
@@ -891,21 +900,22 @@ var file_snapshot_agent_proto_depIdxs = []int32{
 	2,  // 3: snapshot_agent.v1alpha1.JobStatus.state:type_name -> snapshot_agent.v1alpha1.JobState
 	10, // 4: snapshot_agent.v1alpha1.StatusResponse.job_statuses:type_name -> snapshot_agent.v1alpha1.JobStatus
 	11, // 5: snapshot_agent.v1alpha1.StatusResponse.accelerator_statuses:type_name -> snapshot_agent.v1alpha1.AcceleratorStatus
-	3,  // 6: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:input_type -> snapshot_agent.v1alpha1.SnapshotRequest
-	5,  // 7: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:input_type -> snapshot_agent.v1alpha1.RestoreRequest
-	7,  // 8: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:input_type -> snapshot_agent.v1alpha1.GetOperationRequest
-	9,  // 9: snapshot_agent.v1alpha1.SnapshotAgentService.Status:input_type -> snapshot_agent.v1alpha1.StatusRequest
-	13, // 10: snapshot_agent.v1alpha1.SnapshotAgentService.Health:input_type -> snapshot_agent.v1alpha1.HealthRequest
-	4,  // 11: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:output_type -> snapshot_agent.v1alpha1.SnapshotResponse
-	6,  // 12: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:output_type -> snapshot_agent.v1alpha1.RestoreResponse
-	8,  // 13: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:output_type -> snapshot_agent.v1alpha1.GetOperationResponse
-	12, // 14: snapshot_agent.v1alpha1.SnapshotAgentService.Status:output_type -> snapshot_agent.v1alpha1.StatusResponse
-	14, // 15: snapshot_agent.v1alpha1.SnapshotAgentService.Health:output_type -> snapshot_agent.v1alpha1.HealthResponse
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	0,  // 6: snapshot_agent.v1alpha1.HealthRequest.backend:type_name -> snapshot_agent.v1alpha1.Backend
+	3,  // 7: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:input_type -> snapshot_agent.v1alpha1.SnapshotRequest
+	5,  // 8: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:input_type -> snapshot_agent.v1alpha1.RestoreRequest
+	7,  // 9: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:input_type -> snapshot_agent.v1alpha1.GetOperationRequest
+	9,  // 10: snapshot_agent.v1alpha1.SnapshotAgentService.Status:input_type -> snapshot_agent.v1alpha1.StatusRequest
+	13, // 11: snapshot_agent.v1alpha1.SnapshotAgentService.Health:input_type -> snapshot_agent.v1alpha1.HealthRequest
+	4,  // 12: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:output_type -> snapshot_agent.v1alpha1.SnapshotResponse
+	6,  // 13: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:output_type -> snapshot_agent.v1alpha1.RestoreResponse
+	8,  // 14: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:output_type -> snapshot_agent.v1alpha1.GetOperationResponse
+	12, // 15: snapshot_agent.v1alpha1.SnapshotAgentService.Status:output_type -> snapshot_agent.v1alpha1.StatusResponse
+	14, // 16: snapshot_agent.v1alpha1.SnapshotAgentService.Health:output_type -> snapshot_agent.v1alpha1.HealthResponse
+	12, // [12:17] is the sub-list for method output_type
+	7,  // [7:12] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_snapshot_agent_proto_init() }

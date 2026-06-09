@@ -178,7 +178,19 @@ func (s *Server) Status(ctx context.Context, req *pb.StatusRequest) (*pb.StatusR
 // Health returns the health status of the agent.
 func (s *Server) Health(ctx context.Context, req *pb.HealthRequest) (*pb.HealthResponse, error) {
 	logger := klog.FromContext(ctx)
-	logger.Info("Health called")
+	logger.Info("Health called", "backend", req.GetBackend())
+
+	backendType := s.getBackendType(req.GetBackend())
+
+	backend, ok := s.backendMap[backendType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
+	}
+
+	if err := backend.Discover(ctx); err != nil {
+		return nil, status.Errorf(codes.Internal, "health check failed: %v", err)
+	}
+
 	return &pb.HealthResponse{Healthy: true}, nil
 }
 

@@ -32,3 +32,10 @@ func (b *NoopBackend) Restore(ctx context.Context, pids []string) error {
 	time.Sleep(500 * time.Millisecond)
 	return nil
 }
+
+// Discover simulates a discovery operation.
+func (b *NoopBackend) Discover(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
+	logger.Info("NoopBackend: Discover called")
+	return nil
+}

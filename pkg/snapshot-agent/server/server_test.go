@@ -135,8 +135,28 @@ func TestServer_Health(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
-	_, err = client.Health(ctx, &pb.HealthRequest{})
+	// Test default (noop) backend
+	resp, err := client.Health(ctx, &pb.HealthRequest{})
 	if err != nil {
-		t.Errorf("Expected success, got error: %v", err)
+		t.Fatalf("Expected success for default backend, got error: %v", err)
+	}
+	if !resp.Healthy {
+		t.Errorf("Expected healthy=true for default backend")
+	}
+
+	// Test explicit noop backend (it maps to default in this test setup because Cuda is not registered)
+	// Actually, getBackendType handles it.
+	resp, err = client.Health(ctx, &pb.HealthRequest{Backend: pb.Backend_BACKEND_UNSPECIFIED})
+	if err != nil {
+		t.Fatalf("Expected success for UNSPECIFIED (default) backend, got error: %v", err)
+	}
+	if !resp.Healthy {
+		t.Errorf("Expected healthy=true for UNSPECIFIED backend")
+	}
+
+	// Test missing backend (Cuda is not in backendsMap in initGRPCServer)
+	_, err = client.Health(ctx, &pb.HealthRequest{Backend: pb.Backend_BACKEND_CUDA})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("Expected NotFound error for missing CUDA backend, got: %v", err)
 	}
 }
