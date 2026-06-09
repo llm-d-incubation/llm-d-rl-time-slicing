@@ -38,7 +38,7 @@ func (f *fakeSnapshotAgentStore) CloseClient(nodeName string) error {
 }
 
 func TestObserveGroupState_Cleanup(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	informerFactory := informers.NewSharedInformerFactory(clientset, 0)
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	podInformer := informerFactory.Core().V1().Pods()
@@ -90,7 +90,7 @@ func TestObserveGroupState_Cleanup(t *testing.T) {
 }
 
 func TestObserveGroupState_UpdateNodes(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	informerFactory := informers.NewSharedInformerFactory(clientset, 0)
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	podInformer := informerFactory.Core().V1().Pods()
@@ -152,7 +152,7 @@ func TestObserveGroupState_UpdateNodes(t *testing.T) {
 }
 
 func TestObserveGroupState_UpdateJobsAndContext(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	informerFactory := informers.NewSharedInformerFactory(clientset, 0)
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	podInformer := informerFactory.Core().V1().Pods()

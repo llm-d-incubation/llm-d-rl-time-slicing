@@ -34,10 +34,9 @@ import (
 )
 
 const (
-	NodeLabelPrefix  = "group.timeslice.io/"
-	PodLabelKey      = "timeslice.io/group"
-	JobLabelKey      = "timeslice.io/job-id"
-	JobAnnotationKey = "timeslice.io/job-id"
+	NodeLabelPrefix = "group.timeslice.io/"
+	PodLabelKey     = "timeslice.io/group"
+	JobLabelKey     = "timeslice.io/job-id"
 )
 
 // PodInfo contains simplified information about a pod.
@@ -111,10 +110,7 @@ func (k *KubernetesOrchestrator) getPodsForGroup(groupID string) ([]PodInfo, err
 	}
 	var podInfos []PodInfo
 	for _, pod := range pods {
-		jobID := pod.Annotations[JobAnnotationKey]
-		if jobID == "" {
-			jobID = pod.Labels[JobLabelKey]
-		}
+		jobID := pod.Labels[JobLabelKey]
 		if jobID == "" {
 			continue
 		}
