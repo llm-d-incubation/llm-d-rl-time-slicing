@@ -10,28 +10,34 @@ This directory contains the Helm chart for deploying the Accelerator Orchestrato
 
 ## Deployment with Helm
 
+> [!IMPORTANT]
+> The Accelerator Orchestrator is hardcoded to manage its locks (stored as a ConfigMap) in the `timeslice-system` namespace. Consequently, the Helm chart creates namespace-scoped RBAC resources (`Role` and `RoleBinding`) specifically in the `timeslice-system` namespace.
+>
+> It is highly recommended to deploy the orchestrator itself into the `timeslice-system` namespace.
+
 To deploy the orchestrator using the local Helm chart:
 
 1.  **Install the chart**:
-    From the `deploy` directory:
+    From the `deploy` directory, install the chart into the `timeslice-system` namespace (creating it if it doesn't exist):
     ```bash
-    helm install acceleratororchestrator ./acceleratororchestrator
+    helm install acceleratororchestrator ./acceleratororchestrator \
+      --namespace timeslice-system \
+      --create-namespace
     ```
-    This will deploy the orchestrator with the default configuration, which includes:
-    *   Creating a `ServiceAccount` for the orchestrator.
-    *   Creating a `ClusterRole` and `ClusterRoleBinding` granting the service account permissions to:
-        *   Read (`get`, `list`, `watch`) `pods` and `nodes`.
-        *   Read and Write (`create`, `update`, `patch`, `delete`) `configmaps`.
+    This will deploy the orchestrator and set up the required RBAC permissions:
+    *   Creating a `ServiceAccount` for the orchestrator in the release namespace.
+    *   Creating a `ClusterRole` and `ClusterRoleBinding` granting the service account cluster-wide read-only permissions (`get`, `list`, `watch`) for `pods` and `nodes`.
+    *   Creating a `Role` and `RoleBinding` **specifically in the `timeslice-system` namespace** granting the service account read-write permissions (`get`, `list`, `watch`, `create`, `update`, `patch`, `delete`) for `configmaps` in that namespace.
     *   Configuring the orchestrator pod to use this `ServiceAccount`.
 
 2.  **Verify the deployment**:
     ```bash
-    kubectl get pods -l app.kubernetes.io/name=acceleratororchestrator
+    kubectl get pods -n timeslice-system -l app.kubernetes.io/name=acceleratororchestrator
     ```
 
 3.  **Uninstall the chart**:
     ```bash
-    helm uninstall acceleratororchestrator
+    helm uninstall acceleratororchestrator --namespace timeslice-system
     ```
 
 ## Development Workflow: Custom Images
@@ -63,6 +69,8 @@ This avoids modifying files in your git tree:
 
 ```bash
 helm install acceleratororchestrator ./acceleratororchestrator \
+  --namespace timeslice-system \
+  --create-namespace \
   --set image.repository=your-custom-registry.com/your-project/acceleratororchestrator \
   --set image.tag=dev
 ```
@@ -80,5 +88,7 @@ image:
 
 And then run:
 ```bash
-helm install acceleratororchestrator ./acceleratororchestrator
+helm install acceleratororchestrator ./acceleratororchestrator \
+  --namespace timeslice-system \
+  --create-namespace
 ```
