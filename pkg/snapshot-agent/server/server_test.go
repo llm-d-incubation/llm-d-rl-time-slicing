@@ -108,7 +108,7 @@ func TestServer_GetOperation(t *testing.T) {
 func TestServer_Status(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
-		conn, err := grpc.NewClient("passthrough://bufnet",
+	conn, err := grpc.NewClient("passthrough://bufnet",
 		grpc.WithContextDialer(bufDialer),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
