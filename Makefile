@@ -5,6 +5,8 @@ REGISTRY ?= ghcr.io/llm-d
 IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)
 ORCHESTRATOR_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/acceleratororchestrator
 ORCHESTRATOR_DOCKERFILE ?= docker/acceleratororchestrator/Dockerfile
+SNAPSHOT_AGENT_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/snapshot-agent
+SNAPSHOT_AGENT_DOCKERFILE ?= docker/snapshot-agent/Dockerfile
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 PLATFORMS ?= linux/amd64,linux/arm64
 
@@ -28,7 +30,7 @@ help: ## Show this help message
 .PHONY: build
 build: ## Build the Go binary
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(PROJECT_NAME) ./cmd
-
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/snapshot-agent ./cmd/snapshot-agent
 .PHONY: test
 test: ## Run tests with race detection
 	go test -race -count=1 ./...
@@ -117,6 +119,28 @@ image-push-orchestrator: ## Build and push acceleratororchestrator container ima
 		--tag $(ORCHESTRATOR_IMAGE):latest \
 		-f $(ORCHESTRATOR_DOCKERFILE) \
 		.
+
+.PHONY: snapshot-agent-image-build
+snapshot-agent-image-build: ## Build snapshot-agent container image (local only)
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--tag $(SNAPSHOT_AGENT_IMAGE):$(VERSION) \
+		--tag $(SNAPSHOT_AGENT_IMAGE):latest \
+		-f $(SNAPSHOT_AGENT_DOCKERFILE) \
+		.
+
+.PHONY: snapshot-agent-image-push
+snapshot-agent-image-push: ## Build and push snapshot-agent container image
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--push \
+		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
+		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+		--tag $(SNAPSHOT_AGENT_IMAGE):$(VERSION) \
+		--tag $(SNAPSHOT_AGENT_IMAGE):latest \
+		-f $(SNAPSHOT_AGENT_DOCKERFILE) \
+		.
+
 
 ##@ CI Helpers
 

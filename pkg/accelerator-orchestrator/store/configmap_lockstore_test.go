@@ -50,7 +50,7 @@ func TestConfigMapLockStore_LockAndUnlock(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			s := store.NewConfigMapLockStore(client)
 
 			for i, step := range tc.steps {
@@ -143,7 +143,7 @@ func TestConfigMapLockStore_GetLockScenarios(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			s := store.NewConfigMapLockStore(client)
 
 			if tc.configMap != nil {
@@ -188,7 +188,7 @@ func TestConfigMapLockStore_Lock_RetryOnConflict(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			lockStore := store.NewConfigMapLockStore(client)
 
 			// Pre-create the configmap so Lock doesn't have to create it (keeps reactor simpler)
@@ -251,7 +251,7 @@ func TestConfigMapLockStore_Unlock_RetryOnConflict(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			lockStore := store.NewConfigMapLockStore(client)
 
 			// Pre-create the configmap with lock
@@ -393,7 +393,7 @@ func TestConfigMapLockStore_Lock_GetOrCreateRetry(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			client := fake.NewSimpleClientset()
+			client := fake.NewClientset()
 			tc.setupReactor(client)
 			lockStore := store.NewConfigMapLockStore(client)
 

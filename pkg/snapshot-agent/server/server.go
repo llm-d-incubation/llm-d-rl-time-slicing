@@ -3,68 +3,219 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
+	"strconv"
+	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
+	sm "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/state-machine"
+	podutils "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 // Server implements the SnapshotAgentService gRPC server.
 type Server struct {
 	pb.UnimplementedSnapshotAgentServiceServer
+	state          *sm.StateManager
+	backendMap     map[backends.BackendType]backends.Backend
+	defaultBackend backends.BackendType
 }
 
 // NewServer creates a new Server instance.
-func NewServer() *Server {
-	return &Server{}
+func NewServer(backendMap map[backends.BackendType]backends.Backend, defaultBackend backends.BackendType) *Server {
+	return &Server{
+		state:          sm.NewStateManager(),
+		backendMap:     backendMap,
+		defaultBackend: defaultBackend,
+	}
 }
 
-// Snapshot implements SnapshotAgentService.Snapshot.
+func (s *Server) getBackendType(backend pb.Backend) backends.BackendType {
+	switch backend {
+	case pb.Backend_BACKEND_CUDA:
+		return backends.BackendCuda
+	default:
+		return s.defaultBackend
+	}
+}
+
+// Snapshot triggers an asynchronous snapshot of the accelerator context for a job.
 func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
-	log.Printf("Snapshot called: JobID=%s, Group=%s", req.GetJobId(), req.GetGroup())
-	return nil, status.Errorf(codes.Unimplemented, "method Snapshot not implemented")
+	logger := klog.FromContext(ctx)
+	logger.Info("Snapshot called", "jobID", req.GetJobId(), "group", req.GetGroup(), "backend", req.GetBackend())
+
+	backendType := s.getBackendType(req.GetBackend())
+
+	backend, ok := s.backendMap[backendType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
+	}
+
+	bgCtx := context.WithoutCancel(ctx)
+	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() error {
+		logger.Info("Background: Starting snapshot", "jobID", req.GetJobId(), "backend", backendType)
+		pods, err := podutils.GetLocalPods(bgCtx, req.GetJobId())
+		if err != nil {
+			return fmt.Errorf("failed to get local pods: %w", err)
+		}
+
+		if len(pods) == 0 {
+			return fmt.Errorf("no pods found for job %s", req.GetJobId())
+		}
+
+		allPIDs, allPIDStrings, err := getPIDsFromPods(bgCtx, pods)
+		if err != nil {
+			return fmt.Errorf("failed to get PIDs from pods: %w", err)
+		}
+
+		if len(allPIDStrings) == 0 {
+			return fmt.Errorf("no GPU PIDs found for job %s", req.GetJobId())
+		}
+
+		err = backend.Snapshot(bgCtx, allPIDStrings)
+		if err != nil {
+			return fmt.Errorf("failed to snapshot job %s: %w", req.GetJobId(), err)
+		}
+
+		s.state.UpdateJobPIDs(req.GetJobId(), allPIDs)
+		logger.Info("PIDs for job", "jobID", req.GetJobId(), "pids", allPIDs)
+		return nil
+	})
+	if err != nil {
+		logger.Error(err, "Failed to start snapshot", "jobID", req.GetJobId())
+		return nil, err
+	}
+
+	return &pb.SnapshotResponse{OperationId: opID}, nil
 }
 
-// Restore implements SnapshotAgentService.Restore.
+// Restore triggers an asynchronous restoration of the accelerator context for a job.
 func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.RestoreResponse, error) {
-	log.Printf("Restore called: JobID=%s, Group=%s", req.GetJobId(), req.GetGroup())
-	return nil, status.Errorf(codes.Unimplemented, "method Restore not implemented")
+	logger := klog.FromContext(ctx)
+	logger.Info("Restore called", "jobID", req.GetJobId(), "group", req.GetGroup(), "backend", req.GetBackend())
+
+	backendType := s.getBackendType(req.GetBackend())
+
+	backend, ok := s.backendMap[backendType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
+	}
+
+	bgCtx := context.WithoutCancel(ctx)
+	opID, err := s.state.StartRestore(req.GetJobId(), req.GetGroup(), func() error {
+		logger.Info("Background: Starting restore", "jobID", req.GetJobId(), "backend", backendType)
+
+		pids, err := s.state.GetJobPIDs(req.GetJobId())
+		if err != nil {
+			return fmt.Errorf("failed to get PIDs for job %s: %w", req.GetJobId(), err)
+		}
+
+		var pidStrings []string
+		for _, pid := range pids {
+			pidStrings = append(pidStrings, strconv.Itoa(pid))
+		}
+
+		logger.Info("Restoring PIDs", "pids", pidStrings, "backend", backendType)
+		if err := backend.Restore(bgCtx, pidStrings); err != nil {
+			return fmt.Errorf("failed to restore job %s: %w", req.GetJobId(), err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &pb.RestoreResponse{OperationId: opID}, nil
 }
 
-// GetOperation implements SnapshotAgentService.GetOperation.
+// GetOperation polls the status of a long-running snapshot or restore operation.
 func (s *Server) GetOperation(ctx context.Context, req *pb.GetOperationRequest) (*pb.GetOperationResponse, error) {
-	log.Printf("GetOperation called: OperationID=%s", req.GetOperationId())
-	return nil, status.Errorf(codes.Unimplemented, "method GetOperation not implemented")
+	logger := klog.FromContext(ctx)
+	logger.Info("GetOperation called", "operationID", req.GetOperationId())
+
+	op, ok := s.state.GetOperation(req.GetOperationId())
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "operation %s not found", req.GetOperationId())
+	}
+
+	elapsed := time.Since(op.StartedAt).Milliseconds()
+	if !op.FinishedAt.IsZero() {
+		elapsed = op.FinishedAt.Sub(op.StartedAt).Milliseconds()
+	}
+
+	resp := &pb.GetOperationResponse{
+		Status:    op.Status,
+		ElapsedMs: elapsed,
+	}
+
+	if op.Status == pb.OperationStatus_OPERATION_STATUS_COMPLETE {
+		storageBytes := op.StorageBytes
+		deviceBytes := op.SnapshotDeviceBytes
+		resp.StorageBytes = &storageBytes
+		resp.SnapshotDeviceBytes = &deviceBytes
+	}
+
+	if op.Status == pb.OperationStatus_OPERATION_STATUS_FAILED {
+		errStr := op.Error
+		resp.Error = &errStr
+	}
+
+	return resp, nil
 }
 
-// Status implements SnapshotAgentService.Status.
+// Status returns the current state of jobs and accelerators on the node.
 func (s *Server) Status(ctx context.Context, req *pb.StatusRequest) (*pb.StatusResponse, error) {
-	log.Printf("Status called")
+	logger := klog.FromContext(ctx)
+	logger.Info("Status called")
 	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
 }
 
-// Health implements SnapshotAgentService.Health.
+// Health returns the health status of the agent.
 func (s *Server) Health(ctx context.Context, req *pb.HealthRequest) (*pb.HealthResponse, error) {
-	log.Printf("Health called")
-	return nil, status.Errorf(codes.Unimplemented, "method Health not implemented")
+	logger := klog.FromContext(ctx)
+	logger.Info("Health called")
+	return &pb.HealthResponse{Healthy: true}, nil
 }
 
 // StartServer starts the gRPC server on the specified port.
-func StartServer(port int) error {
-	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", fmt.Sprintf(":%d", port))
+func StartServer(port int, backendMap map[backends.BackendType]backends.Backend, defaultBackend backends.BackendType) error {
+	ctx := context.Background()
+	logger := klog.FromContext(ctx)
+	lc := net.ListenConfig{}
+	lis, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
 	s := grpc.NewServer()
-	pb.RegisterSnapshotAgentServiceServer(s, NewServer())
+	pb.RegisterSnapshotAgentServiceServer(s, NewServer(backendMap, defaultBackend))
 
-	log.Printf("Starting gRPC server on port %d...", port)
+	logger.Info("Starting gRPC server", "port", port)
 	if err := s.Serve(lis); err != nil {
 		return fmt.Errorf("failed to serve: %w", err)
 	}
 	return nil
+}
+
+//nolint:gocritic // The project configuration bans named returns, conflicting with this rule
+func getPIDsFromPods(ctx context.Context, pods []v1.Pod) ([]int, []string, error) {
+	var allPIDs []int
+	var allPIDStrings []string
+	for i := range pods {
+		pod := &pods[i]
+		pids, err := podutils.GetPodPIDs(ctx, pod.Name, pod.Namespace)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get pod PIDs: %w", err)
+		}
+		allPIDs = append(allPIDs, pids...)
+		for _, pid := range pids {
+			allPIDStrings = append(allPIDStrings, strconv.Itoa(pid))
+		}
+	}
+	return allPIDs, allPIDStrings, nil
 }
