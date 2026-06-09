@@ -10,10 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"log/slog"
+
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/infrastructure"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -29,6 +32,11 @@ func main() {
 }
 
 func run() error {
+	// Initialize slog with ContextHandler
+	jsonHandler := slog.NewJSONHandler(os.Stdout, nil)
+	ctxHandler := logging.NewContextHandler(jsonHandler)
+	slog.SetDefault(slog.New(ctxHandler))
+
 	port := flag.Int("port", 50051, "The server port")
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	controllerWorkers := flag.Int("controller-workers", 1, "The number of workers for the controller")
