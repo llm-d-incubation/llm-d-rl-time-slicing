@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-
 	"log/slog"
+	"net"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"

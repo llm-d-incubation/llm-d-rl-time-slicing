@@ -5,10 +5,12 @@ import (
 	"log/slog"
 )
 
-type serverMethodKeyType struct{}
-type jobIDKeyType struct{}
-type groupIDKeyType struct{}
-type workerIDKeyType struct{}
+type (
+	serverMethodKeyType struct{}
+	jobIDKeyType        struct{}
+	groupIDKeyType      struct{}
+	workerIDKeyType     struct{}
+)
 
 // WithServerMethod returns a new context with the server method name.
 func WithServerMethod(ctx context.Context, method string) context.Context {
@@ -41,7 +43,7 @@ func NewContextHandler(h slog.Handler) *ContextHandler {
 	return &ContextHandler{Handler: h}
 }
 
-// Handle extracts metadata from the context and adds it to the record before calling the underlying handler.
+//nolint:gocritic // slog.Handler.Handle signature requires passing Record by value
 func (h *ContextHandler) Handle(ctx context.Context, r slog.Record) error {
 	if method, ok := ctx.Value(serverMethodKeyType{}).(string); ok && method != "" {
 		r.AddAttrs(slog.String("ServerMethod", method))
