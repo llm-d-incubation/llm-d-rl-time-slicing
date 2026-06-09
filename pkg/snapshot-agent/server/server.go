@@ -202,7 +202,10 @@ func StartServer(port int, backendMap map[backends.BackendType]backends.Backend,
 	return nil
 }
 
-func getPIDsFromPods(ctx context.Context, pods []v1.Pod) (allPIDs []int, allPIDStrings []string, err error) {
+//nolint:gocritic // The project configuration bans named returns, conflicting with this rule
+func getPIDsFromPods(ctx context.Context, pods []v1.Pod) ([]int, []string, error) {
+	var allPIDs []int
+	var allPIDStrings []string
 	for i := range pods {
 		pod := &pods[i]
 		pids, err := podutils.GetPodPIDs(ctx, pod.Name, pod.Namespace)
