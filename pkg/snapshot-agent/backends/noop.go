@@ -2,6 +2,7 @@ package backends
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -35,7 +36,6 @@ func (b *NoopBackend) Restore(ctx context.Context, pids []string) error {
 
 // Discover simulates a discovery operation.
 func (b *NoopBackend) Discover(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
-	logger.Info("NoopBackend: Discover called")
+	slog.Info("NoopBackend: Discover called")
 	return nil
 }

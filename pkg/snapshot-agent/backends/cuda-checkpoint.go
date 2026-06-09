@@ -3,6 +3,7 @@ package backends
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"sync"
 	"time"
@@ -103,7 +104,6 @@ func (c *CudaCheckpoint) restorePIDs(ctx context.Context, pids []string) error {
 
 // Discover checks if the cuda-checkpoint backend is healthy.
 func (c *CudaCheckpoint) Discover(ctx context.Context) error {
-	logger := klog.FromContext(ctx)
 	// 1. Check if cuda-checkpoint executable is available
 	binaryPath := c.getCudaCheckpointPath()
 	if _, err := exec.LookPath(binaryPath); err != nil {
@@ -116,7 +116,7 @@ func (c *CudaCheckpoint) Discover(ctx context.Context) error {
 	}
 	defer func() {
 		if ret := nvml.Shutdown(); ret != nvml.SUCCESS {
-			logger.Error(fmt.Errorf("%s", nvml.ErrorString(ret)), "Failed to shutdown NVML")
+			slog.Error("Failed to shutdown NVML", "error", nvml.ErrorString(ret))
 		}
 	}()
 

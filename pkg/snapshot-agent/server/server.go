@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"time"
@@ -177,8 +178,7 @@ func (s *Server) Status(ctx context.Context, req *pb.StatusRequest) (*pb.StatusR
 
 // Health returns the health status of the agent.
 func (s *Server) Health(ctx context.Context, req *pb.HealthRequest) (*pb.HealthResponse, error) {
-	logger := klog.FromContext(ctx)
-	logger.Info("Health called", "backend", req.GetBackend())
+	slog.Info("Health called", "backend", req.GetBackend())
 
 	backendType := s.getBackendType(req.GetBackend())
 
