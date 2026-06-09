@@ -108,7 +108,9 @@ func TestServer_GetOperation(t *testing.T) {
 func TestServer_Status(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
-	conn, err := grpc.DialContext(ctx, "bufnet", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(bufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
