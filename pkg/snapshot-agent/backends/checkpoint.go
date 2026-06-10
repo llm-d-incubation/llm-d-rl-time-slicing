@@ -21,7 +21,7 @@ type Backend interface {
 	// Restore triggers a restoration of the accelerator context for a job.
 	Restore(ctx context.Context, pids []string) error
 
-	// Discover checks if the backend is healthy by initializing the backend
+	// Health checks if the backend is healthy by initializing the backend
 	// and the discovery provider.
-	Discover(ctx context.Context) error
+	Health(ctx context.Context) error
 }

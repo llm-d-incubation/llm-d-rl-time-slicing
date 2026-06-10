@@ -102,9 +102,9 @@ func (c *CudaCheckpoint) restorePIDs(ctx context.Context, pids []string) error {
 	return nil
 }
 
-// Discover checks if the cuda-checkpoint backend is healthy by initializing the backend
+// Health checks if the cuda-checkpoint backend is healthy by initializing the backend
 // and the discovery provider.
-func (c *CudaCheckpoint) Discover(ctx context.Context) error {
+func (c *CudaCheckpoint) Health(ctx context.Context) error {
 	// 1. Check if cuda-checkpoint executable is available
 	binaryPath := c.getCudaCheckpointPath()
 	if _, err := exec.LookPath(binaryPath); err != nil {

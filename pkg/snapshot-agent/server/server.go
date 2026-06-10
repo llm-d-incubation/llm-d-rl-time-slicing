@@ -187,7 +187,7 @@ func (s *Server) Health(ctx context.Context, req *pb.HealthRequest) (*pb.HealthR
 		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
 	}
 
-	if err := backend.Discover(ctx); err != nil {
+	if err := backend.Health(ctx); err != nil {
 		return nil, status.Errorf(codes.Internal, "health check failed: %v", err)
 	}
 

@@ -34,8 +34,8 @@ func (b *NoopBackend) Restore(ctx context.Context, pids []string) error {
 	return nil
 }
 
-// Discover simulates a discovery operation.
-func (b *NoopBackend) Discover(ctx context.Context) error {
-	slog.Info("NoopBackend: Discover called")
+// Health simulates a health check operation.
+func (b *NoopBackend) Health(ctx context.Context) error {
+	slog.Info("NoopBackend: Health called")
 	return nil
 }
