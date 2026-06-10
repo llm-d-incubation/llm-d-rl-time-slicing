@@ -136,7 +136,7 @@ func TestServer_Status(t *testing.T) {
 	for _, js := range resp.JobStatuses {
 		if js.JobId == jobID {
 			found = true
-			if js.State != pb.JobState_JOB_STATE_TRANSITIONING && js.State != pb.JobState_JOB_STATE_FAULTED && js.State != pb.JobState_JOB_STATE_SAVED {
+			if js.State != pb.JobState_JOB_STATE_FAULTED && js.State != pb.JobState_JOB_STATE_SAVED {
 				t.Errorf("Unexpected job state: %v", js.State)
 			}
 			break
