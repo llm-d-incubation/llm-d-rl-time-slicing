@@ -22,6 +22,6 @@ type Backend interface {
 	Restore(ctx context.Context, pids []string) error
 
 	// Health checks if the backend is healthy by initializing the backend
-	// and the discovery provider.
+	// and the discovery provider (if it uses one).
 	Health(ctx context.Context) error
 }
