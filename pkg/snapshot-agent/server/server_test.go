@@ -117,6 +117,15 @@ func TestServer_Status(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
+	resp, err := client.Status(ctx, &pb.StatusRequest{})
+	if err != nil {
+		t.Errorf("Expected success, got error: %v", err)
+	}
+
+	if len(resp.JobStatuses) != 0 {
+		t.Errorf("Expected no jobs, got %d", len(resp.JobStatuses))
+	}
+
 	jobID := "test-job-status"
 	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
 		JobId:   jobID,
@@ -127,7 +136,7 @@ func TestServer_Status(t *testing.T) {
 		t.Fatalf("Snapshot failed: %v", err)
 	}
 
-	resp, err := client.Status(ctx, &pb.StatusRequest{})
+	resp, err = client.Status(ctx, &pb.StatusRequest{})
 	if err != nil {
 		t.Errorf("Expected success, got error: %v", err)
 	}
