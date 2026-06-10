@@ -64,6 +64,24 @@ func (q *WaitingJobQueue) Dequeue() (string, bool) {
 	return job.JobID, true
 }
 
+// Peek returns the next job from the front of the queue without removing it.
+// Returns the jobID and true if successful, or empty string and false if the queue is empty.
+func (q *WaitingJobQueue) Peek() (string, bool) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	front := q.jobs.Front()
+	if front == nil {
+		return "", false
+	}
+
+	job, ok := front.Value.(WaitingJob)
+	if !ok {
+		panic("invalid type in queue")
+	}
+	return job.JobID, true
+}
+
 // Len returns the number of jobs currently in the queue.
 func (q *WaitingJobQueue) Len() int {
 	q.mu.RLock()

@@ -17,7 +17,6 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 		groupID    string
 		nodes      []string
 		lockingJob string
-		activeJob  string
 		state      pb.GroupStatus_State
 	}{
 		{
@@ -25,7 +24,6 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 			groupID:    "",
 			nodes:      nil,
 			lockingJob: "",
-			activeJob:  "",
 			state:      pb.GroupStatus_STATE_UNSPECIFIED,
 		},
 		{
@@ -33,7 +31,6 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 			groupID:    "group-123",
 			nodes:      []string{"node-a", "node-b"},
 			lockingJob: "job-a",
-			activeJob:  "job-b",
 			state:      pb.GroupStatus_STATE_IDLE,
 		},
 	}
@@ -64,17 +61,16 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 			}
 
 			if tc.lockingJob != "" {
-				if err := group.Lock(context.Background(), tc.lockingJob); err != nil {
+				if err := group.Spec().Lock(context.Background(), tc.lockingJob); err != nil {
 					t.Fatalf("failed to lock: %v", err)
 				}
 			}
-			if group.LockingJob() != tc.lockingJob {
-				t.Errorf("LockingJob() = %q, want %q", group.LockingJob(), tc.lockingJob)
+			if group.Spec().LockingJob() != tc.lockingJob {
+				t.Errorf("LockingJob() = %q, want %q", group.Spec().LockingJob(), tc.lockingJob)
 			}
 
-			group.SetActiveJob(tc.activeJob)
-			if group.ActiveJob() != tc.activeJob {
-				t.Errorf("ActiveJob() = %q, want %q", group.ActiveJob(), tc.activeJob)
+			if group.Spec().ActiveJob() != tc.lockingJob {
+				t.Errorf("ActiveJob() = %q, want %q", group.Spec().ActiveJob(), tc.lockingJob)
 			}
 
 			_, initialTimestamp := group.State()
@@ -150,17 +146,17 @@ func TestGroup_LockAndUnlock(t *testing.T) {
 				var err error
 				switch s.op {
 				case "lock":
-					err = group.Lock(ctx, s.jobID)
+					err = group.Spec().Lock(ctx, s.jobID)
 				case "unlock":
-					err = group.Unlock(ctx, s.jobID)
+					err = group.Spec().Unlock(ctx, s.jobID)
 				}
 
 				if !errors.Is(err, s.expectedErr) {
 					t.Fatalf("step %d: %s with %q returned error %v, want %v", i, s.op, s.jobID, err, s.expectedErr)
 				}
 
-				if group.LockingJob() != s.wantLocked {
-					t.Errorf("step %d: after %s, LockingJob() = %q, want %q", i, s.op, group.LockingJob(), s.wantLocked)
+				if group.Spec().LockingJob() != s.wantLocked {
+					t.Errorf("step %d: after %s, LockingJob() = %q, want %q", i, s.op, group.Spec().LockingJob(), s.wantLocked)
 				}
 			}
 		})
@@ -179,13 +175,158 @@ func TestNewGroup_InitializeLock(t *testing.T) {
 	}
 
 	// 2. Create NewGroup and check if it initialized lockingJob
-	group, err := store.NewGroup(ctx, groupID, lockStore)
+	wrappedLockStore := store.NewGroupLockStoreWrapper(lockStore, groupID)
+	group, err := store.NewGroup(ctx, groupID, wrappedLockStore)
 	if err != nil {
 		t.Fatalf("NewGroup failed: %v", err)
 	}
 
-	if group.LockingJob() != jobID {
-		t.Errorf("NewGroup did not initialize lockingJob from lockStore, got %q, want %q", group.LockingJob(), jobID)
+	if group.Spec().LockingJob() != jobID {
+		t.Errorf("NewGroup did not initialize lockingJob from lockStore, got %q, want %q", group.Spec().LockingJob(), jobID)
+	}
+	if group.Spec().ActiveJob() != jobID {
+		t.Errorf("NewGroup did not initialize activeJob from lockStore, got %q, want %q", group.Spec().ActiveJob(), jobID)
+	}
+}
+
+func TestGroupSpec_RequestLock(t *testing.T) {
+	ctx := context.Background()
+	group, err := store.NewGroup(ctx, "group-1", nil)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	spec := group.Spec()
+
+	// 1. Request lock when queue is empty and no one has lock
+	spec.RequestLock("job-1")
+	queue := spec.GetWaitingJobQueue()
+	if queue.Len() != 1 {
+		t.Errorf("Expected queue len to be 1, got %d", queue.Len())
+	}
+	if !queue.Exists("job-1") {
+		t.Errorf("Expected job-1 to be in queue")
+	}
+
+	// 2. Request lock for the same job again (should be no-op/no duplicate)
+	spec.RequestLock("job-1")
+	if queue.Len() != 1 {
+		t.Errorf("Expected queue len to remain 1, got %d", queue.Len())
+	}
+
+	// 3. Request lock for a different job
+	spec.RequestLock("job-2")
+	if queue.Len() != 2 {
+		t.Errorf("Expected queue len to be 2, got %d", queue.Len())
+	}
+	if !queue.Exists("job-2") {
+		t.Errorf("Expected job-2 to be in queue")
+	}
+
+	// 4. Grant lock to job-1, and request lock for job-1 again.
+	// Since it now has the lock, it should NOT be enqueued again.
+	err = spec.Lock(ctx, "job-1")
+	if err != nil {
+		t.Fatalf("failed to lock: %v", err)
+	}
+	// Dequeue it from queue to simulate it being processed
+	val, ok := queue.Dequeue()
+	if !ok || val != "job-1" {
+		t.Fatalf("failed to dequeue job-1")
+	}
+
+	// Now job-1 has lock, and is NOT in queue.
+	// RequestLock for job-1 should do nothing (not enqueue it).
+	spec.RequestLock("job-1")
+	if queue.Exists("job-1") {
+		t.Errorf("Expected job-1 NOT to be enqueued since it already holds the lock")
+	}
+}
+
+func TestGroupSpec_Yield(t *testing.T) {
+	ctx := context.Background()
+
+	type step struct {
+		op          string // "lock", "enqueue", "yield"
+		jobID       string
+		expectedErr error
+		wantLocked  string
+		wantQueue   []string
+	}
+
+	tests := []struct {
+		name      string
+		lockStore store.LockStore
+		steps     []step
+	}{
+		{
+			name:      "yield without lockStore",
+			lockStore: nil,
+			steps: []step{
+				// Setup: job-1 locks, job-2 and job-3 enqueue
+				{op: "lock", jobID: "job-1", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{}},
+				{op: "enqueue", jobID: "job-2", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{"job-2"}},
+				{op: "enqueue", jobID: "job-3", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{"job-2", "job-3"}},
+				// Yield job-1 -> job-2 should get lock, job-3 remains in queue
+				{op: "yield", jobID: "job-1", expectedErr: nil, wantLocked: "job-2", wantQueue: []string{"job-3"}},
+				// Yield job-2 -> job-3 should get lock, queue becomes empty
+				{op: "yield", jobID: "job-2", expectedErr: nil, wantLocked: "job-3", wantQueue: []string{}},
+				// Yield job-3 -> queue is empty, group becomes unlocked
+				{op: "yield", jobID: "job-3", expectedErr: nil, wantLocked: "", wantQueue: []string{}},
+			},
+		},
+		{
+			name:      "yield with MemLockStore",
+			lockStore: store.NewMemLockStore(),
+			steps: []step{
+				// Setup
+				{op: "lock", jobID: "job-1", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{}},
+				{op: "enqueue", jobID: "job-2", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{"job-2"}},
+				// Yield by non-lock holder should fail and not change anything
+				{op: "yield", jobID: "job-2", expectedErr: store.ErrNotLockHolder, wantLocked: "job-1", wantQueue: []string{"job-2"}},
+				// Yield by lock holder succeeds
+				{op: "yield", jobID: "job-1", expectedErr: nil, wantLocked: "job-2", wantQueue: []string{}},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			groupStore := store.NewGroupStore(tc.lockStore)
+			group, _, err := groupStore.GetOrCreate(ctx, "group-1")
+			if err != nil {
+				t.Fatalf("failed to get or create group: %v", err)
+			}
+			spec := group.Spec()
+
+			for stepIdx, stepInfo := range tc.steps {
+				var err error
+				switch stepInfo.op {
+				case "lock":
+					err = spec.Lock(ctx, stepInfo.jobID)
+				case "enqueue":
+					spec.RequestLock(stepInfo.jobID)
+				case "yield":
+					err = spec.Yield(ctx, stepInfo.jobID)
+				}
+
+				if !errors.Is(err, stepInfo.expectedErr) {
+					t.Fatalf("step %d: %s with %q returned error %v, want %v", stepIdx, stepInfo.op, stepInfo.jobID, err, stepInfo.expectedErr)
+				}
+
+				if spec.LockingJob() != stepInfo.wantLocked {
+					t.Errorf("step %d: after %s, LockingJob() = %q, want %q", stepIdx, stepInfo.op, spec.LockingJob(), stepInfo.wantLocked)
+				}
+
+				queueList := spec.GetWaitingJobQueue().List()
+				queueIDs := make([]string, 0, len(queueList))
+				for _, qj := range queueList {
+					queueIDs = append(queueIDs, qj.JobID)
+				}
+				if !reflect.DeepEqual(queueIDs, stepInfo.wantQueue) {
+					t.Errorf("step %d: after %s, queue = %v, want %v", stepIdx, stepInfo.op, queueIDs, stepInfo.wantQueue)
+				}
+			}
+		})
 	}
 }
 
@@ -195,16 +336,17 @@ func TestGroup_Snapshot(t *testing.T) {
 	if err := lockStore.Lock(ctx, "group-1", "job-lock"); err != nil {
 		t.Fatalf("failed to lock: %v", err)
 	}
-	group, err := store.NewGroup(ctx, "group-1", lockStore)
+	wrappedLockStore := store.NewGroupLockStoreWrapper(lockStore, "group-1")
+	group, err := store.NewGroup(ctx, "group-1", wrappedLockStore)
 	if err != nil {
 		t.Fatalf("failed to create group: %v", err)
 	}
 
 	group.SetNodes([]string{"node-a", "node-b"})
 	group.SetState(pb.GroupStatus_STATE_IDLE)
-	group.SetActiveJob("job-active")
-	group.GetWaitingJobQueue().Enqueue("job-wait-1")
-	group.GetWaitingJobQueue().Enqueue("job-wait-2")
+	group.Spec().SetActiveJob("job-active")
+	group.Spec().GetWaitingJobQueue().Enqueue("job-wait-1")
+	group.Spec().GetWaitingJobQueue().Enqueue("job-wait-2")
 
 	// Take snapshot
 	snap := group.Snapshot()
