@@ -34,8 +34,8 @@ func (b *NoopBackend) Restore(ctx context.Context, pids []string) error {
 	return nil
 }
 
-// Health simulates a health check operation.
-func (b *NoopBackend) Health(ctx context.Context) error {
-	slog.Info("NoopBackend: Health called")
+// HealthCheck simulates a health check operation.
+func (b *NoopBackend) HealthCheck(ctx context.Context) error {
+	slog.Info("NoopBackend: HealthCheck called")
 	return nil
 }
