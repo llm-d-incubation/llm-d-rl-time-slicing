@@ -144,8 +144,6 @@ func TestServer_Health(t *testing.T) {
 		t.Errorf("Expected healthy=true for default backend")
 	}
 
-	// Test explicit noop backend (it maps to default in this test setup because Cuda is not registered)
-	// Actually, getBackendType handles it.
 	resp, err = client.Health(ctx, &pb.HealthRequest{Backend: pb.Backend_BACKEND_UNSPECIFIED})
 	if err != nil {
 		t.Fatalf("Expected success for UNSPECIFIED (default) backend, got error: %v", err)
