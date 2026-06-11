@@ -191,7 +191,8 @@ func NewHealthServer(backendMap map[backends.BackendType]backends.Backend, defau
 	}
 }
 
-func (h *HealthServer) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
+func (h *HealthServer) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (
+	*grpc_health_v1.HealthCheckResponse, error) {
 	backendType := backends.BackendType(req.Service)
 	if req.Service == "" {
 		backendType = h.defaultBackend
