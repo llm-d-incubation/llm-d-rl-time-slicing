@@ -17,9 +17,6 @@ service SnapshotAgentService {
 
   // Status returns the current state of jobs and accelerators on the node.
   rpc Status(StatusRequest) returns (StatusResponse);
-
-  // Health returns the health status of the agent.
-  rpc Health(HealthRequest) returns (HealthResponse);
 }
 
 enum Backend {
@@ -94,10 +91,4 @@ message AcceleratorStatus {
 message StatusResponse {
   repeated JobStatus job_statuses = 1;
   repeated AcceleratorStatus accelerator_statuses = 2;
-}
-
-message HealthRequest {}
-
-message HealthResponse {
-  bool healthy = 1;
 }

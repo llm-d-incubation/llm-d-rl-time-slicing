@@ -3,10 +3,12 @@ package backends
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"sync"
 	"time"
 
+	"github.com/NVIDIA/go-nvml/pkg/nvml"
 	"k8s.io/klog/v2"
 )
 
@@ -97,5 +99,37 @@ func (c *CudaCheckpoint) restorePIDs(ctx context.Context, pids []string) error {
 	if err := c.runSudoCommand(ctx, binaryPath, append([]string{"--toggle"}, pidArgs...)...); err != nil {
 		return fmt.Errorf("cuda-checkpoint toggle failed: %w", err)
 	}
+	return nil
+}
+
+// HealthCheck checks if the cuda-checkpoint backend is healthy by initializing the backend
+// and the discovery provider.
+func (c *CudaCheckpoint) HealthCheck(ctx context.Context) error {
+	// 1. Check if cuda-checkpoint executable is available
+	binaryPath := c.getCudaCheckpointPath()
+	if _, err := exec.LookPath(binaryPath); err != nil {
+		return fmt.Errorf("cuda-checkpoint executable not found: %w", err)
+	}
+
+	// 2. Initialize NVML
+	if ret := nvml.Init(); ret != nvml.SUCCESS {
+		return fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
+	}
+	defer func() {
+		if ret := nvml.Shutdown(); ret != nvml.SUCCESS {
+			slog.Error("Failed to shutdown NVML", "error", nvml.ErrorString(ret))
+		}
+	}()
+
+	// 3. Check if there are any GPUs attached to the system
+	count, ret := nvml.DeviceGetCount()
+	if ret != nvml.SUCCESS {
+		return fmt.Errorf("failed to get device count: %v", nvml.ErrorString(ret))
+	}
+
+	if count == 0 {
+		return fmt.Errorf("no GPUs found on the system")
+	}
+
 	return nil
 }

@@ -2,6 +2,7 @@ package backends
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -30,5 +31,11 @@ func (b *NoopBackend) Restore(ctx context.Context, pids []string) error {
 	logger.Info("NoopBackend: Restore called", "pids", pids)
 	// Simulate some work
 	time.Sleep(500 * time.Millisecond)
+	return nil
+}
+
+// HealthCheck simulates a health check operation.
+func (b *NoopBackend) HealthCheck(ctx context.Context) error {
+	slog.Info("NoopBackend: HealthCheck called")
 	return nil
 }

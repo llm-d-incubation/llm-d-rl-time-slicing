@@ -23,7 +23,6 @@ const (
 	SnapshotAgentService_Restore_FullMethodName      = "/snapshot_agent.v1alpha1.SnapshotAgentService/Restore"
 	SnapshotAgentService_GetOperation_FullMethodName = "/snapshot_agent.v1alpha1.SnapshotAgentService/GetOperation"
 	SnapshotAgentService_Status_FullMethodName       = "/snapshot_agent.v1alpha1.SnapshotAgentService/Status"
-	SnapshotAgentService_Health_FullMethodName       = "/snapshot_agent.v1alpha1.SnapshotAgentService/Health"
 )
 
 // SnapshotAgentServiceClient is the client API for SnapshotAgentService service.
@@ -40,8 +39,6 @@ type SnapshotAgentServiceClient interface {
 	GetOperation(ctx context.Context, in *GetOperationRequest, opts ...grpc.CallOption) (*GetOperationResponse, error)
 	// Status returns the current state of jobs and accelerators on the node.
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
-	// Health returns the health status of the agent.
-	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 }
 
 type snapshotAgentServiceClient struct {
@@ -92,16 +89,6 @@ func (c *snapshotAgentServiceClient) Status(ctx context.Context, in *StatusReque
 	return out, nil
 }
 
-func (c *snapshotAgentServiceClient) Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(HealthResponse)
-	err := c.cc.Invoke(ctx, SnapshotAgentService_Health_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // SnapshotAgentServiceServer is the server API for SnapshotAgentService service.
 // All implementations must embed UnimplementedSnapshotAgentServiceServer
 // for forward compatibility.
@@ -116,8 +103,6 @@ type SnapshotAgentServiceServer interface {
 	GetOperation(context.Context, *GetOperationRequest) (*GetOperationResponse, error)
 	// Status returns the current state of jobs and accelerators on the node.
 	Status(context.Context, *StatusRequest) (*StatusResponse, error)
-	// Health returns the health status of the agent.
-	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	mustEmbedUnimplementedSnapshotAgentServiceServer()
 }
 
@@ -139,9 +124,6 @@ func (UnimplementedSnapshotAgentServiceServer) GetOperation(context.Context, *Ge
 }
 func (UnimplementedSnapshotAgentServiceServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
-}
-func (UnimplementedSnapshotAgentServiceServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Health not implemented")
 }
 func (UnimplementedSnapshotAgentServiceServer) mustEmbedUnimplementedSnapshotAgentServiceServer() {}
 func (UnimplementedSnapshotAgentServiceServer) testEmbeddedByValue()                              {}
@@ -236,24 +218,6 @@ func _SnapshotAgentService_Status_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _SnapshotAgentService_Health_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(HealthRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SnapshotAgentServiceServer).Health(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SnapshotAgentService_Health_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SnapshotAgentServiceServer).Health(ctx, req.(*HealthRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // SnapshotAgentService_ServiceDesc is the grpc.ServiceDesc for SnapshotAgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -276,10 +240,6 @@ var SnapshotAgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _SnapshotAgentService_Status_Handler,
-		},
-		{
-			MethodName: "Health",
-			Handler:    _SnapshotAgentService_Health_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

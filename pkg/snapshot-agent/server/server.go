@@ -14,6 +14,7 @@ import (
 	podutils "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -179,11 +180,48 @@ func (s *Server) Status(ctx context.Context, req *pb.StatusRequest) (*pb.StatusR
 	}, nil
 }
 
-// Health returns the health status of the agent.
-func (s *Server) Health(ctx context.Context, req *pb.HealthRequest) (*pb.HealthResponse, error) {
-	logger := klog.FromContext(ctx)
-	logger.Info("Health called")
-	return &pb.HealthResponse{Healthy: true}, nil
+// HealthServer implements the standard gRPC health service.
+type HealthServer struct {
+	grpc_health_v1.UnimplementedHealthServer
+	backendMap     map[backends.BackendType]backends.Backend
+	defaultBackend backends.BackendType
+}
+
+func NewHealthServer(backendMap map[backends.BackendType]backends.Backend, defaultBackend backends.BackendType) *HealthServer {
+	return &HealthServer{
+		backendMap:     backendMap,
+		defaultBackend: defaultBackend,
+	}
+}
+
+func (h *HealthServer) Check(
+	ctx context.Context,
+	req *grpc_health_v1.HealthCheckRequest,
+) (*grpc_health_v1.HealthCheckResponse, error) {
+	backendType := backends.BackendType(req.Service)
+	if req.Service == "" {
+		backendType = h.defaultBackend
+	}
+
+	backend, ok := h.backendMap[backendType]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
+	}
+
+	if err := backend.HealthCheck(ctx); err != nil {
+		slog.Error("HealthCheck failed", "backend", backendType, "error", err)
+		return &grpc_health_v1.HealthCheckResponse{
+			Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING,
+		}, nil
+	}
+
+	return &grpc_health_v1.HealthCheckResponse{
+		Status: grpc_health_v1.HealthCheckResponse_SERVING,
+	}, nil
+}
+
+func (h *HealthServer) Watch(req *grpc_health_v1.HealthCheckRequest, stream grpc_health_v1.Health_WatchServer) error {
+	return status.Errorf(codes.Unimplemented, "method Watch not implemented")
 }
 
 // StartServer starts the gRPC server on the specified port.
@@ -198,6 +236,7 @@ func StartServer(port int, backendMap map[backends.BackendType]backends.Backend,
 
 	s := grpc.NewServer()
 	pb.RegisterSnapshotAgentServiceServer(s, NewServer(backendMap, defaultBackend))
+	grpc_health_v1.RegisterHealthServer(s, NewHealthServer(backendMap, defaultBackend))
 
 	logger.Info("Starting gRPC server", "port", port)
 	if err := s.Serve(lis); err != nil {
