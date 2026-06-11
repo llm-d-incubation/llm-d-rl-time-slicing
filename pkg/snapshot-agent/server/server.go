@@ -199,9 +199,7 @@ func (h *HealthServer) Check(ctx context.Context, req *grpc_health_v1.HealthChec
 
 	backend, ok := h.backendMap[backendType]
 	if !ok {
-		return &grpc_health_v1.HealthCheckResponse{
-			Status: grpc_health_v1.HealthCheckResponse_SERVICE_UNKNOWN,
-		}, nil
+		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
 	}
 
 	if err := backend.HealthCheck(ctx); err != nil {

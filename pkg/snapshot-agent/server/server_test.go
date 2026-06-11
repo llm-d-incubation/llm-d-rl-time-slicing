@@ -163,11 +163,8 @@ func TestServer_Health(t *testing.T) {
 	}
 
 	// Test missing backend (Cuda is not in backendsMap in initGRPCServer)
-	resp, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: string(backends.BackendCuda)})
-	if err != nil {
-		t.Fatalf("Expected success (RPC call), got error: %v", err)
-	}
-	if resp.Status != grpc_health_v1.HealthCheckResponse_SERVICE_UNKNOWN {
-		t.Errorf("Expected status=SERVICE_UNKNOWN for missing CUDA backend, got: %v", resp.Status)
+	_, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: string(backends.BackendCuda)})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("Expected NotFound error for missing CUDA backend, got: %v", err)
 	}
 }
