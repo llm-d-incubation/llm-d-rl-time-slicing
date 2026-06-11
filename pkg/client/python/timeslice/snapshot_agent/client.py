@@ -1,4 +1,5 @@
 import logging
+import time
 
 import grpc
 
@@ -30,19 +31,18 @@ class SnapshotAgentClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def snapshot(self, job_id: str, group: str, backend: str = ""):
+    def snapshot(self, job_id: str, group: str):
         """
         Calls the Snapshot endpoint of the SnapshotAgentService.
         Args:
             job_id: ID of the job to snapshot.
             group: Group for the snapshot.
-            backend: Optional backend specification.
         Returns:
             SnapshotResponse or None on error.
         """
         try:
             request = snapshot_agent_pb2.SnapshotRequest(
-                job_id=job_id, group=group, backend=backend
+                job_id=job_id, group=group
             )
             logger.info(f"Calling Snapshot with job_id={job_id}, group={group}...")
             response = self.stub.Snapshot(request)
@@ -78,19 +78,55 @@ class SnapshotAgentClient:
             logger.error(f"Unexpected error in GetOperation: {e}")
         return None
 
-    def restore(self, job_id: str, group: str, backend: str = ""):
+    def _wait_for_operation(self, operation_id: str, poll_interval_sec: float = 1.0):
+        """
+        Wait for an operation to complete or fail.
+        Args:
+            operation_id: ID of the operation to poll.
+            poll_interval_sec: Time to wait between polls.
+        Returns:
+            GetOperationResponse or None on error.
+        """
+        while True:
+            response = self.get_operation(operation_id)
+            if not response:
+                return None
+            if response.status in [
+                snapshot_agent_pb2.OPERATION_STATUS_COMPLETE,
+                snapshot_agent_pb2.OPERATION_STATUS_FAILED,
+            ]:
+                return response
+            time.sleep(poll_interval_sec)
+
+    def snapshot_and_wait(
+        self, job_id: str, group: str, poll_interval_sec: float = 1.0
+    ):
+        """
+        Calls Snapshot and waits for the operation to complete or fail.
+        Args:
+            job_id: ID of the job to snapshot.
+            group: Group for the snapshot.
+            poll_interval_sec: Time to wait between polls.
+        Returns:
+            GetOperationResponse or None on error.
+        """
+        response = self.snapshot(job_id, group)
+        if not response:
+            return None
+        return self._wait_for_operation(response.operation_id, poll_interval_sec)
+
+    def restore(self, job_id: str, group: str):
         """
         Calls the Restore endpoint of the SnapshotAgentService.
         Args:
             job_id: ID of the job to restore.
             group: Group for the restoration.
-            backend: Optional backend specification.
         Returns:
             RestoreResponse or None on error.
         """
         try:
             request = snapshot_agent_pb2.RestoreRequest(
-                job_id=job_id, group=group, backend=backend
+                job_id=job_id, group=group
             )
             logger.info(f"Calling Restore with job_id={job_id}, group={group}...")
             response = self.stub.Restore(request)
@@ -101,6 +137,23 @@ class SnapshotAgentClient:
         except Exception as e:
             logger.error(f"Unexpected error in Restore: {e}")
         return None
+
+    def restore_and_wait(
+        self, job_id: str, group: str, poll_interval_sec: float = 1.0
+    ):
+        """
+        Calls Restore and waits for the operation to complete or fail.
+        Args:
+            job_id: ID of the job to restore.
+            group: Group for the restoration.
+            poll_interval_sec: Time to wait between polls.
+        Returns:
+            GetOperationResponse or None on error.
+        """
+        response = self.restore(job_id, group)
+        if not response:
+            return None
+        return self._wait_for_operation(response.operation_id, poll_interval_sec)
 
     def status(self):
         """
