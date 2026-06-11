@@ -372,6 +372,78 @@ func TestJobPIDs(t *testing.T) {
 	}
 }
 
+func TestConcurrencyControl(t *testing.T) {
+	sm := NewStateManager()
+	jobID := "concurrent-job"
+	group := "group-1"
+
+	// 1. Start a "slow" worker that blocks until we tell it to finish
+	blockWorker := make(chan struct{})
+	workerStarted := make(chan struct{})
+	
+	slowWorker := func() error {
+		close(workerStarted)
+		<-blockWorker
+		return nil
+	}
+
+	opID1, err := sm.StartSnapshot(jobID, group, slowWorker)
+	if err != nil {
+		t.Fatalf("Failed to start first operation: %v", err)
+	}
+
+	// Wait for the first worker to actually start and transition the state
+	select {
+	case <-workerStarted:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Slow worker failed to start")
+	}
+
+	// 2. Attempt to start multiple other operations simultaneously
+	const concurrentAttempts = 10
+	errs := make(chan error, concurrentAttempts*2)
+
+	for i := 0; i < concurrentAttempts; i++ {
+		go func() {
+			_, err := sm.StartSnapshot(jobID, group, func() error { return nil })
+			errs <- err
+		}()
+		go func() {
+			_, err := sm.StartRestore(jobID, group, func() error { return nil })
+			errs <- err
+		}()
+	}
+
+	// 3. Verify that all attempts failed with Aborted (since job is TRANSITIONING)
+	for i := 0; i < concurrentAttempts*2; i++ {
+		err := <-errs
+		if err == nil {
+			t.Errorf("Attempt %d should have failed, but succeeded", i)
+			continue
+		}
+		if status.Code(err) != codes.Aborted {
+			t.Errorf("Attempt %d: expected Aborted, got %v", i, err)
+		}
+	}
+
+	// 4. Release the first worker and verify completion
+	close(blockWorker)
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		op, _ := sm.GetOperation(opID1)
+		if !op.FinishedAt.IsZero() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	op, _ := sm.GetOperation(opID1)
+	if op.Status != pb.OperationStatus_OPERATION_STATUS_COMPLETE {
+		t.Errorf("First operation failed: %v", op.Error)
+	}
+}
+
 func TestGetOperation(t *testing.T) {
 	sm := NewStateManager()
 	opID := "op-1"
