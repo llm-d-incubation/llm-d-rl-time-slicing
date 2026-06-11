@@ -109,11 +109,11 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) 
 	go func() {
 		err := worker()
 
-		job.mu.Lock()
-		defer job.mu.Unlock()
-
 		sm.mu.Lock()
 		defer sm.mu.Unlock()
+
+		job.mu.Lock()
+		defer job.mu.Unlock()
 
 		op.FinishedAt = time.Now()
 		if err != nil {
@@ -174,11 +174,11 @@ func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (
 	go func() {
 		err := worker()
 
-		job.mu.Lock()
-		defer job.mu.Unlock()
-
 		sm.mu.Lock()
 		defer sm.mu.Unlock()
+
+		job.mu.Lock()
+		defer job.mu.Unlock()
 
 		op.FinishedAt = time.Now()
 		if err != nil {
