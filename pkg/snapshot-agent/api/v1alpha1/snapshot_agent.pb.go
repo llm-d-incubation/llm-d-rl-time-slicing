@@ -708,94 +708,6 @@ func (x *StatusResponse) GetAcceleratorStatuses() []*AcceleratorStatus {
 	return nil
 }
 
-type HealthRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Backend       Backend                `protobuf:"varint,1,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *HealthRequest) Reset() {
-	*x = HealthRequest{}
-	mi := &file_snapshot_agent_proto_msgTypes[10]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *HealthRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*HealthRequest) ProtoMessage() {}
-
-func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[10]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
-func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{10}
-}
-
-func (x *HealthRequest) GetBackend() Backend {
-	if x != nil {
-		return x.Backend
-	}
-	return Backend_BACKEND_UNSPECIFIED
-}
-
-type HealthResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Healthy       bool                   `protobuf:"varint,1,opt,name=healthy,proto3" json:"healthy,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *HealthResponse) Reset() {
-	*x = HealthResponse{}
-	mi := &file_snapshot_agent_proto_msgTypes[11]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *HealthResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*HealthResponse) ProtoMessage() {}
-
-func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[11]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
-func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *HealthResponse) GetHealthy() bool {
-	if x != nil {
-		return x.Healthy
-	}
-	return false
-}
-
 var File_snapshot_agent_proto protoreflect.FileDescriptor
 
 const file_snapshot_agent_proto_rawDesc = "" +
@@ -835,11 +747,7 @@ const file_snapshot_agent_proto_rawDesc = "" +
 	"\x12memory_total_bytes\x18\x03 \x01(\x03R\x10memoryTotalBytes\"\xb6\x01\n" +
 	"\x0eStatusResponse\x12E\n" +
 	"\fjob_statuses\x18\x01 \x03(\v2\".snapshot_agent.v1alpha1.JobStatusR\vjobStatuses\x12]\n" +
-	"\x14accelerator_statuses\x18\x02 \x03(\v2*.snapshot_agent.v1alpha1.AcceleratorStatusR\x13acceleratorStatuses\"K\n" +
-	"\rHealthRequest\x12:\n" +
-	"\abackend\x18\x01 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendR\abackend\"*\n" +
-	"\x0eHealthResponse\x12\x18\n" +
-	"\ahealthy\x18\x01 \x01(\bR\ahealthy*4\n" +
+	"\x14accelerator_statuses\x18\x02 \x03(\v2*.snapshot_agent.v1alpha1.AcceleratorStatusR\x13acceleratorStatuses*4\n" +
 	"\aBackend\x12\x17\n" +
 	"\x13BACKEND_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fBACKEND_CUDA\x10\x01*\x8d\x01\n" +
@@ -854,13 +762,12 @@ const file_snapshot_agent_proto_rawDesc = "" +
 	"\x11JOB_STATE_RUNNING\x10\x02\x12\x1b\n" +
 	"\x17JOB_STATE_TRANSITIONING\x10\x03\x12\x13\n" +
 	"\x0fJOB_STATE_SAVED\x10\x04\x12\x15\n" +
-	"\x11JOB_STATE_FAULTED\x10\x052\xf8\x03\n" +
+	"\x11JOB_STATE_FAULTED\x10\x052\x9d\x03\n" +
 	"\x14SnapshotAgentService\x12_\n" +
 	"\bSnapshot\x12(.snapshot_agent.v1alpha1.SnapshotRequest\x1a).snapshot_agent.v1alpha1.SnapshotResponse\x12\\\n" +
 	"\aRestore\x12'.snapshot_agent.v1alpha1.RestoreRequest\x1a(.snapshot_agent.v1alpha1.RestoreResponse\x12k\n" +
 	"\fGetOperation\x12,.snapshot_agent.v1alpha1.GetOperationRequest\x1a-.snapshot_agent.v1alpha1.GetOperationResponse\x12Y\n" +
-	"\x06Status\x12&.snapshot_agent.v1alpha1.StatusRequest\x1a'.snapshot_agent.v1alpha1.StatusResponse\x12Y\n" +
-	"\x06Health\x12&.snapshot_agent.v1alpha1.HealthRequest\x1a'.snapshot_agent.v1alpha1.HealthResponseB\\ZZgithub.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1;v1alpha1b\x06proto3"
+	"\x06Status\x12&.snapshot_agent.v1alpha1.StatusRequest\x1a'.snapshot_agent.v1alpha1.StatusResponseB\\ZZgithub.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1;v1alpha1b\x06proto3"
 
 var (
 	file_snapshot_agent_proto_rawDescOnce sync.Once
@@ -875,7 +782,7 @@ func file_snapshot_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_snapshot_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_snapshot_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_snapshot_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_snapshot_agent_proto_goTypes = []any{
 	(Backend)(0),                 // 0: snapshot_agent.v1alpha1.Backend
 	(OperationStatus)(0),         // 1: snapshot_agent.v1alpha1.OperationStatus
@@ -890,8 +797,6 @@ var file_snapshot_agent_proto_goTypes = []any{
 	(*JobStatus)(nil),            // 10: snapshot_agent.v1alpha1.JobStatus
 	(*AcceleratorStatus)(nil),    // 11: snapshot_agent.v1alpha1.AcceleratorStatus
 	(*StatusResponse)(nil),       // 12: snapshot_agent.v1alpha1.StatusResponse
-	(*HealthRequest)(nil),        // 13: snapshot_agent.v1alpha1.HealthRequest
-	(*HealthResponse)(nil),       // 14: snapshot_agent.v1alpha1.HealthResponse
 }
 var file_snapshot_agent_proto_depIdxs = []int32{
 	0,  // 0: snapshot_agent.v1alpha1.SnapshotRequest.backend:type_name -> snapshot_agent.v1alpha1.Backend
@@ -900,22 +805,19 @@ var file_snapshot_agent_proto_depIdxs = []int32{
 	2,  // 3: snapshot_agent.v1alpha1.JobStatus.state:type_name -> snapshot_agent.v1alpha1.JobState
 	10, // 4: snapshot_agent.v1alpha1.StatusResponse.job_statuses:type_name -> snapshot_agent.v1alpha1.JobStatus
 	11, // 5: snapshot_agent.v1alpha1.StatusResponse.accelerator_statuses:type_name -> snapshot_agent.v1alpha1.AcceleratorStatus
-	0,  // 6: snapshot_agent.v1alpha1.HealthRequest.backend:type_name -> snapshot_agent.v1alpha1.Backend
-	3,  // 7: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:input_type -> snapshot_agent.v1alpha1.SnapshotRequest
-	5,  // 8: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:input_type -> snapshot_agent.v1alpha1.RestoreRequest
-	7,  // 9: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:input_type -> snapshot_agent.v1alpha1.GetOperationRequest
-	9,  // 10: snapshot_agent.v1alpha1.SnapshotAgentService.Status:input_type -> snapshot_agent.v1alpha1.StatusRequest
-	13, // 11: snapshot_agent.v1alpha1.SnapshotAgentService.Health:input_type -> snapshot_agent.v1alpha1.HealthRequest
-	4,  // 12: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:output_type -> snapshot_agent.v1alpha1.SnapshotResponse
-	6,  // 13: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:output_type -> snapshot_agent.v1alpha1.RestoreResponse
-	8,  // 14: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:output_type -> snapshot_agent.v1alpha1.GetOperationResponse
-	12, // 15: snapshot_agent.v1alpha1.SnapshotAgentService.Status:output_type -> snapshot_agent.v1alpha1.StatusResponse
-	14, // 16: snapshot_agent.v1alpha1.SnapshotAgentService.Health:output_type -> snapshot_agent.v1alpha1.HealthResponse
-	12, // [12:17] is the sub-list for method output_type
-	7,  // [7:12] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	3,  // 6: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:input_type -> snapshot_agent.v1alpha1.SnapshotRequest
+	5,  // 7: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:input_type -> snapshot_agent.v1alpha1.RestoreRequest
+	7,  // 8: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:input_type -> snapshot_agent.v1alpha1.GetOperationRequest
+	9,  // 9: snapshot_agent.v1alpha1.SnapshotAgentService.Status:input_type -> snapshot_agent.v1alpha1.StatusRequest
+	4,  // 10: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:output_type -> snapshot_agent.v1alpha1.SnapshotResponse
+	6,  // 11: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:output_type -> snapshot_agent.v1alpha1.RestoreResponse
+	8,  // 12: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:output_type -> snapshot_agent.v1alpha1.GetOperationResponse
+	12, // 13: snapshot_agent.v1alpha1.SnapshotAgentService.Status:output_type -> snapshot_agent.v1alpha1.StatusResponse
+	10, // [10:14] is the sub-list for method output_type
+	6,  // [6:10] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_snapshot_agent_proto_init() }
@@ -930,7 +832,7 @@ func file_snapshot_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snapshot_agent_proto_rawDesc), len(file_snapshot_agent_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   12,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

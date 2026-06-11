@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"k8s.io/klog/v2"
@@ -30,6 +31,7 @@ func initGRPCServer() {
 	}
 
 	pb.RegisterSnapshotAgentServiceServer(s, server.NewServer(backendsMap, backends.BackendNoop))
+	grpc_health_v1.RegisterHealthServer(s, server.NewHealthServer(backendsMap, backends.BackendNoop))
 	go func() {
 		if err := s.Serve(lis); err != nil {
 			klog.Fatalf("Server exited with error: %v", err)
@@ -133,28 +135,39 @@ func TestServer_Health(t *testing.T) {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
 	defer conn.Close()
-	client := pb.NewSnapshotAgentServiceClient(conn)
+	client := grpc_health_v1.NewHealthClient(conn)
 
 	// Test default (noop) backend
-	resp, err := client.Health(ctx, &pb.HealthRequest{})
+	resp, err := client.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
 	if err != nil {
 		t.Fatalf("Expected success for default backend, got error: %v", err)
 	}
-	if !resp.Healthy {
-		t.Errorf("Expected healthy=true for default backend")
+	if resp.Status != grpc_health_v1.HealthCheckResponse_SERVING {
+		t.Errorf("Expected status=SERVING for default backend, got %v", resp.Status)
 	}
 
-	resp, err = client.Health(ctx, &pb.HealthRequest{Backend: pb.Backend_BACKEND_UNSPECIFIED})
+	resp, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: ""})
 	if err != nil {
-		t.Fatalf("Expected success for UNSPECIFIED (default) backend, got error: %v", err)
+		t.Fatalf("Expected success for empty service (default), got error: %v", err)
 	}
-	if !resp.Healthy {
-		t.Errorf("Expected healthy=true for UNSPECIFIED backend")
+	if resp.Status != grpc_health_v1.HealthCheckResponse_SERVING {
+		t.Errorf("Expected status=SERVING for empty service, got %v", resp.Status)
+	}
+
+	resp, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: string(backends.BackendNoop)})
+	if err != nil {
+		t.Fatalf("Expected success for noop backend, got error: %v", err)
+	}
+	if resp.Status != grpc_health_v1.HealthCheckResponse_SERVING {
+		t.Errorf("Expected status=SERVING for noop backend, got %v", resp.Status)
 	}
 
 	// Test missing backend (Cuda is not in backendsMap in initGRPCServer)
-	_, err = client.Health(ctx, &pb.HealthRequest{Backend: pb.Backend_BACKEND_CUDA})
-	if status.Code(err) != codes.NotFound {
-		t.Errorf("Expected NotFound error for missing CUDA backend, got: %v", err)
+	resp, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: string(backends.BackendCuda)})
+	if err != nil {
+		t.Fatalf("Expected success (RPC call), got error: %v", err)
+	}
+	if resp.Status != grpc_health_v1.HealthCheckResponse_SERVICE_UNKNOWN {
+		t.Errorf("Expected status=SERVICE_UNKNOWN for missing CUDA backend, got: %v", resp.Status)
 	}
 }
