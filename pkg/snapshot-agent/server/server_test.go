@@ -21,13 +21,23 @@ const bufSize = 1024 * 1024
 
 var lis *bufconn.Listener
 
+type FailingBackend struct {
+	backends.NoopBackend
+}
+
+func (b *FailingBackend) HealthCheck(ctx context.Context) error {
+	return context.DeadlineExceeded
+}
+
 func initGRPCServer() {
 	lis = bufconn.Listen(bufSize)
 	s := grpc.NewServer()
 
 	noopBackend := backends.NewNoopBackend()
+	failingBackend := &FailingBackend{}
 	backendsMap := map[backends.BackendType]backends.Backend{
 		backends.BackendNoop: noopBackend,
+		"failing":            failingBackend,
 	}
 
 	pb.RegisterSnapshotAgentServiceServer(s, server.NewServer(backendsMap, backends.BackendNoop))
@@ -166,5 +176,14 @@ func TestServer_Health(t *testing.T) {
 	_, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: string(backends.BackendCuda)})
 	if status.Code(err) != codes.NotFound {
 		t.Errorf("Expected NotFound error for missing CUDA backend, got: %v", err)
+	}
+
+	// Test failing backend
+	resp, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: "failing"})
+	if err != nil {
+		t.Fatalf("Expected success for failing backend (Check call itself should succeed), got error: %v", err)
+	}
+	if resp.Status != grpc_health_v1.HealthCheckResponse_NOT_SERVING {
+		t.Errorf("Expected status=NOT_SERVING for failing backend, got %v", resp.Status)
 	}
 }
