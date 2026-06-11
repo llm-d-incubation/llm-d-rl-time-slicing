@@ -31,18 +31,19 @@ class SnapshotAgentClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def snapshot(self, job_id: str, group: str):
+    def snapshot(self, job_id: str, group: str, backend: str = ""):
         """
         Calls the Snapshot endpoint of the SnapshotAgentService.
         Args:
             job_id: ID of the job to snapshot.
             group: Group for the snapshot.
+            backend: Optional backend specification.
         Returns:
             SnapshotResponse or None on error.
         """
         try:
             request = snapshot_agent_pb2.SnapshotRequest(
-                job_id=job_id, group=group
+                job_id=job_id, group=group, backend=backend
             )
             logger.info(f"Calling Snapshot with job_id={job_id}, group={group}...")
             response = self.stub.Snapshot(request)
@@ -99,34 +100,36 @@ class SnapshotAgentClient:
             time.sleep(poll_interval_sec)
 
     def snapshot_and_wait(
-        self, job_id: str, group: str, poll_interval_sec: float = 1.0
+        self, job_id: str, group: str, backend: str = "", poll_interval_sec: float = 1.0
     ):
         """
         Calls Snapshot and waits for the operation to complete or fail.
         Args:
             job_id: ID of the job to snapshot.
             group: Group for the snapshot.
+            backend: Optional backend specification.
             poll_interval_sec: Time to wait between polls.
         Returns:
             GetOperationResponse or None on error.
         """
-        response = self.snapshot(job_id, group)
+        response = self.snapshot(job_id, group, backend)
         if not response:
             return None
         return self._wait_for_operation(response.operation_id, poll_interval_sec)
 
-    def restore(self, job_id: str, group: str):
+    def restore(self, job_id: str, group: str, backend: str = ""):
         """
         Calls the Restore endpoint of the SnapshotAgentService.
         Args:
             job_id: ID of the job to restore.
             group: Group for the restoration.
+            backend: Optional backend specification.
         Returns:
             RestoreResponse or None on error.
         """
         try:
             request = snapshot_agent_pb2.RestoreRequest(
-                job_id=job_id, group=group
+                job_id=job_id, group=group, backend=backend
             )
             logger.info(f"Calling Restore with job_id={job_id}, group={group}...")
             response = self.stub.Restore(request)
@@ -139,18 +142,19 @@ class SnapshotAgentClient:
         return None
 
     def restore_and_wait(
-        self, job_id: str, group: str, poll_interval_sec: float = 1.0
+        self, job_id: str, group: str, backend: str = "", poll_interval_sec: float = 1.0
     ):
         """
         Calls Restore and waits for the operation to complete or fail.
         Args:
             job_id: ID of the job to restore.
             group: Group for the restoration.
+            backend: Optional backend specification.
             poll_interval_sec: Time to wait between polls.
         Returns:
             GetOperationResponse or None on error.
         """
-        response = self.restore(job_id, group)
+        response = self.restore(job_id, group, backend)
         if not response:
             return None
         return self._wait_for_operation(response.operation_id, poll_interval_sec)
