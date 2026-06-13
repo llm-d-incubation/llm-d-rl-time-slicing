@@ -37,7 +37,13 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			group, err := store.NewGroup(context.Background(), tc.groupID, nil)
+			var wrappedLockStore store.GroupLockStore
+			if tc.lockingJob != "" {
+				lockStore := store.NewMemLockStore()
+				lockStore.Lock(context.Background(), tc.groupID, tc.lockingJob)
+				wrappedLockStore = store.NewGroupLockStoreWrapper(lockStore, tc.groupID)
+			}
+			group, err := store.NewGroup(context.Background(), tc.groupID, wrappedLockStore)
 			if err != nil {
 				t.Fatalf("NewGroup failed: %v", err)
 			}
@@ -60,11 +66,6 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 				}
 			}
 
-			if tc.lockingJob != "" {
-				if err := group.Spec().Lock(context.Background(), tc.lockingJob); err != nil {
-					t.Fatalf("failed to lock: %v", err)
-				}
-			}
 			if group.Spec().LockingJob() != tc.lockingJob {
 				t.Errorf("LockingJob() = %q, want %q", group.Spec().LockingJob(), tc.lockingJob)
 			}
@@ -94,73 +95,39 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 	}
 }
 
-func TestGroup_LockAndUnlock(t *testing.T) {
+func TestGroup_Delete(t *testing.T) {
 	ctx := context.Background()
 
-	type step struct {
-		op          string // "lock" or "unlock"
-		jobID       string
-		expectedErr error
-		wantLocked  string
-	}
+	t.Run("delete with MemLockStore", func(t *testing.T) {
+		lockStore := store.NewMemLockStore()
+		groupStore := store.NewGroupStore(lockStore)
+		groupID := "group-1"
+		jobID := "job-a"
 
-	tests := []struct {
-		name      string
-		lockStore store.LockStore
-		steps     []step
-	}{
-		{
-			name:      "lock/unlock sequence without lockStore",
-			lockStore: nil,
-			steps: []step{
-				{op: "lock", jobID: "job-a", expectedErr: nil, wantLocked: "job-a"},
-				// Without lockStore, memory locks are overwritten directly in Lock()
-				// since it doesn't check local LockingJob.
-				{op: "lock", jobID: "job-b", expectedErr: nil, wantLocked: "job-b"},
-				{op: "unlock", jobID: "job-b", expectedErr: nil, wantLocked: ""},
-			},
-		},
-		{
-			name:      "lock/unlock sequence with MemLockStore",
-			lockStore: store.NewMemLockStore(),
-			steps: []step{
-				{op: "lock", jobID: "job-a", expectedErr: nil, wantLocked: "job-a"},
-				{op: "lock", jobID: "job-b", expectedErr: store.ErrAlreadyLocked, wantLocked: "job-a"},
-				{op: "lock", jobID: "job-a", expectedErr: nil, wantLocked: "job-a"}, // idempotent
-				{op: "unlock", jobID: "job-b", expectedErr: store.ErrNotLockHolder, wantLocked: "job-a"},
-				{op: "unlock", jobID: "job-a", expectedErr: nil, wantLocked: ""},
-				{op: "unlock", jobID: "job-a", expectedErr: nil, wantLocked: ""}, // idempotent unlock
-			},
-		},
-	}
+		// 1. Initialize group with job-a holding the lock
+		if err := lockStore.Lock(ctx, groupID, jobID); err != nil {
+			t.Fatalf("failed to lock: %v", err)
+		}
+		group, _, err := groupStore.GetOrCreate(ctx, groupID)
+		if err != nil {
+			t.Fatalf("failed to get or create group: %v", err)
+		}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			groupStore := store.NewGroupStore(tc.lockStore)
-			group, _, err := groupStore.GetOrCreate(ctx, "group-1")
-			if err != nil {
-				t.Fatalf("failed to get or create group: %v", err)
-			}
+		// 2. Delete should succeed and unlock
+		err = group.Spec().Delete(ctx)
+		if err != nil {
+			t.Fatalf("delete failed: %v", err)
+		}
+		if group.Spec().LockingJob() != "" {
+			t.Errorf("expected group to be unlocked, got %q", group.Spec().LockingJob())
+		}
 
-			for i, s := range tc.steps {
-				var err error
-				switch s.op {
-				case "lock":
-					err = group.Spec().Lock(ctx, s.jobID)
-				case "unlock":
-					err = group.Spec().Unlock(ctx, s.jobID)
-				}
-
-				if !errors.Is(err, s.expectedErr) {
-					t.Fatalf("step %d: %s with %q returned error %v, want %v", i, s.op, s.jobID, err, s.expectedErr)
-				}
-
-				if group.Spec().LockingJob() != s.wantLocked {
-					t.Errorf("step %d: after %s, LockingJob() = %q, want %q", i, s.op, group.Spec().LockingJob(), s.wantLocked)
-				}
-			}
-		})
-	}
+		// 3. Delete again should be idempotent (succeed)
+		err = group.Spec().Delete(ctx)
+		if err != nil {
+			t.Fatalf("subsequent delete failed: %v", err)
+		}
+	})
 }
 
 func TestNewGroup_InitializeLock(t *testing.T) {
@@ -191,142 +158,120 @@ func TestNewGroup_InitializeLock(t *testing.T) {
 
 func TestGroupSpec_RequestLock(t *testing.T) {
 	ctx := context.Background()
-	group, err := store.NewGroup(ctx, "group-1", nil)
+	
+	// Start with job-1 holding the lock
+	lockStore := store.NewMemLockStore()
+	lockStore.Lock(ctx, "group-1", "job-1")
+	wrapped := store.NewGroupLockStoreWrapper(lockStore, "group-1")
+	group, err := store.NewGroup(ctx, "group-1", wrapped)
 	if err != nil {
 		t.Fatalf("failed to create group: %v", err)
 	}
 	spec := group.Spec()
-
-	// 1. Request lock when queue is empty and no one has lock
-	spec.RequestLock("job-1")
 	queue := spec.GetWaitingJobQueue()
+
+	// 1. Request lock for job-1 (already holds lock) -> should NOT enqueue
+	spec.RequestLock("job-1")
+	if queue.Len() != 0 {
+		t.Errorf("Expected queue to be empty, got %d", queue.Len())
+	}
+
+	// 2. Request lock for job-2 (does not hold lock) -> should enqueue
+	spec.RequestLock("job-2")
 	if queue.Len() != 1 {
 		t.Errorf("Expected queue len to be 1, got %d", queue.Len())
-	}
-	if !queue.Exists("job-1") {
-		t.Errorf("Expected job-1 to be in queue")
-	}
-
-	// 2. Request lock for the same job again (should be no-op/no duplicate)
-	spec.RequestLock("job-1")
-	if queue.Len() != 1 {
-		t.Errorf("Expected queue len to remain 1, got %d", queue.Len())
-	}
-
-	// 3. Request lock for a different job
-	spec.RequestLock("job-2")
-	if queue.Len() != 2 {
-		t.Errorf("Expected queue len to be 2, got %d", queue.Len())
 	}
 	if !queue.Exists("job-2") {
 		t.Errorf("Expected job-2 to be in queue")
 	}
 
-	// 4. Grant lock to job-1, and request lock for job-1 again.
-	// Since it now has the lock, it should NOT be enqueued again.
-	err = spec.Lock(ctx, "job-1")
-	if err != nil {
-		t.Fatalf("failed to lock: %v", err)
-	}
-	// Dequeue it from queue to simulate it being processed
-	val, ok := queue.Dequeue()
-	if !ok || val != "job-1" {
-		t.Fatalf("failed to dequeue job-1")
-	}
-
-	// Now job-1 has lock, and is NOT in queue.
-	// RequestLock for job-1 should do nothing (not enqueue it).
-	spec.RequestLock("job-1")
-	if queue.Exists("job-1") {
-		t.Errorf("Expected job-1 NOT to be enqueued since it already holds the lock")
+	// 3. Request lock for job-2 again -> should be no-op (no duplicate)
+	spec.RequestLock("job-2")
+	if queue.Len() != 1 {
+		t.Errorf("Expected queue len to remain 1, got %d", queue.Len())
 	}
 }
 
 func TestGroupSpec_Yield(t *testing.T) {
 	ctx := context.Background()
 
-	type step struct {
-		op          string // "lock", "enqueue", "yield"
-		jobID       string
-		expectedErr error
-		wantLocked  string
-		wantQueue   []string
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	groupID := "group-1"
+	
+	// Pre-lock job-1
+	if err := lockStore.Lock(ctx, groupID, "job-1"); err != nil {
+		t.Fatalf("failed to lock: %v", err)
+	}
+	
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to get or create group: %v", err)
+	}
+	spec := group.Spec()
+	queue := spec.GetWaitingJobQueue()
+
+	// Now job-1 is locked.
+	// 1. Enqueue job-2
+	spec.RequestLock("job-2")
+	// 2. Enqueue job-3
+	spec.RequestLock("job-3")
+
+	// Verify queue
+	queueList := queue.List()
+	if len(queueList) != 2 {
+		t.Fatalf("expected queue len 2, got %d", len(queueList))
+	}
+	if queueList[0].JobID != "job-2" || queueList[1].JobID != "job-3" {
+		t.Errorf("unexpected queue content: %+v", queueList)
 	}
 
-	tests := []struct {
-		name      string
-		lockStore store.LockStore
-		steps     []step
-	}{
-		{
-			name:      "yield without lockStore",
-			lockStore: nil,
-			steps: []step{
-				// Setup: job-1 locks, job-2 and job-3 enqueue
-				{op: "lock", jobID: "job-1", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{}},
-				{op: "enqueue", jobID: "job-2", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{"job-2"}},
-				{op: "enqueue", jobID: "job-3", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{"job-2", "job-3"}},
-				// Yield job-1 -> job-2 should get lock, job-3 remains in queue
-				{op: "yield", jobID: "job-1", expectedErr: nil, wantLocked: "job-2", wantQueue: []string{"job-3"}},
-				// Yield job-2 -> job-3 should get lock, queue becomes empty
-				{op: "yield", jobID: "job-2", expectedErr: nil, wantLocked: "job-3", wantQueue: []string{}},
-				// Yield job-3 -> queue is empty, group becomes unlocked
-				{op: "yield", jobID: "job-3", expectedErr: nil, wantLocked: "", wantQueue: []string{}},
-			},
-		},
-		{
-			name:      "yield with MemLockStore",
-			lockStore: store.NewMemLockStore(),
-			steps: []step{
-				// Setup
-				{op: "lock", jobID: "job-1", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{}},
-				{op: "enqueue", jobID: "job-2", expectedErr: nil, wantLocked: "job-1", wantQueue: []string{"job-2"}},
-				// Yield by non-lock holder should fail and not change anything
-				{op: "yield", jobID: "job-2", expectedErr: store.ErrNotLockHolder, wantLocked: "job-1", wantQueue: []string{"job-2"}},
-				// Yield by lock holder succeeds
-				{op: "yield", jobID: "job-1", expectedErr: nil, wantLocked: "job-2", wantQueue: []string{}},
-			},
-		},
+	// 3. Yield by non-holder (job-2) should fail
+	err = spec.Yield(ctx, "job-2")
+	if !errors.Is(err, store.ErrNotLockHolder) {
+		t.Fatalf("expected ErrNotLockHolder, got %v", err)
+	}
+	if spec.LockingJob() != "job-1" {
+		t.Errorf("expected group to remain locked by job-1, got %q", spec.LockingJob())
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			groupStore := store.NewGroupStore(tc.lockStore)
-			group, _, err := groupStore.GetOrCreate(ctx, "group-1")
-			if err != nil {
-				t.Fatalf("failed to get or create group: %v", err)
-			}
-			spec := group.Spec()
+	// 4. Yield by holder (job-1) should succeed and grant to job-2
+	err = spec.Yield(ctx, "job-1")
+	if err != nil {
+		t.Fatalf("yield failed: %v", err)
+	}
+	if spec.LockingJob() != "job-2" {
+		t.Errorf("expected lockingJob to be job-2, got %q", spec.LockingJob())
+	}
+	
+	// Verify queue (should only have job-3)
+	queueList = queue.List()
+	if len(queueList) != 1 {
+		t.Fatalf("expected queue len 1, got %d", len(queueList))
+	}
+	if queueList[0].JobID != "job-3" {
+		t.Errorf("unexpected queue content: %+v", queueList)
+	}
 
-			for stepIdx, stepInfo := range tc.steps {
-				var err error
-				switch stepInfo.op {
-				case "lock":
-					err = spec.Lock(ctx, stepInfo.jobID)
-				case "enqueue":
-					spec.RequestLock(stepInfo.jobID)
-				case "yield":
-					err = spec.Yield(ctx, stepInfo.jobID)
-				}
+	// 5. Yield by holder (job-2) should succeed and grant to job-3
+	err = spec.Yield(ctx, "job-2")
+	if err != nil {
+		t.Fatalf("yield failed: %v", err)
+	}
+	if spec.LockingJob() != "job-3" {
+		t.Errorf("expected lockingJob to be job-3, got %q", spec.LockingJob())
+	}
+	if queue.Len() != 0 {
+		t.Errorf("expected queue to be empty, got %d", queue.Len())
+	}
 
-				if !errors.Is(err, stepInfo.expectedErr) {
-					t.Fatalf("step %d: %s with %q returned error %v, want %v", stepIdx, stepInfo.op, stepInfo.jobID, err, stepInfo.expectedErr)
-				}
-
-				if spec.LockingJob() != stepInfo.wantLocked {
-					t.Errorf("step %d: after %s, LockingJob() = %q, want %q", stepIdx, stepInfo.op, spec.LockingJob(), stepInfo.wantLocked)
-				}
-
-				queueList := spec.GetWaitingJobQueue().List()
-				queueIDs := make([]string, 0, len(queueList))
-				for _, qj := range queueList {
-					queueIDs = append(queueIDs, qj.JobID)
-				}
-				if !reflect.DeepEqual(queueIDs, stepInfo.wantQueue) {
-					t.Errorf("step %d: after %s, queue = %v, want %v", stepIdx, stepInfo.op, queueIDs, stepInfo.wantQueue)
-				}
-			}
-		})
+	// 6. Yield by holder (job-3) should succeed and group becomes unlocked
+	err = spec.Yield(ctx, "job-3")
+	if err != nil {
+		t.Fatalf("yield failed: %v", err)
+	}
+	if spec.LockingJob() != "" {
+		t.Errorf("expected lockingJob to be empty, got %q", spec.LockingJob())
 	}
 }
 

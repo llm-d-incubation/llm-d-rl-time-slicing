@@ -188,28 +188,10 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 
 	groupID := "group-1"
 
-	// Mock ObserveGroupState to sync lock/unlock from lockStore to group spec.
-	// It doesn't need to notify any channel.
+	// Mock ObserveGroupState (no-op, we don't need to sync lock state because
+	// in-memory and lockStore are kept in sync by GroupSpec methods).
 	mockOrch := &mockInfrastructureOrchestrator{
 		observeFunc: func(ctx context.Context, gID string) error {
-			lockingJob, err := lockStore.GetLock(ctx, gID)
-			if err != nil {
-				return err
-			}
-			group, err := groupStore.Get(ctx, gID)
-			if err != nil {
-				return err
-			}
-			if lockingJob != group.Spec().LockingJob() {
-				if lockingJob == "" {
-					currentLock := group.Spec().LockingJob()
-					if currentLock != "" {
-						return group.Spec().Unlock(ctx, currentLock)
-					}
-				} else {
-					return group.Spec().Lock(ctx, lockingJob)
-				}
-			}
 			return nil
 		},
 	}
@@ -223,14 +205,14 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 		}
 	}()
 
-	// 1. Create group and lock it to "job-1" initially
+	// 1. Pre-lock the group to "job-1" in lockStore, then create it.
+	// This simulates starting with a locked group.
+	if err := lockStore.Lock(ctx, groupID, "job-1"); err != nil {
+		t.Fatalf("failed to lock in store: %v", err)
+	}
 	testGroup, _, err := groupStore.GetOrCreate(ctx, groupID)
 	if err != nil {
 		t.Fatalf("failed to create group: %v", err)
-	}
-	err = testGroup.Spec().Lock(ctx, "job-1")
-	if err != nil {
-		t.Fatalf("failed to lock job-1: %v", err)
 	}
 
 	// Reconcile Phase 1 (job-1 locked)
@@ -269,7 +251,6 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 
 	// Reconcile Phase 3 (job-2 should be active/locking)
 	queue.Add(groupID)
-	// Use 3 seconds here to satisfy unparam linter
 	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 3*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for Phase 3 reconcile: %v", err)
@@ -334,31 +315,12 @@ func TestController_Reconcile_OneJobLoopRemainsActive(t *testing.T) {
 
 	groupID := "group-1"
 
-	// Mock ObserveGroupState to sync lock/unlock from lockStore to group spec
+	// Mock ObserveGroupState to notify when reconcile runs.
 	observeCalled := make(chan struct{}, 10)
 	mockOrch := &mockInfrastructureOrchestrator{
 		observeFunc: func(ctx context.Context, gID string) error {
-			lockingJob, err := lockStore.GetLock(ctx, gID)
-			if err != nil {
-				return err
-			}
-			group, err := groupStore.Get(ctx, gID)
-			if err != nil {
-				return err
-			}
-			var syncErr error
-			if lockingJob != group.Spec().LockingJob() {
-				if lockingJob == "" {
-					currentLock := group.Spec().LockingJob()
-					if currentLock != "" {
-						syncErr = group.Spec().Unlock(ctx, currentLock)
-					}
-				} else {
-					syncErr = group.Spec().Lock(ctx, lockingJob)
-				}
-			}
 			observeCalled <- struct{}{}
-			return syncErr
+			return nil
 		},
 	}
 
@@ -371,54 +333,48 @@ func TestController_Reconcile_OneJobLoopRemainsActive(t *testing.T) {
 		}
 	}()
 
-	// 1. Create group
+	// 1. Pre-lock the group to "job-1" in lockStore, then create it.
+	if err := lockStore.Lock(ctx, groupID, "job-1"); err != nil {
+		t.Fatalf("failed to lock job-1: %v", err)
+	}
 	testGroup, _, err := groupStore.GetOrCreate(ctx, groupID)
 	if err != nil {
 		t.Fatalf("failed to create group: %v", err)
 	}
 
-	// Loop 3 times: Lock -> Yield -> Verify activeJob remains warm
-	for iter := 1; iter <= 3; iter++ {
-		// Step A: Lock job-1
-		err = testGroup.Spec().Lock(ctx, "job-1")
-		if err != nil {
-			t.Fatalf("Iteration %d: failed to lock job-1: %v", iter, err)
-		}
+	// Reconcile Lock
+	queue.Add(groupID)
+	select {
+	case <-observeCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for Lock reconcile")
+	}
 
-		// Reconcile Lock
-		queue.Add(groupID)
-		select {
-		case <-observeCalled:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("Iteration %d: Timed out waiting for Lock reconcile", iter)
-		}
+	// Verify Locked State
+	if testGroup.Spec().LockingJob() != "job-1" || testGroup.Spec().ActiveJob() != "job-1" {
+		t.Errorf("Expected lockingJob=job-1, activeJob=job-1; got lockingJob=%q, activeJob=%q",
+			testGroup.Spec().LockingJob(), testGroup.Spec().ActiveJob())
+	}
 
-		// Verify Locked State
-		if testGroup.Spec().LockingJob() != "job-1" || testGroup.Spec().ActiveJob() != "job-1" {
-			t.Errorf("Iteration %d (Locked): expected lockingJob=job-1, activeJob=job-1; got lockingJob=%q, activeJob=%q",
-				iter, testGroup.Spec().LockingJob(), testGroup.Spec().ActiveJob())
-		}
+	// 2. Yield job-1 (no waiters, so it just unlocks)
+	err = testGroup.Spec().Yield(ctx, "job-1")
+	if err != nil {
+		t.Fatalf("Yield failed: %v", err)
+	}
 
-		// Step B: Yield job-1 (no waiters, so it just unlocks)
-		err = testGroup.Spec().Yield(ctx, "job-1")
-		if err != nil {
-			t.Fatalf("Iteration %d: Yield failed: %v", iter, err)
-		}
+	// Reconcile Yield
+	queue.Add(groupID)
+	select {
+	case <-observeCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for Yield reconcile")
+	}
 
-		// Reconcile Yield
-		queue.Add(groupID)
-		select {
-		case <-observeCalled:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("Iteration %d: Timed out waiting for Yield reconcile", iter)
-		}
-
-		// Verify Yielded State: lockingJob is "", but activeJob REMAINS "job-1" (warm!)
-		if testGroup.Spec().LockingJob() != "" {
-			t.Errorf("Iteration %d (Yielded): expected lockingJob to be empty, got %q", iter, testGroup.Spec().LockingJob())
-		}
-		if testGroup.Spec().ActiveJob() != "job-1" {
-			t.Errorf("Iteration %d (Yielded): expected activeJob to remain job-1, got %q", iter, testGroup.Spec().ActiveJob())
-		}
+	// Verify Yielded State: lockingJob is "", but activeJob REMAINS "job-1" (warm!)
+	if testGroup.Spec().LockingJob() != "" {
+		t.Errorf("Expected lockingJob to be empty, got %q", testGroup.Spec().LockingJob())
+	}
+	if testGroup.Spec().ActiveJob() != "job-1" {
+		t.Errorf("Expected activeJob to remain job-1, got %q", testGroup.Spec().ActiveJob())
 	}
 }

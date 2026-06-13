@@ -81,6 +81,9 @@ func (g *Group) SetNodes(nodes []string) {
 
 // Spec returns the GroupSpec for the group.
 func (g *Group) Spec() *GroupSpec {
+	// No lock is safe here because the pointer is not
+	// modifiable after the Group is created. Fields
+	// on the spec itself are controlled by the internal mutex.
 	return g.spec
 }
 
@@ -102,13 +105,7 @@ func (g *Group) SetState(state pb.GroupStatus_State) {
 
 // Delete deletes the group by releasing its lock if it is currently held.
 func (g *Group) Delete(ctx context.Context) error {
-	spec := g.Spec()
-	lj := spec.LockingJob()
-	if lj == "" {
-		return nil
-	}
-
-	return spec.Unlock(ctx, lj)
+	return g.spec.Delete(ctx)
 }
 
 // Methods on GroupSpec
@@ -134,18 +131,14 @@ func (s *GroupSpec) GetWaitingJobQueue() *WaitingJobQueue {
 	return s.queue
 }
 
-// Lock acquires the lock for the given job ID.
-func (s *GroupSpec) Lock(ctx context.Context, jobID string) error {
+// Delete cleans up the spec information.
+func (s *GroupSpec) Delete(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lock(ctx, jobID)
-}
-
-// Unlock releases the lock for the given job ID.
-func (s *GroupSpec) Unlock(ctx context.Context, jobID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.unlock(ctx, jobID)
+	if s.lockingJob == "" {
+		return nil
+	}
+	return s.unlock(ctx, s.lockingJob)
 }
 
 // lock assumes s.mu is held.
