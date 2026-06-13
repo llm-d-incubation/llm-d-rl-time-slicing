@@ -28,12 +28,16 @@ class SnapshotAgentInterface(ABC):
     """Abstract base class for SnapshotAgentService client."""
 
     @abstractmethod
-    def snapshot(self, job_id: str, group: str, backend: Union[str, int] = 0) -> str:
+    def snapshot(
+        self, job_id: str, group: str, backend: Union[str, int] = 0
+    ) -> Dict[str, Any]:
         """Triggers an asynchronous snapshot."""
         pass
 
     @abstractmethod
-    def restore(self, job_id: str, group: str, backend: Union[str, int] = 0) -> str:
+    def restore(
+        self, job_id: str, group: str, backend: Union[str, int] = 0
+    ) -> Dict[str, Any]:
         """Triggers an asynchronous restoration."""
         pass
 
@@ -116,7 +120,9 @@ class SnapshotAgentClient(SnapshotAgentInterface):
                 )
                 return snapshot_agent_pb2.BACKEND_UNSPECIFIED
 
-    def snapshot(self, job_id: str, group: str, backend: Union[str, int] = 0) -> str:
+    def snapshot(
+        self, job_id: str, group: str, backend: Union[str, int] = 0
+    ) -> Dict[str, Any]:
         """
         Triggers an asynchronous snapshot.
         Args:
@@ -124,7 +130,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             group: Group for the snapshot.
             backend: Backend to use (e.g., 'CUDA' or snapshot_agent_pb2.BACKEND_CUDA).
         Returns:
-            The operation ID.
+            A dictionary containing the operation_id.
         Raises:
             SnapshotAgentError on gRPC or unexpected errors.
         """
@@ -137,14 +143,16 @@ class SnapshotAgentClient(SnapshotAgentInterface):
                 f"Calling Snapshot with job_id={job_id}, group={group}, backend={backend_enum}..."
             )
             response = self.stub.Snapshot(request)
-            return response.operation_id
+            return {"operation_id": response.operation_id}
         except grpc.RpcError as e:
             self._handle_rpc_error(e, "Snapshot")
         except Exception as e:
             logger.error(f"Unexpected error in Snapshot: {e}")
             raise SnapshotAgentError(f"Unexpected error: {e}") from e
 
-    def restore(self, job_id: str, group: str, backend: Union[str, int] = 0) -> str:
+    def restore(
+        self, job_id: str, group: str, backend: Union[str, int] = 0
+    ) -> Dict[str, Any]:
         """
         Triggers an asynchronous restoration.
         Args:
@@ -152,7 +160,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             group: Group for the restoration.
             backend: Backend to use.
         Returns:
-            The operation ID.
+            A dictionary containing the operation_id.
         Raises:
             SnapshotAgentError on gRPC or unexpected errors.
         """
@@ -165,7 +173,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
                 f"Calling Restore with job_id={job_id}, group={group}, backend={backend_enum}..."
             )
             response = self.stub.Restore(request)
-            return response.operation_id
+            return {"operation_id": response.operation_id}
         except grpc.RpcError as e:
             self._handle_rpc_error(e, "Restore")
         except Exception as e:
@@ -289,8 +297,8 @@ class SnapshotAgentClient(SnapshotAgentInterface):
         poll_interval_sec: float = 1.0,
     ) -> Dict[str, Any]:
         """Calls snapshot and waits for completion."""
-        operation_id = self.snapshot(job_id, group, backend)
-        return self.wait_for_operation(operation_id, poll_interval_sec)
+        response = self.snapshot(job_id, group, backend)
+        return self.wait_for_operation(response["operation_id"], poll_interval_sec)
 
     def restore_and_wait(
         self,
@@ -300,5 +308,5 @@ class SnapshotAgentClient(SnapshotAgentInterface):
         poll_interval_sec: float = 1.0,
     ) -> Dict[str, Any]:
         """Calls restore and waits for completion."""
-        operation_id = self.restore(job_id, group, backend)
-        return self.wait_for_operation(operation_id, poll_interval_sec)
+        response = self.restore(job_id, group, backend)
+        return self.wait_for_operation(response["operation_id"], poll_interval_sec)
