@@ -13,12 +13,15 @@ pip install .
 ### Snapshot Agent client
 
 ```python
-from timeslice import SnapshotAgentClient
+from timeslice.snapshot_agent import SnapshotAgentClient
 
-with SnapshotAgentClient("localhost:9001") as client:
-    # Trigger a snapshot
-    resp = client.snapshot(job_id="my-job", group="default")
+with SnapshotAgentClient(endpoint="localhost:9001") as client:
+    # Trigger a snapshot and wait for it to complete
+    result = client.snapshot_and_wait(job_id="my-job", group="default", backend="CUDA")
+    print(f"Snapshot finished with status: {result['status']}")
 ```
+
+For more detailed usage, see the [Usage Guide](timeslice/snapshot_agent/USAGE.md).
 
 ## Development
 
