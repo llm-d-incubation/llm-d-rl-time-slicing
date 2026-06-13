@@ -28,16 +28,12 @@ class SnapshotAgentInterface(ABC):
     """Abstract base class for SnapshotAgentService client."""
 
     @abstractmethod
-    def snapshot(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
-    ) -> str:
+    def snapshot(self, job_id: str, group: str, backend: Union[str, int] = 0) -> str:
         """Triggers an asynchronous snapshot."""
         pass
 
     @abstractmethod
-    def restore(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
-    ) -> str:
+    def restore(self, job_id: str, group: str, backend: Union[str, int] = 0) -> str:
         """Triggers an asynchronous restoration."""
         pass
 
@@ -115,12 +111,12 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             try:
                 return snapshot_agent_pb2.Backend.Value(f"BACKEND_{backend.upper()}")
             except ValueError:
-                logger.warning(f"Unknown backend '{backend}', using BACKEND_UNSPECIFIED")
+                logger.warning(
+                    f"Unknown backend '{backend}', using BACKEND_UNSPECIFIED"
+                )
                 return snapshot_agent_pb2.BACKEND_UNSPECIFIED
 
-    def snapshot(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
-    ) -> str:
+    def snapshot(self, job_id: str, group: str, backend: Union[str, int] = 0) -> str:
         """
         Triggers an asynchronous snapshot.
         Args:
@@ -148,9 +144,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             logger.error(f"Unexpected error in Snapshot: {e}")
             raise SnapshotAgentError(f"Unexpected error: {e}") from e
 
-    def restore(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
-    ) -> str:
+    def restore(self, job_id: str, group: str, backend: Union[str, int] = 0) -> str:
         """
         Triggers an asynchronous restoration.
         Args:
@@ -185,9 +179,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             A dictionary containing operation status and metadata.
         """
         try:
-            request = snapshot_agent_pb2.GetOperationRequest(
-                operation_id=operation_id
-            )
+            request = snapshot_agent_pb2.GetOperationRequest(operation_id=operation_id)
             response = self.stub.GetOperation(request)
 
             result = {
