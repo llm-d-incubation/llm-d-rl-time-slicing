@@ -83,18 +83,20 @@ func (s *Server) GetGroupStatus(ctx context.Context, req *pb.GetGroupStatusReque
 		return nil, status.Errorf(codes.Internal, "failed to get group: %v", err)
 	}
 
-	state, stateTime := group.State()
+	gClone := group.Clone()
+
+	state, stateTime := gClone.State()
 	if state == pb.GroupStatus_STATE_UNKNOWN {
 		return nil, status.Errorf(codes.Unavailable, "group %s state is unknown", req.GetGroupId())
 	}
 
 	groupStatus := &pb.GroupStatus{
-		GroupId:          group.ID(),
+		GroupId:          gClone.ID(),
 		GroupState:       state,
 		StateTimestamp:   timestamppb.New(stateTime),
-		LockingJob:       group.LockingJob(),
-		ActiveJob:        group.ActiveJob(),
-		WaiterQueueDepth: int64(group.GetWaitingJobQueue().Len()),
+		LockingJob:       gClone.LockingJob(),
+		ActiveJob:        gClone.ActiveJob(),
+		WaiterQueueDepth: int64(gClone.GetWaitingJobQueue().Len()),
 	}
 
 	jobs, err := s.jobStore.ListByGroup(ctx, group.ID())

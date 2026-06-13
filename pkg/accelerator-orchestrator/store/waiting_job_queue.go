@@ -94,3 +94,25 @@ func (q *WaitingJobQueue) List() []WaitingJob {
 	}
 	return res
 }
+
+// Clone returns a deep copy of the WaitingJobQueue.
+func (q *WaitingJobQueue) Clone() *WaitingJobQueue {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	clone := &WaitingJobQueue{
+		exist: make(map[string]*list.Element),
+	}
+
+	for e := q.jobs.Front(); e != nil; e = e.Next() {
+		job, ok := e.Value.(WaitingJob)
+		if !ok {
+			panic("invalid type in queue")
+		}
+		elem := clone.jobs.PushBack(job)
+		clone.exist[job.JobID] = elem
+	}
+
+	return clone
+}
+

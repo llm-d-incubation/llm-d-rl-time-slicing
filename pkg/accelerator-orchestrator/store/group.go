@@ -140,3 +140,32 @@ func (g *Group) Unlock(ctx context.Context, jobID string) error {
 	g.lockingJob = ""
 	return nil
 }
+
+// Clone returns a deep, atomic copy of the Group.
+// The returned Group is safe to read from without further synchronization with the original Group.
+func (g *Group) Clone() *Group {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	// Deep copy nodes slice
+	nodes := make([]string, len(g.nodes))
+	copy(nodes, g.nodes)
+
+	// Clone the queue
+	var clonedQueue *WaitingJobQueue
+	if g.queue != nil {
+		clonedQueue = g.queue.Clone()
+	}
+
+	return &Group{
+		id:             g.id,
+		nodes:          nodes,
+		lockingJob:     g.lockingJob,
+		activeJob:      g.activeJob,
+		state:          g.state,
+		stateTimestamp: g.stateTimestamp,
+		queue:          clonedQueue,
+		lockStore:      g.lockStore,
+	}
+}
+
