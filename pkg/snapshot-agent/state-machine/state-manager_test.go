@@ -256,17 +256,8 @@ func TestGetJobStatus(t *testing.T) {
 		t.Errorf("Expected 2 jobs, got %d", len(statuses))
 	}
 
-	found := make(map[string]pb.JobState)
-	for _, s := range statuses {
-		found[s.JobId] = s.State
-	}
-
-	if found["job1"] != pb.JobState_JOB_STATE_RUNNING {
-		t.Errorf("job1 wrong state: %v", found["job1"])
-	}
-	if found["job2"] != pb.JobState_JOB_STATE_SAVED {
-		t.Errorf("job2 wrong state: %v", found["job2"])
-	}
+	checkJobState(t, sm, "job1", pb.JobState_JOB_STATE_RUNNING)
+	checkJobState(t, sm, "job2", pb.JobState_JOB_STATE_SAVED)
 }
 
 func TestJobPIDs(t *testing.T) {
