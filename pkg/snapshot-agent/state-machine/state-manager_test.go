@@ -123,57 +123,21 @@ func TestStartSnapshot(t *testing.T) {
 					t.Error("Expected opID, got empty string")
 				}
 
-				// Race-free wait: Poll for operation completion.
-				// Since StartSnapshot's goroutine updates FinishedAt LAST (under locks),
-				// checking FinishedAt is a reliable signal.
-				deadline := time.Now().Add(2 * time.Second)
-				var op *Operation
-				var ok bool
-				for time.Now().Before(deadline) {
-					op, ok = sm.GetOperation(opID)
-					if ok && !op.FinishedAt.IsZero() {
-						break
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
+				op := waitForOperation(t, sm, opID)
 
-				if !ok || op.FinishedAt.IsZero() {
-					t.Fatal("Timeout waiting for operation completion")
-				}
-
-				if op.StartedAt.IsZero() {
-					t.Error("Operation StartedAt not set")
-				}
-
+				expectedStatus := pb.OperationStatus_OPERATION_STATUS_COMPLETE
+				expectedErr := ""
 				if tc.workerErr != nil {
-					if op.Status != pb.OperationStatus_OPERATION_STATUS_FAILED {
-						t.Errorf("Expected FAILED status, got %v", op.Status)
-					}
-					if op.Error != tc.workerErr.Error() {
-						t.Errorf("Expected error %v, got %s", tc.workerErr, op.Error)
-					}
-				} else {
-					if op.Status != pb.OperationStatus_OPERATION_STATUS_COMPLETE {
-						t.Errorf("Expected COMPLETE status, got %v", op.Status)
-					}
-					if op.StorageBytes != 1024 {
-						t.Errorf("Expected StorageBytes 1024, got %d", op.StorageBytes)
-					}
+					expectedStatus = pb.OperationStatus_OPERATION_STATUS_FAILED
+					expectedErr = tc.workerErr.Error()
+				}
+				checkOperationStatus(t, op, expectedStatus, expectedErr)
+
+				if tc.workerErr == nil && op.StorageBytes != 1024 {
+					t.Errorf("Expected StorageBytes 1024, got %d", op.StorageBytes)
 				}
 
-				statuses := sm.GetJobStatus()
-				var found bool
-				for _, s := range statuses {
-					if s.JobId == jobID {
-						found = true
-						if s.State != tc.finalState {
-							t.Errorf("Expected job state %v, got %v", tc.finalState, s.State)
-						}
-					}
-				}
-				if !found {
-					t.Error("Job status not found")
-				}
+				checkJobState(t, sm, jobID, tc.finalState)
 			}
 		})
 	}
@@ -256,45 +220,21 @@ func TestStartRestore(t *testing.T) {
 				return
 			}
 
-			// Race-free wait: Poll for operation completion
-			deadline := time.Now().Add(2 * time.Second)
-			var op *Operation
-			var ok bool
-			for time.Now().Before(deadline) {
-				op, ok = sm.GetOperation(opID)
-				if ok && !op.FinishedAt.IsZero() {
-					break
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+			op := waitForOperation(t, sm, opID)
 
-			if !ok || op.FinishedAt.IsZero() {
-				t.Fatal("Timeout waiting for operation completion")
-			}
-
-			if op.StartedAt.IsZero() {
-				t.Error("Operation StartedAt not set")
-			}
-
+			expectedStatus := pb.OperationStatus_OPERATION_STATUS_COMPLETE
+			expectedErr := ""
 			if tc.workerErr != nil {
-				if op.Status != pb.OperationStatus_OPERATION_STATUS_FAILED {
-					t.Errorf("Expected FAILED status, got %v", op.Status)
-				}
-			} else {
-				if op.Status != pb.OperationStatus_OPERATION_STATUS_COMPLETE {
-					t.Errorf("Expected COMPLETE status, got %v", op.Status)
-				}
-				if op.SnapshotDeviceBytes != 1024 {
-					t.Errorf("Expected SnapshotDeviceBytes 1024, got %d", op.SnapshotDeviceBytes)
-				}
+				expectedStatus = pb.OperationStatus_OPERATION_STATUS_FAILED
+				expectedErr = tc.workerErr.Error()
+			}
+			checkOperationStatus(t, op, expectedStatus, expectedErr)
+
+			if tc.workerErr == nil && op.SnapshotDeviceBytes != 1024 {
+				t.Errorf("Expected SnapshotDeviceBytes 1024, got %d", op.SnapshotDeviceBytes)
 			}
 
-			statuses := sm.GetJobStatus()
-			for _, s := range statuses {
-				if s.JobId == jobID && s.State != tc.finalState {
-					t.Errorf("Expected job state %v, got %v", tc.finalState, s.State)
-				}
-			}
+			checkJobState(t, sm, jobID, tc.finalState)
 		})
 	}
 }
@@ -429,16 +369,7 @@ func TestConcurrencyControl(t *testing.T) {
 	// 4. Release the first worker and verify completion
 	close(blockWorker)
 
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		op, _ := sm.GetOperation(opID1)
-		if !op.FinishedAt.IsZero() {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	op, _ := sm.GetOperation(opID1)
+	op := waitForOperation(t, sm, opID1)
 	if op.Status != pb.OperationStatus_OPERATION_STATUS_COMPLETE {
 		t.Errorf("First operation failed: %v", op.Error)
 	}
@@ -464,5 +395,52 @@ func TestGetOperation(t *testing.T) {
 	}
 	if gotOp.ID != opID {
 		t.Errorf("Expected opID %s, got %s", opID, gotOp.ID)
+	}
+}
+
+func waitForOperation(t *testing.T, sm *StateManager, opID string) *Operation {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var op *Operation
+	var ok bool
+	for time.Now().Before(deadline) {
+		op, ok = sm.GetOperation(opID)
+		if ok && !op.FinishedAt.IsZero() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !ok || op.FinishedAt.IsZero() {
+		t.Fatalf("Timeout waiting for operation %s completion", opID)
+	}
+
+	if op.StartedAt.IsZero() {
+		t.Errorf("Operation %s StartedAt not set", opID)
+	}
+	return op
+}
+
+func checkJobState(t *testing.T, sm *StateManager, jobID string, expectedState pb.JobState) {
+	t.Helper()
+	statuses := sm.GetJobStatus()
+	for _, s := range statuses {
+		if s.JobId == jobID {
+			if s.State != expectedState {
+				t.Errorf("Expected job %s state %v, got %v", jobID, expectedState, s.State)
+			}
+			return
+		}
+	}
+	t.Errorf("Job %s status not found", jobID)
+}
+
+func checkOperationStatus(t *testing.T, op *Operation, expected pb.OperationStatus, expectedErr string) {
+	t.Helper()
+	if op.Status != expected {
+		t.Errorf("Operation %s: expected status %v, got %v", op.ID, expected, op.Status)
+	}
+	if op.Error != expectedErr {
+		t.Errorf("Operation %s: expected error %q, got %q", op.ID, expectedErr, op.Error)
 	}
 }
