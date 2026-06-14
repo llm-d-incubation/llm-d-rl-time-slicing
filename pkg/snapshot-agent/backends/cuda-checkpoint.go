@@ -12,14 +12,37 @@ import (
 	"k8s.io/klog/v2"
 )
 
+type nvmlClient interface {
+	Init() nvml.Return
+	Shutdown() nvml.Return
+	DeviceGetCount() (int, nvml.Return)
+}
+
+type defaultNvmlClient struct{}
+
+func (d *defaultNvmlClient) Init() nvml.Return           { return nvml.Init() }
+func (d *defaultNvmlClient) Shutdown() nvml.Return       { return nvml.Shutdown() }
+func (d *defaultNvmlClient) DeviceGetCount() (int, nvml.Return) {
+	return nvml.DeviceGetCount()
+}
+
 // CudaCheckpoint implements the Backend interface using cuda-checkpoint and optionally CRIU.
 type CudaCheckpoint struct {
-	mu sync.Mutex
+	mu          sync.Mutex
+	execCommand func(ctx context.Context, name string, args ...string) ([]byte, error)
+	nvml        nvmlClient
+	lookPath    func(string) (string, error)
 }
 
 // NewCudaCheckpoint creates a new CudaCheckpoint backend.
 func NewCudaCheckpoint() *CudaCheckpoint {
-	return &CudaCheckpoint{}
+	return &CudaCheckpoint{
+		execCommand: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return exec.CommandContext(ctx, name, args...).CombinedOutput()
+		},
+		nvml:     &defaultNvmlClient{},
+		lookPath: exec.LookPath,
+	}
 }
 
 // Snapshot triggers a snapshot of the accelerator context for a job.
@@ -68,8 +91,7 @@ func (c *CudaCheckpoint) getCudaCheckpointPath() string {
 }
 
 func (c *CudaCheckpoint) runSudoCommand(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := c.execCommand(ctx, name, args...); err != nil {
 		return fmt.Errorf("command failed: %w, output: %s", err, string(out))
 	}
 	return nil
@@ -107,22 +129,22 @@ func (c *CudaCheckpoint) restorePIDs(ctx context.Context, pids []string) error {
 func (c *CudaCheckpoint) HealthCheck(ctx context.Context) error {
 	// 1. Check if cuda-checkpoint executable is available
 	binaryPath := c.getCudaCheckpointPath()
-	if _, err := exec.LookPath(binaryPath); err != nil {
+	if _, err := c.lookPath(binaryPath); err != nil {
 		return fmt.Errorf("cuda-checkpoint executable not found: %w", err)
 	}
 
 	// 2. Initialize NVML
-	if ret := nvml.Init(); ret != nvml.SUCCESS {
+	if ret := c.nvml.Init(); ret != nvml.SUCCESS {
 		return fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
 	}
 	defer func() {
-		if ret := nvml.Shutdown(); ret != nvml.SUCCESS {
+		if ret := c.nvml.Shutdown(); ret != nvml.SUCCESS {
 			slog.Error("Failed to shutdown NVML", "error", nvml.ErrorString(ret))
 		}
 	}()
 
 	// 3. Check if there are any GPUs attached to the system
-	count, ret := nvml.DeviceGetCount()
+	count, ret := c.nvml.DeviceGetCount()
 	if ret != nvml.SUCCESS {
 		return fmt.Errorf("failed to get device count: %v", nvml.ErrorString(ret))
 	}
