@@ -200,7 +200,12 @@ func (sm *StateManager) GetOperation(opID string) (*Operation, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	op, ok := sm.operations[opID]
-	return op, ok
+	if !ok {
+		return nil, false
+	}
+	// Return a copy to avoid race conditions
+	copyOp := *op
+	return &copyOp, true
 }
 
 // GetJobStatus returns the current status of all jobs.
