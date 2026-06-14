@@ -23,6 +23,31 @@ const (
 	JobIDLabel         = "timeslice.io/job-id"
 )
 
+var (
+	// For mocking in tests
+	GetK8sClient = func() (kubernetes.Interface, error) {
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, err
+		}
+		return kubernetes.NewForConfig(config)
+	}
+
+	NvmlInit           = nvml.Init
+	NvmlShutdown       = nvml.Shutdown
+	NvmlDeviceGetCount = nvml.DeviceGetCount
+	NvmlDeviceGetHandleByIndex = func(index int) (DeviceInterface, nvml.Return) {
+		return nvml.DeviceGetHandleByIndex(index)
+	}
+
+	IsPIDInPodCgroupFunc = isPIDInPodCgroup
+)
+
+type DeviceInterface interface {
+	GetComputeRunningProcesses() ([]nvml.ProcessInfo, nvml.Return)
+	GetGraphicsRunningProcesses() ([]nvml.ProcessInfo, nvml.Return)
+}
+
 // GetLocalPods returns a list of pods running on the same node as the current pod.
 // It uses the NODE_NAME environment variable (populated via the Downward API)
 // to filter pods by node and the snapshot-agent label to filter by managed pods.
@@ -32,14 +57,8 @@ func GetLocalPods(ctx context.Context, jobID string) ([]corev1.Pod, error) {
 		return nil, fmt.Errorf("NODE_NAME environment variable not set")
 	}
 
-	// Create in-cluster configuration
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create in-cluster config: %w", err)
-	}
-
 	// Create the clientset
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := GetK8sClient()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create kubernetes clientset: %w", err)
 	}
@@ -67,20 +86,20 @@ func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
 
 	// 2. Initialize NVML
 	logger.Info("Initializing NVML")
-	ret := nvml.Init()
+	ret := NvmlInit()
 	if ret != nvml.SUCCESS {
 		logger.Error(fmt.Errorf("%s", nvml.ErrorString(ret)), "Failed to initialize NVML")
 		return nil, fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
 	}
 	logger.Info("NVML initialized successfully")
 	defer func() {
-		if ret := nvml.Shutdown(); ret != nvml.SUCCESS {
+		if ret := NvmlShutdown(); ret != nvml.SUCCESS {
 			logger.Error(fmt.Errorf("%s", nvml.ErrorString(ret)), "Failed to shutdown NVML")
 		}
 	}()
 
 	// 3. Discover PIDs
-	count, ret := nvml.DeviceGetCount()
+	count, ret := NvmlDeviceGetCount()
 	if ret != nvml.SUCCESS {
 		return nil, fmt.Errorf("failed to get device count: %v", nvml.ErrorString(ret))
 	}
@@ -89,7 +108,7 @@ func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
 	seenPIDs := make(map[int]bool)
 
 	for i := 0; i < count; i++ {
-		device, ret := nvml.DeviceGetHandleByIndex(i)
+		device, ret := NvmlDeviceGetHandleByIndex(i)
 		if ret != nvml.SUCCESS {
 			continue
 		}
@@ -106,7 +125,7 @@ func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
 				continue
 			}
 
-			inCgroup, err := isPIDInPodCgroup(pid, podUID)
+			inCgroup, err := IsPIDInPodCgroupFunc(pid, podUID)
 			if err != nil {
 				continue
 			}
@@ -126,7 +145,7 @@ func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
 					continue
 				}
 
-				inCgroup, err := isPIDInPodCgroup(pid, podUID)
+				inCgroup, err := IsPIDInPodCgroupFunc(pid, podUID)
 				if err != nil {
 					continue
 				}
@@ -143,11 +162,7 @@ func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
 }
 
 func getPodUID(ctx context.Context, podName, namespace string) (string, error) {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		return "", err
-	}
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := GetK8sClient()
 	if err != nil {
 		return "", err
 	}
@@ -159,10 +174,10 @@ func getPodUID(ctx context.Context, podName, namespace string) (string, error) {
 }
 
 func isPIDInPodCgroup(pid int, podUID string) (bool, error) {
-	return isPIDInPodCgroupInternal(fmt.Sprintf("/proc/%d/cgroup", pid), podUID)
+	return IsPIDInPodCgroupInternal(fmt.Sprintf("/proc/%d/cgroup", pid), podUID)
 }
 
-func isPIDInPodCgroupInternal(cgroupPath, podUID string) (bool, error) {
+func IsPIDInPodCgroupInternal(cgroupPath, podUID string) (bool, error) {
 	f, err := os.Open(cgroupPath)
 	if err != nil {
 		return false, err
