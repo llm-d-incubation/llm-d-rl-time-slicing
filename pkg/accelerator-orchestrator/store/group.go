@@ -16,7 +16,7 @@ type GroupLockStore interface {
 	Unlock(ctx context.Context, jobID string) error
 }
 
-// GroupSpec defines the specification of a time-slice group.
+// GroupSpec defines the specification of desired end state of a time-slice group.
 type GroupSpec struct {
 	mu        sync.RWMutex
 	lockStore GroupLockStore
@@ -29,14 +29,48 @@ type GroupSpec struct {
 	activeJob string
 }
 
-// Group represents the in-memory and persistent state of a time-slice group.
-type Group struct {
+// GroupStatus represents the current status of a time-slice group.
+// Updated by the controller reconcile loop.
+type GroupStatus struct {
 	mu             sync.RWMutex
-	id             string
 	nodes          []string
-	spec           *GroupSpec
 	state          pb.GroupStatus_State
 	stateTimestamp time.Time
+}
+
+func (s *GroupStatus) Nodes() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.nodes...)
+}
+
+func (s *GroupStatus) SetNodes(nodes []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nodes = append([]string(nil), nodes...)
+}
+
+func (s *GroupStatus) State() (pb.GroupStatus_State, time.Time) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state, s.stateTimestamp
+}
+
+func (s *GroupStatus) SetState(state pb.GroupStatus_State) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == state {
+		return
+	}
+	s.state = state
+	s.stateTimestamp = time.Now()
+}
+
+// Group represents the in-memory and persistent state of a time-slice group.
+type Group struct {
+	id     string
+	spec   *GroupSpec
+	status *GroupStatus
 }
 
 // NewGroup creates a new Group and initializes its locking state from the lockStore if available.
@@ -47,8 +81,10 @@ func NewGroup(ctx context.Context, id string, lockStore GroupLockStore) (*Group,
 			lockStore: lockStore,
 			queue:     NewWaitingJobQueue(),
 		},
-		state:          pb.GroupStatus_STATE_UNSPECIFIED,
-		stateTimestamp: time.Now(),
+		status: &GroupStatus{
+			state:          pb.GroupStatus_STATE_UNSPECIFIED,
+			stateTimestamp: time.Now(),
+		},
 	}
 
 	if lockStore != nil {
@@ -67,40 +103,14 @@ func (g *Group) ID() string {
 	return g.id
 }
 
-func (g *Group) Nodes() []string {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return append([]string(nil), g.nodes...)
-}
-
-func (g *Group) SetNodes(nodes []string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.nodes = append([]string(nil), nodes...)
-}
-
 // Spec returns the GroupSpec for the group.
 func (g *Group) Spec() *GroupSpec {
-	// No lock is safe here because the pointer is not
-	// modifiable after the Group is created. Fields
-	// on the spec itself are controlled by the internal mutex.
 	return g.spec
 }
 
-func (g *Group) State() (pb.GroupStatus_State, time.Time) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.state, g.stateTimestamp
-}
-
-func (g *Group) SetState(state pb.GroupStatus_State) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.state == state {
-		return
-	}
-	g.state = state
-	g.stateTimestamp = time.Now()
+// Status returns the GroupStatus.
+func (g *Group) Status() *GroupStatus {
+	return g.status
 }
 
 // Delete deletes the group by releasing its lock if it is currently held.

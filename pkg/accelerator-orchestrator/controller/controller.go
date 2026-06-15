@@ -191,7 +191,7 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 
 	// 3. Act
 	// TODO: add optional fan out parallism for node reconciliation
-	for _, node := range g.Nodes() {
+	for _, node := range g.Status().Nodes() {
 		if err := c.reconcileNode(ctx, node, activeJob); err != nil {
 			return fmt.Errorf("failed to reconcile node %s: %w", node, err)
 		}

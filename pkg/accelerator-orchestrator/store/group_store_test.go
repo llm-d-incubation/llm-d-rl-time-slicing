@@ -192,8 +192,11 @@ func TestGroupStateEnum(t *testing.T) {
 	}
 
 	// Verify default value is GroupStatus_STATE_UNSPECIFIED (0)
-	var g store.Group
-	if state, _ := g.State(); state != pb.GroupStatus_STATE_UNSPECIFIED {
+	g, err := store.NewGroup(context.Background(), "group-test", nil)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	if state, _ := g.Status().State(); state != pb.GroupStatus_STATE_UNSPECIFIED {
 		t.Errorf("default Group.State = %v, want GroupStatus_STATE_UNSPECIFIED", state)
 	}
 }
@@ -204,7 +207,7 @@ func newTestGroup(id string, nodes []string) *store.Group {
 		panic(fmt.Errorf("failed to create new test group: %w", err))
 	}
 	if nodes != nil {
-		g.SetNodes(nodes)
+		g.Status().SetNodes(nodes)
 	}
 	return g
 }
@@ -285,8 +288,38 @@ func addGroupToStore(t *testing.T, ctx context.Context, s *store.GroupStore, g *
 	if !created {
 		t.Fatalf("failed to add initial group: group %q already exists", g.ID())
 	}
-	nodes := g.Nodes()
+	nodes := g.Status().Nodes()
 	if len(nodes) > 0 {
-		got.SetNodes(nodes)
+		got.Status().SetNodes(nodes)
 	}
 }
+
+func TestGroup_Status(t *testing.T) {
+	g, err := store.NewGroup(context.Background(), "group-1", nil)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	g.Status().SetNodes([]string{"node-a", "node-b"})
+	g.Status().SetState(pb.GroupStatus_STATE_LOCKED)
+
+	status := g.Status()
+
+	nodes := status.Nodes()
+	if len(nodes) != 2 || nodes[0] != "node-a" || nodes[1] != "node-b" {
+		t.Errorf("Status().Nodes() = %v, want [node-a node-b]", nodes)
+	}
+	state, stateTimestamp := status.State()
+	if state != pb.GroupStatus_STATE_LOCKED {
+		t.Errorf("Status().State() = %v, want STATE_LOCKED", state)
+	}
+	if stateTimestamp.IsZero() {
+		t.Errorf("Status().StateTimestamp is zero, want non-zero")
+	}
+
+	// Verify mutating returned slice doesn't affect group
+	nodes[0] = "mutated"
+	if g.Status().Nodes()[0] != "node-a" {
+		t.Errorf("Mutating returned status nodes affected group: %v", g.Status().Nodes())
+	}
+}
+

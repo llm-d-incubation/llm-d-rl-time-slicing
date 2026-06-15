@@ -64,7 +64,7 @@ func TestObserveGroupState_Cleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create group: %v", err)
 	}
-	g.SetNodes([]string{"node-1"})
+	g.Status().SetNodes([]string{"node-1"})
 
 	job := store.NewJob("group-a", "job-1")
 	if err := jobStore.Put(ctx, job); err != nil {
@@ -146,8 +146,8 @@ func TestObserveGroupState_UpdateNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected group-1 to exist in store: %v", err)
 	}
-	if len(g.Nodes()) != 1 || g.Nodes()[0] != "node-1" {
-		t.Errorf("Expected group-1 to have node-1, got %v", g.Nodes())
+	if len(g.Status().Nodes()) != 1 || g.Status().Nodes()[0] != "node-1" {
+		t.Errorf("Expected group-1 to have node-1, got %v", g.Status().Nodes())
 	}
 }
 

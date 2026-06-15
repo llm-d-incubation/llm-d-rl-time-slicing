@@ -47,21 +47,21 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewGroup failed: %v", err)
 			}
-			group.SetNodes(tc.nodes)
+			group.Status().SetNodes(tc.nodes)
 
 			if group.ID() != tc.groupID {
 				t.Errorf("ID() = %q, want %q", group.ID(), tc.groupID)
 			}
 
-			if !reflect.DeepEqual(group.Nodes(), tc.nodes) {
-				t.Errorf("Nodes() = %+v, want %+v", group.Nodes(), tc.nodes)
+			if !reflect.DeepEqual(group.Status().Nodes(), tc.nodes) {
+				t.Errorf("Nodes() = %+v, want %+v", group.Status().Nodes(), tc.nodes)
 			}
 
 			// Verify deep copy/mutation protection for Nodes
 			if len(tc.nodes) > 0 {
-				mutatedNodes := group.Nodes()
+				mutatedNodes := group.Status().Nodes()
 				mutatedNodes[0] = "mutated"
-				if reflect.DeepEqual(group.Nodes(), mutatedNodes) {
+				if reflect.DeepEqual(group.Status().Nodes(), mutatedNodes) {
 					t.Errorf("mutating returned Nodes slice modified the internal state")
 				}
 			}
@@ -74,10 +74,10 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 				t.Errorf("ActiveJob() = %q, want %q", group.Spec().ActiveJob(), tc.lockingJob)
 			}
 
-			_, initialTimestamp := group.State()
+			_, initialTimestamp := group.Status().State()
 			beforeSet := time.Now()
-			group.SetState(tc.state)
-			gotState, gotTimestamp := group.State()
+			group.Status().SetState(tc.state)
+			gotState, gotTimestamp := group.Status().State()
 
 			if gotState != tc.state {
 				t.Errorf("State() state = %v, want %v", gotState, tc.state)
