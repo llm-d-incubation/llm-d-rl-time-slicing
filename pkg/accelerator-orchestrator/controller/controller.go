@@ -187,6 +187,11 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get group %s from store: %w", groupID, err)
 	}
+
+	if _, err := g.Spec().TryPromote(ctx); err != nil {
+		return fmt.Errorf("failed to promote next job: %w", err)
+	}
+
 	activeJob := g.Spec().ActiveJob()
 
 	// 3. Act

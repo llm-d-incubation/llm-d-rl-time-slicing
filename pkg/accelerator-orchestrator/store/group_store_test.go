@@ -295,14 +295,14 @@ func addGroupToStore(t *testing.T, ctx context.Context, s *store.GroupStore, g *
 }
 
 func TestGroup_Status(t *testing.T) {
-	g, err := store.NewGroup(context.Background(), "group-1", nil)
+	group, err := store.NewGroup(context.Background(), "group-1", nil)
 	if err != nil {
 		t.Fatalf("failed to create group: %v", err)
 	}
-	g.Status().SetNodes([]string{"node-a", "node-b"})
-	g.Status().SetState(pb.GroupStatus_STATE_LOCKED)
+	group.Status().SetNodes([]string{"node-a", "node-b"})
+	group.Status().SetState(pb.GroupStatus_STATE_LOCKED)
 
-	status := g.Status()
+	status := group.Status()
 
 	nodes := status.Nodes()
 	if len(nodes) != 2 || nodes[0] != "node-a" || nodes[1] != "node-b" {
@@ -318,8 +318,7 @@ func TestGroup_Status(t *testing.T) {
 
 	// Verify mutating returned slice doesn't affect group
 	nodes[0] = "mutated"
-	if g.Status().Nodes()[0] != "node-a" {
-		t.Errorf("Mutating returned status nodes affected group: %v", g.Status().Nodes())
+	if group.Status().Nodes()[0] != "node-a" {
+		t.Errorf("Mutating returned status nodes affected group: %v", group.Status().Nodes())
 	}
 }
-

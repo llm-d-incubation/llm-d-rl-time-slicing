@@ -251,13 +251,14 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 
 	// Reconcile Phase 3 (job-2 should be active/locking)
 	queue.Add(groupID)
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 3*time.Second)
+	err = waitWithTimeout(func() bool {
+		return testGroup.Spec().LockingJob() == "job-2" && testGroup.Spec().ActiveJob() == "job-2"
+	}, 3*time.Second)
 	if err != nil {
-		t.Fatalf("Timed out waiting for Phase 3 reconcile: %v", err)
-	}
-	if testGroup.Spec().LockingJob() != "job-2" || testGroup.Spec().ActiveJob() != "job-2" {
-		t.Errorf("Phase 3: expected lockingJob=job-2, activeJob=job-2; got lockingJob=%q, activeJob=%q",
-			testGroup.Spec().LockingJob(), testGroup.Spec().ActiveJob())
+		t.Fatalf("Timed out waiting for Phase 3 reconcile "+
+			"(expected lockingJob=job-2, activeJob=job-2): %v. "+
+			"Current state: lockingJob=%q, activeJob=%q",
+			err, testGroup.Spec().LockingJob(), testGroup.Spec().ActiveJob())
 	}
 	if testGroup.Spec().GetWaitingJobQueue().Exists("job-2") {
 		t.Errorf("Phase 3: expected job-2 to be dequeued")
@@ -288,13 +289,14 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 
 	// Reconcile Phase 5 (job-1 should be active/locking again)
 	queue.Add(groupID)
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	err = waitWithTimeout(func() bool {
+		return testGroup.Spec().LockingJob() == "job-1" && testGroup.Spec().ActiveJob() == "job-1"
+	}, 3*time.Second)
 	if err != nil {
-		t.Fatalf("Timed out waiting for Phase 5 reconcile: %v", err)
-	}
-	if testGroup.Spec().LockingJob() != "job-1" || testGroup.Spec().ActiveJob() != "job-1" {
-		t.Errorf("Phase 5: expected lockingJob=job-1, activeJob=job-1; got lockingJob=%q, activeJob=%q",
-			testGroup.Spec().LockingJob(), testGroup.Spec().ActiveJob())
+		t.Fatalf("Timed out waiting for Phase 5 reconcile "+
+			"(expected lockingJob=job-1, activeJob=job-1): %v. "+
+			"Current state: lockingJob=%q, activeJob=%q",
+			err, testGroup.Spec().LockingJob(), testGroup.Spec().ActiveJob())
 	}
 	if testGroup.Spec().GetWaitingJobQueue().Exists("job-1") {
 		t.Errorf("Phase 5: expected job-1 to be dequeued")

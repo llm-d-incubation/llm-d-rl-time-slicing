@@ -40,7 +40,9 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 			var wrappedLockStore store.GroupLockStore
 			if tc.lockingJob != "" {
 				lockStore := store.NewMemLockStore()
-				lockStore.Lock(context.Background(), tc.groupID, tc.lockingJob)
+				if err := lockStore.Lock(context.Background(), tc.groupID, tc.lockingJob); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
 				wrappedLockStore = store.NewGroupLockStoreWrapper(lockStore, tc.groupID)
 			}
 			group, err := store.NewGroup(context.Background(), tc.groupID, wrappedLockStore)
@@ -158,10 +160,12 @@ func TestNewGroup_InitializeLock(t *testing.T) {
 
 func TestGroupSpec_RequestLock(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Start with job-1 holding the lock
 	lockStore := store.NewMemLockStore()
-	lockStore.Lock(ctx, "group-1", "job-1")
+	if err := lockStore.Lock(ctx, "group-1", "job-1"); err != nil {
+		t.Fatalf("failed to lock: %v", err)
+	}
 	wrapped := store.NewGroupLockStoreWrapper(lockStore, "group-1")
 	group, err := store.NewGroup(ctx, "group-1", wrapped)
 	if err != nil {
@@ -193,85 +197,126 @@ func TestGroupSpec_RequestLock(t *testing.T) {
 }
 
 func TestGroupSpec_Yield(t *testing.T) {
-	ctx := context.Background()
-
-	lockStore := store.NewMemLockStore()
-	groupStore := store.NewGroupStore(lockStore)
-	groupID := "group-1"
-	
-	// Pre-lock job-1
-	if err := lockStore.Lock(ctx, groupID, "job-1"); err != nil {
-		t.Fatalf("failed to lock: %v", err)
-	}
-	
-	group, _, err := groupStore.GetOrCreate(ctx, groupID)
-	if err != nil {
-		t.Fatalf("failed to get or create group: %v", err)
-	}
-	spec := group.Spec()
-	queue := spec.GetWaitingJobQueue()
-
-	// Now job-1 is locked.
-	// 1. Enqueue job-2
-	spec.RequestLock("job-2")
-	// 2. Enqueue job-3
-	spec.RequestLock("job-3")
-
-	// Verify queue
-	queueList := queue.List()
-	if len(queueList) != 2 {
-		t.Fatalf("expected queue len 2, got %d", len(queueList))
-	}
-	if queueList[0].JobID != "job-2" || queueList[1].JobID != "job-3" {
-		t.Errorf("unexpected queue content: %+v", queueList)
+	tests := []struct {
+		name        string
+		initialLock string
+		yieldJob    string
+		wantErr     error
+		wantLock    string
+	}{
+		{
+			name:        "yield by holder succeeds and unlocks",
+			initialLock: "job-1",
+			yieldJob:    "job-1",
+			wantErr:     nil,
+			wantLock:    "",
+		},
+		{
+			name:        "yield by non-holder fails",
+			initialLock: "job-1",
+			yieldJob:    "job-2",
+			wantErr:     store.ErrNotLockHolder,
+			wantLock:    "job-1",
+		},
 	}
 
-	// 3. Yield by non-holder (job-2) should fail
-	err = spec.Yield(ctx, "job-2")
-	if !errors.Is(err, store.ErrNotLockHolder) {
-		t.Fatalf("expected ErrNotLockHolder, got %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			lockStore := store.NewMemLockStore()
+			if tc.initialLock != "" {
+				if err := lockStore.Lock(ctx, "group-1", tc.initialLock); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+			}
+			wrapped := store.NewGroupLockStoreWrapper(lockStore, "group-1")
+			group, err := store.NewGroup(ctx, "group-1", wrapped)
+			if err != nil {
+				t.Fatalf("failed to create group: %v", err)
+			}
+			spec := group.Spec()
+
+			err = spec.Yield(ctx, tc.yieldJob)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Yield() error = %v, want %v", err, tc.wantErr)
+			}
+			if spec.LockingJob() != tc.wantLock {
+				t.Errorf("LockingJob() = %q, want %q", spec.LockingJob(), tc.wantLock)
+			}
+		})
 	}
-	if spec.LockingJob() != "job-1" {
-		t.Errorf("expected group to remain locked by job-1, got %q", spec.LockingJob())
+}
+
+func TestGroupSpec_TryPromote(t *testing.T) {
+	tests := []struct {
+		name         string
+		initialLock  string
+		initialQueue []string
+		wantPromoted bool
+		wantLock     string
+		wantQueueLen int
+		wantErr      error
+	}{
+		{
+			name:         "promote when unlocked and queue has waiters",
+			initialLock:  "",
+			initialQueue: []string{"job-1"},
+			wantPromoted: true,
+			wantLock:     "job-1",
+			wantQueueLen: 0,
+		},
+		{
+			name:         "do not promote when already locked",
+			initialLock:  "job-holder",
+			initialQueue: []string{"job-waiter"},
+			wantPromoted: false,
+			wantLock:     "job-holder",
+			wantQueueLen: 1,
+		},
+		{
+			name:         "do not promote when queue is empty",
+			initialLock:  "",
+			initialQueue: nil,
+			wantPromoted: false,
+			wantLock:     "",
+			wantQueueLen: 0,
+		},
 	}
 
-	// 4. Yield by holder (job-1) should succeed and grant to job-2
-	err = spec.Yield(ctx, "job-1")
-	if err != nil {
-		t.Fatalf("yield failed: %v", err)
-	}
-	if spec.LockingJob() != "job-2" {
-		t.Errorf("expected lockingJob to be job-2, got %q", spec.LockingJob())
-	}
-	
-	// Verify queue (should only have job-3)
-	queueList = queue.List()
-	if len(queueList) != 1 {
-		t.Fatalf("expected queue len 1, got %d", len(queueList))
-	}
-	if queueList[0].JobID != "job-3" {
-		t.Errorf("unexpected queue content: %+v", queueList)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			lockStore := store.NewMemLockStore()
+			if tc.initialLock != "" {
+				if err := lockStore.Lock(ctx, "group-1", tc.initialLock); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+			}
+			wrapped := store.NewGroupLockStoreWrapper(lockStore, "group-1")
+			group, err := store.NewGroup(ctx, "group-1", wrapped)
+			if err != nil {
+				t.Fatalf("failed to create group: %v", err)
+			}
+			spec := group.Spec()
 
-	// 5. Yield by holder (job-2) should succeed and grant to job-3
-	err = spec.Yield(ctx, "job-2")
-	if err != nil {
-		t.Fatalf("yield failed: %v", err)
-	}
-	if spec.LockingJob() != "job-3" {
-		t.Errorf("expected lockingJob to be job-3, got %q", spec.LockingJob())
-	}
-	if queue.Len() != 0 {
-		t.Errorf("expected queue to be empty, got %d", queue.Len())
-	}
+			for _, qJob := range tc.initialQueue {
+				spec.RequestLock(qJob)
+			}
 
-	// 6. Yield by holder (job-3) should succeed and group becomes unlocked
-	err = spec.Yield(ctx, "job-3")
-	if err != nil {
-		t.Fatalf("yield failed: %v", err)
-	}
-	if spec.LockingJob() != "" {
-		t.Errorf("expected lockingJob to be empty, got %q", spec.LockingJob())
+			promoted, err := spec.TryPromote(ctx)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("TryPromote() error = %v, want %v", err, tc.wantErr)
+			}
+			if promoted != tc.wantPromoted {
+				t.Errorf("TryPromote() promoted = %v, want %v", promoted, tc.wantPromoted)
+			}
+			if spec.LockingJob() != tc.wantLock {
+				t.Errorf("LockingJob() = %q, want %q", spec.LockingJob(), tc.wantLock)
+			}
+			if spec.GetWaitingJobQueue().Len() != tc.wantQueueLen {
+				t.Errorf("Queue Len = %d, want %d", spec.GetWaitingJobQueue().Len(), tc.wantQueueLen)
+			}
+		})
 	}
 }
 
@@ -287,8 +332,8 @@ func TestGroup_Snapshot(t *testing.T) {
 		t.Fatalf("failed to create group: %v", err)
 	}
 
-	group.SetNodes([]string{"node-a", "node-b"})
-	group.SetState(pb.GroupStatus_STATE_IDLE)
+	group.Status().SetNodes([]string{"node-a", "node-b"})
+	group.Status().SetState(pb.GroupStatus_STATE_IDLE)
 	group.Spec().SetActiveJob("job-active")
 	group.Spec().GetWaitingJobQueue().Enqueue("job-wait-1")
 	group.Spec().GetWaitingJobQueue().Enqueue("job-wait-2")
@@ -317,13 +362,13 @@ func TestGroup_Snapshot(t *testing.T) {
 	}
 
 	// Modify original group
-	group.SetNodes([]string{"node-c"})
-	group.SetState(pb.GroupStatus_STATE_LOCKED)
+	group.Status().SetNodes([]string{"node-c"})
+	group.Status().SetState(pb.GroupStatus_STATE_LOCKED)
 
-	if reflect.DeepEqual(snap.Nodes, group.Nodes()) {
+	if reflect.DeepEqual(snap.Nodes, group.Status().Nodes()) {
 		t.Errorf("Snap Nodes changed after original changed (deep copy failed)")
 	}
-	state, _ := group.State()
+	state, _ := group.Status().State()
 	if snap.State == state {
 		t.Errorf("Snap State changed after original changed")
 	}

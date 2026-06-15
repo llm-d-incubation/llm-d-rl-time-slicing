@@ -75,7 +75,7 @@ type Group struct {
 
 // NewGroup creates a new Group and initializes its locking state from the lockStore if available.
 func NewGroup(ctx context.Context, id string, lockStore GroupLockStore) (*Group, error) {
-	g := &Group{
+	group := &Group{
 		id: id,
 		spec: &GroupSpec{
 			lockStore: lockStore,
@@ -92,11 +92,11 @@ func NewGroup(ctx context.Context, id string, lockStore GroupLockStore) (*Group,
 		if err != nil {
 			return nil, fmt.Errorf("failed to get lock status for group %s: %w", id, err)
 		}
-		g.spec.lockingJob = lockingJob
-		g.spec.activeJob = lockingJob
+		group.spec.lockingJob = lockingJob
+		group.spec.activeJob = lockingJob
 	}
 
-	return g, nil
+	return group, nil
 }
 
 func (g *Group) ID() string {
@@ -105,6 +105,9 @@ func (g *Group) ID() string {
 
 // Spec returns the GroupSpec for the group.
 func (g *Group) Spec() *GroupSpec {
+	// No lock is safe here because the pointer is not
+	// modifiable after the Group is created. Fields
+	// on the spec itself are controlled by the internal mutex.
 	return g.spec
 }
 
@@ -190,12 +193,12 @@ type GroupSnapshot struct {
 
 // Snapshot returns a consistent, point-in-time snapshot of the group's state.
 func (g *Group) Snapshot() *GroupSnapshot {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	g.status.mu.RLock()
+	defer g.status.mu.RUnlock()
 
 	// Deep copy nodes slice
-	nodes := make([]string, len(g.nodes))
-	copy(nodes, g.nodes)
+	nodes := make([]string, len(g.status.nodes))
+	copy(nodes, g.status.nodes)
 
 	g.spec.mu.RLock()
 	defer g.spec.mu.RUnlock()
@@ -203,36 +206,47 @@ func (g *Group) Snapshot() *GroupSnapshot {
 	return &GroupSnapshot{
 		ID:               g.id,
 		Nodes:            nodes,
-		State:            g.state,
-		StateTimestamp:   g.stateTimestamp,
+		State:            g.status.state,
+		StateTimestamp:   g.status.stateTimestamp,
 		LockingJob:       g.spec.lockingJob,
 		ActiveJob:        g.spec.activeJob,
 		WaiterQueueDepth: g.spec.queue.Len(),
 	}
 }
 
-// Yield releases the lock for the current job and grants it to the next job in the queue.
-// If the unlock is successful, it peeks at the next job, attempts to lock it,
-// and only dequeues it if the lock operation succeeds.
-func (s *GroupSpec) Yield(ctx context.Context, jobID string) error {
+// TryPromote attempts to promote the next waiting job in the queue to be the locking job
+// if the group is currently unlocked.
+func (s *GroupSpec) TryPromote(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.unlock(ctx, jobID); err != nil {
-		return err
+	if s.lockingJob != "" {
+		return false, nil
 	}
 
 	nextJobID, ok := s.queue.Peek()
 	if !ok {
-		return nil
+		return false, nil
 	}
 
 	if err := s.lock(ctx, nextJobID); err != nil {
-		return fmt.Errorf("yield succeeded in unlocking but failed to lock next job %s: %w", nextJobID, err)
+		return false, fmt.Errorf("failed to lock promoted job %s: %w", nextJobID, err)
 	}
 
 	s.queue.Dequeue()
-	return nil
+	return true, nil
+}
+
+// Yield releases the lock for the current job.
+func (s *GroupSpec) Yield(ctx context.Context, jobID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.unlock(ctx, jobID)
+
+	// Note that promoting the next job to take the lock is
+	// done in the reconiliation loop to not block a RL job trying
+	// to yield their job if there is a temporary issue locking for next job.
 }
 
 // RequestLock requests a lock for the given job.
