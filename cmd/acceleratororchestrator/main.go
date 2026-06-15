@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +14,7 @@ import (
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/infrastructure"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -24,11 +25,17 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+		slog.Error("Failed to run server", "error", err)
+		os.Exit(1)
 	}
 }
 
 func run() error {
+	// Initialize slog with ContextHandler
+	jsonHandler := slog.NewJSONHandler(os.Stdout, nil)
+	ctxHandler := logging.NewContextHandler(jsonHandler)
+	slog.SetDefault(slog.New(ctxHandler))
+
 	port := flag.Int("port", 50051, "The server port")
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	controllerWorkers := flag.Int("controller-workers", 1, "The number of workers for the controller")
@@ -87,7 +94,7 @@ func run() error {
 	nodeInformerFactory.Start(ctx.Done())
 	podInformerFactory.Start(ctx.Done())
 
-	log.Printf("Starting Accelerator Orchestrator server...")
+	slog.InfoContext(ctx, "Starting Accelerator Orchestrator server")
 	return server.StartServer(ctx, *port, ctrl, groupStore, jobStore, *controllerWorkers)
 }
 
@@ -101,7 +108,7 @@ func buildKubeConfig(kubeconfigPath string) (*rest.Config, error) {
 		return config, nil
 	}
 
-	log.Printf("In-cluster config failed, trying default local kubeconfig: %v", err)
+	slog.Info("In-cluster config failed, trying default local kubeconfig", "error", err)
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
 	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)

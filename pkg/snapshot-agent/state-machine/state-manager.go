@@ -109,11 +109,11 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) 
 	go func() {
 		err := worker()
 
-		job.mu.Lock()
-		defer job.mu.Unlock()
-
 		sm.mu.Lock()
 		defer sm.mu.Unlock()
+
+		job.mu.Lock()
+		defer job.mu.Unlock()
 
 		op.FinishedAt = time.Now()
 		if err != nil {
@@ -174,11 +174,11 @@ func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (
 	go func() {
 		err := worker()
 
-		job.mu.Lock()
-		defer job.mu.Unlock()
-
 		sm.mu.Lock()
 		defer sm.mu.Unlock()
+
+		job.mu.Lock()
+		defer job.mu.Unlock()
 
 		op.FinishedAt = time.Now()
 		if err != nil {
@@ -200,7 +200,12 @@ func (sm *StateManager) GetOperation(opID string) (*Operation, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	op, ok := sm.operations[opID]
-	return op, ok
+	if !ok {
+		return nil, false
+	}
+	// Return a copy to avoid race conditions
+	copyOp := *op
+	return &copyOp, true
 }
 
 // GetJobStatus returns the current status of all jobs.

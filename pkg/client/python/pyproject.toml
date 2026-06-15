@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timeslice"
+version = "0.1.0"
+description = "Timeslice library including Snapshot Agent client"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "grpcio>=1.64.1",
+    "protobuf>=5.26.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "grpcio-tools>=1.64.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["timeslice", "timeslice.*"]
+
+[tool.ruff]
+exclude = [
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+]

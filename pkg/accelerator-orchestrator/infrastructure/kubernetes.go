@@ -18,11 +18,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -30,7 +32,6 @@ import (
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -125,6 +126,7 @@ func (k *KubernetesOrchestrator) getPodsForGroup(groupID string) ([]PodInfo, err
 // ObserveGroupState observes the current state of the infrastructure for the given group
 // and updates the groupStore and jobStore accordingly.
 func (k *KubernetesOrchestrator) ObserveGroupState(ctx context.Context, groupID string) error {
+	ctx = logging.WithGroupID(ctx, groupID)
 	// 1. Find nodes belonging to the group
 	groupNodes, err := k.getNodesForGroup(groupID)
 	if err != nil {
@@ -164,7 +166,6 @@ func (k *KubernetesOrchestrator) ObserveGroupState(ctx context.Context, groupID 
 }
 
 func (k *KubernetesOrchestrator) updateGroupNodes(ctx context.Context, groupID string, groupNodes []string) error {
-	logger := klog.FromContext(ctx)
 	g, _, err := k.groupStore.GetOrCreate(ctx, groupID)
 	if err != nil {
 		return fmt.Errorf("failed to get or create group %s in store: %w", groupID, err)
@@ -175,17 +176,16 @@ func (k *KubernetesOrchestrator) updateGroupNodes(ctx context.Context, groupID s
 	removedNodes := findRemovedNodes(oldNodes, groupNodes)
 	for _, nodeName := range removedNodes {
 		if err := k.snapshotAgentStore.CloseClient(nodeName); err != nil {
-			logger.Error(err, "Failed to close snapshot agent client for removed node", "node", nodeName)
+			slog.ErrorContext(ctx, "Failed to close snapshot agent client for removed node", "error", err, "node", nodeName)
 		}
 	}
 
 	g.SetNodes(groupNodes)
-	logger.Info("Updated nodes for group", "nodes", groupNodes)
+	slog.InfoContext(ctx, "Updated nodes for group", "nodes", groupNodes)
 	return nil
 }
 
 func (k *KubernetesOrchestrator) updateJobsAndPods(ctx context.Context, groupID string, pods []PodInfo) error {
-	logger := klog.FromContext(ctx)
 	jobPods := make(map[string][]string)
 	for _, pod := range pods {
 		jobPods[pod.JobID] = append(jobPods[pod.JobID], pod.UID)
@@ -217,19 +217,18 @@ func (k *KubernetesOrchestrator) updateJobsAndPods(ctx context.Context, groupID 
 			if err := k.jobStore.Delete(ctx, groupID, ej.JobID()); err != nil {
 				return err
 			}
-			logger.Info("Deleted job from store because it has no pods", "job", ej.JobID())
+			slog.InfoContext(ctx, "Deleted job from store because it has no pods", "job", ej.JobID())
 		}
 	}
 	return nil
 }
 
 func (k *KubernetesOrchestrator) updateJobContext(ctx context.Context, groupID string, groupNodes []string) error {
-	logger := klog.FromContext(ctx)
 	// Call snapshotagentstore status for every node in the group & populate job context
 	for _, nodeName := range groupNodes {
 		resp, err := k.snapshotAgentStore.GetStatus(ctx, nodeName)
 		if err != nil {
-			logger.Error(err, "Failed to get status from snapshot agent", "node", nodeName)
+			slog.ErrorContext(ctx, "Failed to get status from snapshot agent", "error", err, "node", nodeName)
 			continue
 		}
 
@@ -246,14 +245,13 @@ func (k *KubernetesOrchestrator) updateJobContext(ctx context.Context, groupID s
 			if err := k.jobStore.UpdateContextState(ctx, groupID, js.JobId, nodeName, state); err != nil {
 				return err
 			}
-			logger.Info("Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
+			slog.InfoContext(ctx, "Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
 		}
 	}
 	return nil
 }
 
 func (k *KubernetesOrchestrator) cleanupGroup(ctx context.Context, groupID string) error {
-	logger := klog.FromContext(ctx)
 	existingJobs, err := k.jobStore.ListByGroup(ctx, groupID)
 	if err != nil {
 		return err
@@ -262,7 +260,7 @@ func (k *KubernetesOrchestrator) cleanupGroup(ctx context.Context, groupID strin
 		if err := k.jobStore.Delete(ctx, groupID, ej.JobID()); err != nil {
 			return err
 		}
-		logger.Info("Deleted job from store because group has no nodes and no pods", "job", ej.JobID())
+		slog.InfoContext(ctx, "Deleted job from store because group has no nodes and no pods", "job", ej.JobID())
 	}
 
 	// Close clients for all nodes that were in the group
@@ -270,7 +268,7 @@ func (k *KubernetesOrchestrator) cleanupGroup(ctx context.Context, groupID strin
 	if err == nil && oldGroup != nil {
 		for _, nodeName := range oldGroup.Nodes() {
 			if err := k.snapshotAgentStore.CloseClient(nodeName); err != nil {
-				logger.Error(err, "Failed to close snapshot agent client on group deletion", "node", nodeName)
+				slog.ErrorContext(ctx, "Failed to close snapshot agent client on group deletion", "error", err, "node", nodeName)
 			}
 		}
 	}
@@ -278,7 +276,7 @@ func (k *KubernetesOrchestrator) cleanupGroup(ctx context.Context, groupID strin
 	if err := k.groupStore.Delete(ctx, groupID); err != nil {
 		return err
 	}
-	logger.Info("Deleted group from store because it has no nodes and no pods", "group", groupID)
+	slog.InfoContext(ctx, "Deleted group from store because it has no nodes and no pods")
 	return nil
 }
 
@@ -325,8 +323,7 @@ func (k *KubernetesOrchestrator) enqueueNode(ctx context.Context, obj interface{
 		}
 	}
 
-	logger := klog.FromContext(ctx)
-	logger.Info("Enqueue Node", "node", node.Name)
+	slog.InfoContext(ctx, "Enqueue Node", "node", node.Name)
 
 	groups := k.getGroupsFromNode(node)
 	for _, group := range groups {
@@ -379,8 +376,7 @@ func (k *KubernetesOrchestrator) enqueuePod(ctx context.Context, obj interface{}
 		}
 	}
 
-	logger := klog.FromContext(ctx)
-	logger.Info("Enqueue Pod", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+	slog.InfoContext(ctx, "Enqueue Pod", "pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 
 	group := k.getGroupFromPod(pod)
 	if group != "" {

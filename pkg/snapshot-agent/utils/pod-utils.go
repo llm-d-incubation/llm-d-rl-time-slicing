@@ -16,11 +16,8 @@ import (
 )
 
 const (
-	// SnapshotAgentLabel is the label used to identify pods that the snapshot agent should manage.
-	SnapshotAgentLabel = "snapshot-agent"
-	// SnapshotAgentValue is the value of the label for pods to be managed.
-	SnapshotAgentValue = "true"
-	JobIDLabel         = "timeslice.io/job-id"
+	// JobIDLabel is the label used to identify pods by their job ID.
+	JobIDLabel = "timeslice.io/job-id"
 )
 
 // GetLocalPods returns a list of pods running on the same node as the current pod.
@@ -47,7 +44,7 @@ func GetLocalPods(ctx context.Context, jobID string) ([]corev1.Pod, error) {
 	// List pods on the current node that have the snapshot-agent label
 	podList, err := clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("spec.nodeName=%s", nodeName),
-		LabelSelector: fmt.Sprintf("%s=%s,%s=%s", SnapshotAgentLabel, SnapshotAgentValue, JobIDLabel, jobID),
+		LabelSelector: fmt.Sprintf("%s=%s", JobIDLabel, jobID),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pods on node %s: %w", nodeName, err)

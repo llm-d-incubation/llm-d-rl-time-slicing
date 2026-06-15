@@ -8,28 +8,14 @@ import (
 	"time"
 
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 )
-
-type loggerKey struct{}
-
-// WithLogger returns a new context with the given logger.
-func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
-	return context.WithValue(ctx, loggerKey{}, logger)
-}
-
-// Logger returns the logger associated with the context, or the default logger if none is found.
-func Logger(ctx context.Context) *slog.Logger {
-	if logger, ok := ctx.Value(loggerKey{}).(*slog.Logger); ok {
-		return logger
-	}
-	return slog.Default()
-}
 
 // handleCrash is a helper that recovers from panics, logs the panic and stack trace.
 // It is intended to be used in `defer` statements in goroutines.
 func handleCrash(ctx context.Context) {
 	if r := recover(); r != nil {
-		Logger(ctx).Error("Observed a panic", "panic", r, "stack", string(debug.Stack()))
+		slog.ErrorContext(ctx, "Observed a panic", "panic", r, "stack", string(debug.Stack()))
 	}
 }
 
@@ -123,29 +109,32 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 	defer handleCrash(ctx)
 	defer c.queue.ShutDown()
 
-	logger := Logger(ctx)
-	logger.Info("Starting Group controller")
+	slog.InfoContext(ctx, "Starting Group controller")
 
-	logger.Info("Initializing infrastructure")
+	slog.InfoContext(ctx, "Initializing infrastructure")
 	if err := c.infraOrchestrator.Init(ctx); err != nil {
 		return fmt.Errorf("failed to initialize infrastructure: %w", err)
 	}
 
-	logger.Info("Starting workers")
+	slog.InfoContext(ctx, "Starting workers")
 	for i := 0; i < workers; i++ {
-		go until(ctx, c.runWorker, time.Second)
+		workerID := i
+		go until(ctx, func(ctx context.Context) {
+			c.runWorker(ctx, workerID)
+		}, time.Second)
 	}
 
-	logger.Info("Started workers")
+	slog.InfoContext(ctx, "Started workers")
 	<-ctx.Done()
-	logger.Info("Shutting down workers")
+	slog.InfoContext(ctx, "Shutting down workers")
 
 	return nil
 }
 
 // runWorker is the entry point for a worker goroutine.
 // It continuously processes work items from the queue until the queue is shut down.
-func (c *Controller) runWorker(ctx context.Context) {
+func (c *Controller) runWorker(ctx context.Context, workerID int) {
+	ctx = logging.WithWorkerID(ctx, workerID)
 	for c.processNextWorkItem(ctx) {
 	}
 }
@@ -159,24 +148,21 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 		return false
 	}
 
-	logger := Logger(ctx)
-
 	err := func(groupID string) error {
 		defer c.queue.Done(groupID)
 
-		cycleLogger := logger.With("group", groupID)
-		cycleCtx := WithLogger(ctx, cycleLogger)
+		cycleCtx := logging.WithGroupID(ctx, groupID)
 
 		if err := c.reconcileGroup(cycleCtx, groupID); err != nil {
 			c.queue.AddRateLimited(groupID)
 			return fmt.Errorf("error syncing '%s': %s, requeuing", groupID, err.Error())
 		}
 		c.queue.Forget(groupID)
-		cycleLogger.Info("Successfully synced group")
+		slog.InfoContext(cycleCtx, "Successfully synced group")
 		return nil
 	}(groupID)
 	if err != nil {
-		Logger(ctx).Error("Error processing work item", "error", err)
+		slog.ErrorContext(ctx, "Error processing work item", "error", err)
 		return true
 	}
 
@@ -187,8 +173,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context) bool {
 // It observes the current state of the group from the infrastructure and updates the stores.
 // Expects to be the only thread reconciling that particular group at any time.
 func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
-	logger := Logger(ctx)
-	logger.Info("Reconciling group")
+	slog.InfoContext(ctx, "Reconciling group")
 
 	// 1. Observe Current State and update stores
 	if err := c.infraOrchestrator.ObserveGroupState(ctx, groupID); err != nil {

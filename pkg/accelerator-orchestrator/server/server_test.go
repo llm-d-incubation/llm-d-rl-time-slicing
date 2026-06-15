@@ -3,7 +3,7 @@ package server_test
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 	"testing"
 
@@ -27,7 +27,8 @@ func initGRPCServer(groupStore server.GroupStore, jobStore server.JobStore) func
 	pb.RegisterAcceleratorOrchestratorServiceServer(s, server.NewServer(nil, groupStore, jobStore))
 	go func() {
 		if err := s.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			log.Fatalf("Server exited with error: %v", err)
+			slog.Error("Server exited with error", "error", err)
+			panic(err)
 		}
 	}()
 	return func() {

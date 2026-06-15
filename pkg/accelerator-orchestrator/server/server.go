@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
-	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -47,19 +47,26 @@ func NewServer(ctrl *controller.Controller, groupStore GroupStore, jobStore JobS
 
 // Acquire implements AcceleratorOrchestratorService.Acquire.
 func (s *Server) Acquire(ctx context.Context, req *pb.AcquireRequest) (*pb.AcquireResponse, error) {
-	log.Printf("Acquire called: JobID=%s, GroupID=%s", req.GetJobId(), req.GetGroupId())
+	ctx = logging.WithServerMethod(ctx, "Acquire")
+	ctx = logging.WithJobID(ctx, req.GetJobId())
+	ctx = logging.WithGroupID(ctx, req.GetGroupId())
+	slog.InfoContext(ctx, "Acquire called")
 	return nil, status.Errorf(codes.Unimplemented, "method Acquire not implemented")
 }
 
 // Yield implements AcceleratorOrchestratorService.Yield.
 func (s *Server) Yield(ctx context.Context, req *pb.YieldRequest) (*pb.YieldResponse, error) {
-	log.Printf("Yield called: JobID=%s, GroupID=%s", req.GetJobId(), req.GetGroupId())
+	ctx = logging.WithServerMethod(ctx, "Yield")
+	ctx = logging.WithJobID(ctx, req.GetJobId())
+	ctx = logging.WithGroupID(ctx, req.GetGroupId())
+	slog.InfoContext(ctx, "Yield called")
 	return nil, status.Errorf(codes.Unimplemented, "method Yield not implemented")
 }
 
 // ListGroups implements AcceleratorOrchestratorService.ListGroups.
 func (s *Server) ListGroups(ctx context.Context, req *pb.ListGroupsRequest) (*pb.ListGroupsResponse, error) {
-	log.Printf("ListGroups called")
+	ctx = logging.WithServerMethod(ctx, "ListGroups")
+	slog.InfoContext(ctx, "ListGroups called")
 	groups, err := s.groupStore.List(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to list groups: %v", err)
@@ -73,7 +80,9 @@ func (s *Server) ListGroups(ctx context.Context, req *pb.ListGroupsRequest) (*pb
 
 // GetGroupStatus implements AcceleratorOrchestratorService.GetGroupStatus.
 func (s *Server) GetGroupStatus(ctx context.Context, req *pb.GetGroupStatusRequest) (*pb.GetGroupStatusResponse, error) {
-	log.Printf("GetGroupStatus called: GroupID=%s", req.GetGroupId())
+	ctx = logging.WithServerMethod(ctx, "GetGroupStatus")
+	ctx = logging.WithGroupID(ctx, req.GetGroupId())
+	slog.InfoContext(ctx, "GetGroupStatus called")
 
 	group, err := s.groupStore.Get(ctx, req.GetGroupId())
 	if err != nil {
@@ -137,9 +146,9 @@ func StartServer(
 
 	// Start controller in background
 	go func() {
-		log.Printf("Starting controller from server with %d workers...", workers)
+		slog.InfoContext(ctx, "Starting controller from server", "workers", workers)
 		if err := ctrl.Run(ctx, workers); err != nil {
-			log.Printf("Error running controller: %v", err)
+			slog.ErrorContext(ctx, "Error running controller", "error", err)
 		}
 	}()
 
@@ -148,7 +157,7 @@ func StartServer(
 
 	errChan := make(chan error, 1)
 	go func() {
-		log.Printf("Starting gRPC server on port %d...", port)
+		slog.InfoContext(ctx, "Starting gRPC server", "port", port)
 		if err := s.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			errChan <- fmt.Errorf("failed to serve: %w", err)
 		}
@@ -161,10 +170,10 @@ func StartServer(
 			return err
 		}
 	case <-ctx.Done():
-		log.Println("Context canceled, shutting down gRPC server gracefully...")
+		slog.InfoContext(ctx, "Context canceled, shutting down gRPC server gracefully")
 		s.GracefulStop()
 		<-errChan
-		log.Println("Server stopped")
+		slog.InfoContext(ctx, "Server stopped")
 	}
 
 	return nil
