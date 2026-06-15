@@ -125,7 +125,38 @@ func (s *Server) Yield(ctx context.Context, req *pb.YieldRequest) (*pb.YieldResp
 	ctx = logging.WithJobID(ctx, req.GetJobId())
 	ctx = logging.WithGroupID(ctx, req.GetGroupId())
 	slog.InfoContext(ctx, "Yield called")
-	return nil, status.Errorf(codes.Unimplemented, "method Yield not implemented")
+
+	groupID := req.GetGroupId()
+	jobID := req.GetJobId()
+
+	// 1. Get Group
+	group, err := s.groupStore.Get(ctx, groupID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "group %s not found", groupID)
+		}
+		return nil, status.Errorf(codes.Internal, "failed to get group: %v", err)
+	}
+
+	// 2. Take Snapshot BEFORE Yield
+	snap := group.Snapshot()
+
+	// 3. Call Yield
+	err = group.Spec().Yield(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotLockHolder) {
+			return nil, status.Errorf(codes.PermissionDenied, "job %s does not hold lock for group %s", jobID, groupID)
+		}
+		return nil, status.Errorf(codes.Internal, "failed to yield: %v", err)
+	}
+
+	// 4. Construct Response from Snapshot
+	numWaiters := snap.WaiterQueueDepth
+	return &pb.YieldResponse{
+		Success:          true,
+		PendingWaiters:   int64(numWaiters),
+		SnapshotDeferred: numWaiters == 0,
+	}, nil
 }
 
 // ListGroups implements AcceleratorOrchestratorService.ListGroups.

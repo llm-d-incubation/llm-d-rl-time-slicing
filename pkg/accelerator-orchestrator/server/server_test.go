@@ -224,26 +224,157 @@ func TestServer_Acquire(t *testing.T) {
 }
 
 func TestServer_Yield(t *testing.T) {
-	cleanup := initGRPCServer(nil, nil)
-	defer cleanup()
-	ctx := context.Background()
-	conn, err := grpc.NewClient(
-		"passthrough:///bufnet",
-		grpc.WithContextDialer(bufDialer),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("Failed to dial bufnet: %v", err)
+	tests := []struct {
+		name         string
+		setupStores  func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore)
+		groupID      string
+		jobID        string
+		expectedCode codes.Code
+		verify       func(t *testing.T, resp *pb.YieldResponse, err error)
+	}{
+		{
+			name: "group not found",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				return store.NewGroupStore(store.NewMemLockStore()), store.NewJobStore()
+			},
+			groupID:      "unknown-group",
+			jobID:        "job-1",
+			expectedCode: codes.NotFound,
+		},
+		{
+			name: "job does not hold lock",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				lockStore := store.NewMemLockStore()
+				// Lock it for job-2
+				if err := lockStore.Lock(ctx, "group-1", "job-2"); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+				gs := store.NewGroupStore(lockStore)
+				_, _, err := gs.GetOrCreate(ctx, "group-1")
+				if err != nil {
+					t.Fatalf("failed to create group: %v", err)
+				}
+				return gs, store.NewJobStore()
+			},
+			groupID:      "group-1",
+			jobID:        "job-1", // job-1 tries to yield, but job-2 holds lock
+			expectedCode: codes.PermissionDenied,
+		},
+		{
+			name: "success with no waiters (snapshot deferred)",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				lockStore := store.NewMemLockStore()
+				if err := lockStore.Lock(ctx, "group-1", "job-1"); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+				gs := store.NewGroupStore(lockStore)
+				_, _, err := gs.GetOrCreate(ctx, "group-1")
+				if err != nil {
+					t.Fatalf("failed to create group: %v", err)
+				}
+				return gs, store.NewJobStore()
+			},
+			groupID:      "group-1",
+			jobID:        "job-1",
+			expectedCode: codes.OK,
+			verify: func(t *testing.T, resp *pb.YieldResponse, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if !resp.Success {
+					t.Errorf("Expected success to be true")
+				}
+				if resp.PendingWaiters != 0 {
+					t.Errorf("Expected 0 pending waiters, got %d", resp.PendingWaiters)
+				}
+				if !resp.SnapshotDeferred {
+					t.Errorf("Expected snapshot to be deferred")
+				}
+			},
+		},
+		{
+			name: "success with waiters (snapshot not deferred)",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				lockStore := store.NewMemLockStore()
+				if err := lockStore.Lock(ctx, "group-1", "job-1"); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+				gs := store.NewGroupStore(lockStore)
+				g, _, err := gs.GetOrCreate(ctx, "group-1")
+				if err != nil {
+					t.Fatalf("failed to create group: %v", err)
+				}
+				// Add a waiter
+				g.Spec().RequestLock("job-2")
+				return gs, store.NewJobStore()
+			},
+			groupID:      "group-1",
+			jobID:        "job-1",
+			expectedCode: codes.OK,
+			verify: func(t *testing.T, resp *pb.YieldResponse, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if !resp.Success {
+					t.Errorf("Expected success to be true")
+				}
+				if resp.PendingWaiters != 1 {
+					t.Errorf("Expected 1 pending waiter, got %d", resp.PendingWaiters)
+				}
+				if resp.SnapshotDeferred {
+					t.Errorf("Expected snapshot NOT to be deferred")
+				}
+			},
+		},
 	}
-	defer conn.Close()
-	client := pb.NewAcceleratorOrchestratorServiceClient(conn)
 
-	_, err = client.Yield(ctx, &pb.YieldRequest{
-		JobId:   "test-job",
-		GroupId: "test-group",
-	})
-	if status.Code(err) != codes.Unimplemented {
-		t.Errorf("Expected Unimplemented error, got: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			gs, js := tc.setupStores(t, ctx)
+
+			cleanup := initGRPCServer(gs, js)
+			defer cleanup()
+			conn, err := grpc.NewClient(
+				"passthrough:///bufnet",
+				grpc.WithContextDialer(bufDialer),
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+			)
+			if err != nil {
+				t.Fatalf("Failed to dial bufnet: %v", err)
+			}
+			defer conn.Close()
+			client := pb.NewAcceleratorOrchestratorServiceClient(conn)
+
+			resp, err := client.Yield(ctx, &pb.YieldRequest{
+				GroupId: tc.groupID,
+				JobId:   tc.jobID,
+			})
+
+			if tc.expectedCode != codes.OK {
+				if err == nil {
+					t.Fatalf("Expected error, got nil")
+				}
+				st, ok := status.FromError(err)
+				if !ok {
+					t.Fatalf("Expected gRPC status error, got: %v", err)
+				}
+				if st.Code() != tc.expectedCode {
+					t.Errorf("Expected code %v, got %v", tc.expectedCode, st.Code())
+				}
+				return
+			}
+
+			if tc.verify != nil {
+				tc.verify(t, resp, err)
+			}
+		})
 	}
 }
 
