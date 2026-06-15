@@ -1,6 +1,6 @@
-# Snapshotting GPU workloads with Snapshot Agent
+# GPU Time-Slicing for Multi-Tenant Managed RL Services
 
-This guide describes how to use the **Snapshot Agent** to enable snapshotting for LLM workloads. This allows multiple tenants to share GPU resources efficiently by snapshotting and restoring GPU state (memory and registers).
+This guide is for developers building a managed RL service who want to enable multiple tenants to share GPU nodes by time-slicing their RL workloads. This applies to any GPU-bound RL component — trainer, sampler, or both, each running as a separate pod. The service is responsible for deciding when to preempt a running job and when to resume it. The Snapshot Agent provides the GPU checkpoint/restore primitive the service calls at those boundaries. From the tenant's perspective, their RL job simply pauses and resumes transparently
 
 ## Overview
 
@@ -14,7 +14,7 @@ By using the Snapshot Agent, you can implement time-slicing without modifying th
 ## Architecture
 
 1.  **Snapshot Agent (DaemonSet):** Runs on every node with GPUs. It has privileged access to the GPU devices and host paths required for snapshotting.
-2.  **Application Pod (Workload):** Your LLM workload (e.g., vLLM, PyTorch) running in a pod.
+2.  **Tenant's RL Workload:**: A sampler or trainer running on a pod.
 3.  **Snapshot Agent Client:** A Python library used by the application pod to communicate with the local Snapshot Agent via gRPC (port 9001).
 
 ---
@@ -38,7 +38,7 @@ See [helm-snapshot-agent.md](../../deploy/snapshot-agent/README.md) for more det
 
 ---
 
-## 2. Integrating with Your Workload
+## 2. Integrating with Tenant's RL Workload
 
 To enable a pod for time-slicing, you need to add specific labels and environment variables to your Deployment.
 
@@ -70,6 +70,18 @@ The `timeslice.SnapshotAgentClient` library provides a high-level Python API for
 cd ../../pkg/client/python
 pip install .
 ```
+
+### Choosing a Backend
+The `backend` parameter controls how GPU state is checkpointed. It is an optional argument in the following `SnapshotAgentClient` methods:
+
+*   `snapshot(job_id, group, backend=...)`
+*   `restore(job_id, group, backend=...)`
+*   `snapshot_and_wait(job_id, group, backend=...)`
+*   `restore_and_wait(job_id, group, backend=...)`
+
+Available backends:
+*   **BACKEND_CUDA (default):** Full process-level GPU checkpoint via `cuda-checkpoint`. Suitable for any GPU-bound RL component (trainer, sampler) running full model weights.
+*   Additional backends for lighter-weight workloads (e.g. LoRA adapters) are planned for a future release.
 
 ### Basic Workflow
 The most common usage is to trigger a snapshot at the end of a "slice" and a restore at the beginning of the next one.
