@@ -189,81 +189,55 @@ func TestNewGroup_InitializeLock(t *testing.T) {
 	}
 }
 
-func TestGroup_Clone(t *testing.T) {
+func TestGroup_Snapshot(t *testing.T) {
 	ctx := context.Background()
-	group, err := store.NewGroup(ctx, "group-1", nil)
+	lockStore := store.NewMemLockStore()
+	if err := lockStore.Lock(ctx, "group-1", "job-lock"); err != nil {
+		t.Fatalf("failed to lock: %v", err)
+	}
+	group, err := store.NewGroup(ctx, "group-1", lockStore)
 	if err != nil {
-		t.Fatalf("NewGroup failed: %v", err)
+		t.Fatalf("failed to create group: %v", err)
 	}
 
 	group.SetNodes([]string{"node-a", "node-b"})
 	group.SetState(pb.GroupStatus_STATE_IDLE)
 	group.SetActiveJob("job-active")
-	if err := group.Lock(ctx, "job-lock"); err != nil {
-		t.Fatalf("Lock failed: %v", err)
-	}
 	group.GetWaitingJobQueue().Enqueue("job-wait-1")
 	group.GetWaitingJobQueue().Enqueue("job-wait-2")
 
-	// Clone the group
-	clone := group.Clone()
+	// Take snapshot
+	snap := group.Snapshot()
 
-	// Verify clone has same values
-	if clone.ID() != group.ID() {
-		t.Errorf("Clone ID() = %q, want %q", clone.ID(), group.ID())
+	// Verify snapshot values
+	if snap.ID != "group-1" {
+		t.Errorf("Snap ID = %q, want %q", snap.ID, "group-1")
 	}
-	if !reflect.DeepEqual(clone.Nodes(), group.Nodes()) {
-		t.Errorf("Clone Nodes() = %+v, want %+v", clone.Nodes(), group.Nodes())
+	if !reflect.DeepEqual(snap.Nodes, []string{"node-a", "node-b"}) {
+		t.Errorf("Snap Nodes = %+v, want %+v", snap.Nodes, []string{"node-a", "node-b"})
 	}
-	cloneState, cloneStateTime := clone.State()
-	origState, origStateTime := group.State()
-	if cloneState != origState {
-		t.Errorf("Clone State() = %v, want %v", cloneState, origState)
+	if snap.State != pb.GroupStatus_STATE_IDLE {
+		t.Errorf("Snap State = %v, want %v", snap.State, pb.GroupStatus_STATE_IDLE)
 	}
-	if !cloneStateTime.Equal(origStateTime) {
-		t.Errorf("Clone StateTime = %v, want %v", cloneStateTime, origStateTime)
+	if snap.LockingJob != "job-lock" {
+		t.Errorf("Snap LockingJob = %q, want %q", snap.LockingJob, "job-lock")
 	}
-	if clone.ActiveJob() != group.ActiveJob() {
-		t.Errorf("Clone ActiveJob() = %q, want %q", clone.ActiveJob(), group.ActiveJob())
+	if snap.ActiveJob != "job-active" {
+		t.Errorf("Snap ActiveJob = %q, want %q", snap.ActiveJob, "job-active")
 	}
-	if clone.LockingJob() != group.LockingJob() {
-		t.Errorf("Clone LockingJob() = %q, want %q", clone.LockingJob(), group.LockingJob())
-	}
-	if clone.GetWaitingJobQueue().Len() != group.GetWaitingJobQueue().Len() {
-		t.Errorf("Clone Queue Len = %d, want %d", clone.GetWaitingJobQueue().Len(), group.GetWaitingJobQueue().Len())
-	}
-
-	// Verify queue contents
-	cloneQueue := clone.GetWaitingJobQueue().List()
-	origQueue := group.GetWaitingJobQueue().List()
-	if !reflect.DeepEqual(cloneQueue, origQueue) {
-		t.Errorf("Clone Queue = %+v, want %+v", cloneQueue, origQueue)
+	if snap.WaiterQueueDepth != 2 {
+		t.Errorf("Snap WaiterQueueDepth = %d, want %d", snap.WaiterQueueDepth, 2)
 	}
 
 	// Modify original group
 	group.SetNodes([]string{"node-c"})
 	group.SetState(pb.GroupStatus_STATE_LOCKED)
-	group.SetActiveJob("job-active-new")
-	if err := group.Unlock(ctx, "job-lock"); err != nil {
-		t.Fatalf("Unlock failed: %v", err)
-	}
-	group.GetWaitingJobQueue().Enqueue("job-wait-3")
 
-	// Verify clone remains unchanged
-	if reflect.DeepEqual(clone.Nodes(), group.Nodes()) {
-		t.Errorf("Clone Nodes changed after original changed")
+	if reflect.DeepEqual(snap.Nodes, group.Nodes()) {
+		t.Errorf("Snap Nodes changed after original changed (deep copy failed)")
 	}
-	cloneState2, _ := clone.State()
-	if cloneState2 == pb.GroupStatus_STATE_LOCKED {
-		t.Errorf("Clone State changed to LOCKED after original changed")
-	}
-	if clone.ActiveJob() == "job-active-new" {
-		t.Errorf("Clone ActiveJob changed after original changed")
-	}
-	if clone.LockingJob() == "" {
-		t.Errorf("Clone LockingJob changed after original unlocked")
-	}
-	if clone.GetWaitingJobQueue().Len() == 3 {
-		t.Errorf("Clone Queue Len changed after original enqueued new job")
+	state, _ := group.State()
+	if snap.State == state {
+		t.Errorf("Snap State changed after original changed")
 	}
 }
