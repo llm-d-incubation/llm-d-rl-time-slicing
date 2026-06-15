@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
@@ -28,6 +29,8 @@ type JobStore interface {
 	Get(ctx context.Context, groupID, jobID string) (*store.Job, error)
 	ListByGroup(ctx context.Context, groupID string) ([]*store.Job, error)
 }
+
+const acquirePollInterval = 1 * time.Second
 
 // Server implements the AcceleratorOrchestratorService gRPC server.
 type Server struct {
@@ -52,7 +55,68 @@ func (s *Server) Acquire(ctx context.Context, req *pb.AcquireRequest) (*pb.Acqui
 	ctx = logging.WithJobID(ctx, req.GetJobId())
 	ctx = logging.WithGroupID(ctx, req.GetGroupId())
 	slog.InfoContext(ctx, "Acquire called")
-	return nil, status.Errorf(codes.Unimplemented, "method Acquire not implemented")
+
+	groupID := req.GetGroupId()
+	jobID := req.GetJobId()
+	startTime := time.Now()
+
+	// 1. Get Group
+	group, err := s.groupStore.Get(ctx, groupID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "group %s not found", groupID)
+		}
+		return nil, status.Errorf(codes.Internal, "failed to get group: %v", err)
+	}
+
+	// 2. Request Lock
+	group.Spec().RequestLock(jobID)
+
+	// 3. Wait Loop
+	ticker := time.NewTicker(acquirePollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.InfoContext(ctx, "Acquire context cancelled", "error", ctx.Err())
+			return nil, status.FromContextError(ctx.Err()).Err()
+		case <-ticker.C:
+			// Check if group is faulted
+			faulted, err := s.isGroupFaulted(ctx, groupID)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to check if group is faulted: %v", err)
+			}
+			if faulted {
+				return nil, status.Errorf(codes.Unavailable, "group %s is faulted", groupID)
+			}
+
+			// Check if loaded job is ours
+			if group.Status().LoadedJob() == jobID {
+				slog.InfoContext(ctx, "Acquire succeeded, job loaded")
+				return &pb.AcquireResponse{
+					Success:         true,
+					ContextRestored: true, // Default to true, as we don't have enough info to determine if it was zero-overhead
+					WaitedMs:        time.Since(startTime).Milliseconds(),
+				}, nil
+			}
+		}
+	}
+}
+
+func (s *Server) isGroupFaulted(ctx context.Context, groupID string) (bool, error) {
+	jobs, err := s.jobStore.ListByGroup(ctx, groupID)
+	if err != nil {
+		return false, err
+	}
+	for _, job := range jobs {
+		for _, state := range job.ContextState() {
+			if state == pb.SnapshotAgentJobState_STATE_FAULTED {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // Yield implements AcceleratorOrchestratorService.Yield.

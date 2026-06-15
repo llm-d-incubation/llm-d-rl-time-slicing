@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"testing"
+	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
@@ -80,26 +81,145 @@ func bufDialer(context.Context, string) (net.Conn, error) {
 }
 
 func TestServer_Acquire(t *testing.T) {
-	cleanup := initGRPCServer(nil, nil)
-	defer cleanup()
-	ctx := context.Background()
-	conn, err := grpc.NewClient(
-		"passthrough:///bufnet",
-		grpc.WithContextDialer(bufDialer),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatalf("Failed to dial bufnet: %v", err)
-	}
-	defer conn.Close()
-	client := pb.NewAcceleratorOrchestratorServiceClient(conn)
+	tests := []struct {
+		name         string
+		setupStores  func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore)
+		groupID      string
+		jobID        string
+		timeout      time.Duration
+		expectedCode codes.Code
+		verify       func(t *testing.T, resp *pb.AcquireResponse, err error)
+	}{
+		{
+			name: "group not found",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				return store.NewGroupStore(store.NewMemLockStore()), store.NewJobStore()
+			},
+			groupID:      "unknown-group",
+			jobID:        "job-1",
+			expectedCode: codes.NotFound,
+		},
+		{
+			name: "group faulted",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				gs := store.NewGroupStore(store.NewMemLockStore())
+				_, _, err := gs.GetOrCreate(ctx, "group-1")
+				if err != nil {
+					t.Fatalf("failed to create group: %v", err)
+				}
+				js := store.NewJobStore()
+				job := store.NewJob("group-1", "job-2")
+				job.UpdateContextState("node-1", pb.SnapshotAgentJobState_STATE_FAULTED)
+				if err := js.Put(ctx, job); err != nil {
+					t.Fatalf("failed to put job: %v", err)
+				}
+				return gs, js
+			},
+			groupID:      "group-1",
+			jobID:        "job-1",
+			expectedCode: codes.Unavailable,
+		},
+		{
+			name: "timeout waiting for load",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				gs := store.NewGroupStore(store.NewMemLockStore())
+				_, _, err := gs.GetOrCreate(ctx, "group-1")
+				if err != nil {
+					t.Fatalf("failed to create group: %v", err)
+				}
+				return gs, store.NewJobStore()
+			},
+			groupID:      "group-1",
+			jobID:        "job-1",
+			timeout:      100 * time.Millisecond,
+			expectedCode: codes.DeadlineExceeded,
+		},
+		{
+			name: "success after wait",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				gs := store.NewGroupStore(store.NewMemLockStore())
+				g, _, err := gs.GetOrCreate(ctx, "group-1")
+				if err != nil {
+					t.Fatalf("failed to create group: %v", err)
+				}
 
-	_, err = client.Acquire(ctx, &pb.AcquireRequest{
-		JobId:   "test-job",
-		GroupId: "test-group",
-	})
-	if status.Code(err) != codes.Unimplemented {
-		t.Errorf("Expected Unimplemented error, got: %v", err)
+				// Simulate controller loading the job after a short delay
+				go func() {
+					time.Sleep(50 * time.Millisecond)
+					g.Status().SetLoadedJob("job-1")
+				}()
+
+				return gs, store.NewJobStore()
+			},
+			groupID:      "group-1",
+			jobID:        "job-1",
+			expectedCode: codes.OK,
+			verify: func(t *testing.T, resp *pb.AcquireResponse, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if !resp.Success {
+					t.Errorf("Expected success to be true")
+				}
+				if resp.WaitedMs < 50 {
+					t.Errorf("Expected WaitedMs to be at least 50ms, got %d", resp.WaitedMs)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			serverCtx := context.Background()
+			clientCtx := context.Background()
+			if tc.timeout > 0 {
+				var cancel context.CancelFunc
+				clientCtx, cancel = context.WithTimeout(clientCtx, tc.timeout)
+				defer cancel()
+			}
+			gs, js := tc.setupStores(t, serverCtx)
+
+			cleanup := initGRPCServer(gs, js)
+			defer cleanup()
+			conn, err := grpc.NewClient(
+				"passthrough:///bufnet",
+				grpc.WithContextDialer(bufDialer),
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+			)
+			if err != nil {
+				t.Fatalf("Failed to dial bufnet: %v", err)
+			}
+			defer conn.Close()
+			client := pb.NewAcceleratorOrchestratorServiceClient(conn)
+
+			resp, err := client.Acquire(clientCtx, &pb.AcquireRequest{
+				GroupId: tc.groupID,
+				JobId:   tc.jobID,
+			})
+
+			if tc.expectedCode != codes.OK {
+				if err == nil {
+					t.Fatalf("Expected error, got nil")
+				}
+				st, ok := status.FromError(err)
+				if !ok {
+					t.Fatalf("Expected gRPC status error, got: %v", err)
+				}
+				if st.Code() != tc.expectedCode {
+					t.Errorf("Expected code %v, got %v", tc.expectedCode, st.Code())
+				}
+				return
+			}
+
+			if tc.verify != nil {
+				tc.verify(t, resp, err)
+			}
+		})
 	}
 }
 
