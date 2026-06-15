@@ -18,6 +18,7 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 		nodes      []string
 		lockingJob string
 		state      pb.GroupStatus_State
+		loadedJob  string
 	}{
 		{
 			name:       "empty/nil values",
@@ -25,6 +26,7 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 			nodes:      nil,
 			lockingJob: "",
 			state:      pb.GroupStatus_STATE_UNSPECIFIED,
+			loadedJob:  "",
 		},
 		{
 			name:       "populated values",
@@ -32,6 +34,7 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 			nodes:      []string{"node-a", "node-b"},
 			lockingJob: "job-a",
 			state:      pb.GroupStatus_STATE_IDLE,
+			loadedJob:  "job-loaded",
 		},
 	}
 
@@ -50,6 +53,7 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 				t.Fatalf("NewGroup failed: %v", err)
 			}
 			group.Status().SetNodes(tc.nodes)
+			group.Status().SetLoadedJob(tc.loadedJob)
 
 			if group.ID() != tc.groupID {
 				t.Errorf("ID() = %q, want %q", group.ID(), tc.groupID)
@@ -57,6 +61,10 @@ func TestGroup_GettersAndSetters(t *testing.T) {
 
 			if !reflect.DeepEqual(group.Status().Nodes(), tc.nodes) {
 				t.Errorf("Nodes() = %+v, want %+v", group.Status().Nodes(), tc.nodes)
+			}
+
+			if group.Status().LoadedJob() != tc.loadedJob {
+				t.Errorf("LoadedJob() = %q, want %q", group.Status().LoadedJob(), tc.loadedJob)
 			}
 
 			// Verify deep copy/mutation protection for Nodes
@@ -334,6 +342,7 @@ func TestGroup_Snapshot(t *testing.T) {
 
 	group.Status().SetNodes([]string{"node-a", "node-b"})
 	group.Status().SetState(pb.GroupStatus_STATE_IDLE)
+	group.Status().SetLoadedJob("job-loaded")
 	group.Spec().SetActiveJob("job-active")
 	group.Spec().GetWaitingJobQueue().Enqueue("job-wait-1")
 	group.Spec().GetWaitingJobQueue().Enqueue("job-wait-2")
@@ -360,10 +369,14 @@ func TestGroup_Snapshot(t *testing.T) {
 	if snap.WaiterQueueDepth != 2 {
 		t.Errorf("Snap WaiterQueueDepth = %d, want %d", snap.WaiterQueueDepth, 2)
 	}
+	if snap.LoadedJob != "job-loaded" {
+		t.Errorf("Snap LoadedJob = %q, want %q", snap.LoadedJob, "job-loaded")
+	}
 
 	// Modify original group
 	group.Status().SetNodes([]string{"node-c"})
 	group.Status().SetState(pb.GroupStatus_STATE_LOCKED)
+	group.Status().SetLoadedJob("job-new-loaded")
 
 	if reflect.DeepEqual(snap.Nodes, group.Status().Nodes()) {
 		t.Errorf("Snap Nodes changed after original changed (deep copy failed)")
@@ -371,5 +384,8 @@ func TestGroup_Snapshot(t *testing.T) {
 	state, _ := group.Status().State()
 	if snap.State == state {
 		t.Errorf("Snap State changed after original changed")
+	}
+	if snap.LoadedJob == group.Status().LoadedJob() {
+		t.Errorf("Snap LoadedJob changed after original changed")
 	}
 }

@@ -134,12 +134,19 @@ message GroupStatus {
   // Empty if the group is currently idle (unlocked).
   string locking_job = 4;
 
-  // active_job is the job_id of the job whose context is currently active on the accelerators in the group.
+  // active_job is the job_id of the job whose context is requested to be active on the accelerators in the group.
+  // Different from locking_job because the STATE_IDLE_YIELDED state allows to a job to not be locking 
+  // but still be active on the nodes.
   // Empty if no job context is active.
   string active_job = 5;
 
   // waiter_queue_depth is the number of jobs currently waiting in the queue.
   int64 waiter_queue_depth = 6;
+
+  // loaded_job is the job_id of the job for which the controller has ensured the context has been loaded for.
+  // Controller will reconcile loaded_job towards active_job.
+  // Empty if no job context is loaded.
+  string loaded_job = 7;
 }
 
 // SnapshotAgentJobState represents the state of a job's accelerator context

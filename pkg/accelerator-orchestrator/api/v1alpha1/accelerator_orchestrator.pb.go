@@ -591,13 +591,19 @@ type GroupStatus struct {
 	// locking_job is the job_id of the job currently holding the group lock.
 	// Empty if the group is currently idle (unlocked).
 	LockingJob string `protobuf:"bytes,4,opt,name=locking_job,json=lockingJob,proto3" json:"locking_job,omitempty"`
-	// active_job is the job_id of the job whose context is currently active on the accelerators in the group.
+	// active_job is the job_id of the job whose context is requested to be active on the accelerators in the group.
+	// Different from locking_job because the STATE_IDLE_YIELDED state allows to a job to not be locking
+	// but still be active on the nodes.
 	// Empty if no job context is active.
 	ActiveJob string `protobuf:"bytes,5,opt,name=active_job,json=activeJob,proto3" json:"active_job,omitempty"`
 	// waiter_queue_depth is the number of jobs currently waiting in the queue.
 	WaiterQueueDepth int64 `protobuf:"varint,6,opt,name=waiter_queue_depth,json=waiterQueueDepth,proto3" json:"waiter_queue_depth,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// loaded_job is the job_id of the job for which the controller has ensured the context has been loaded for.
+	// Controller will reconcile loaded_job towards active_job.
+	// Empty if no job context is loaded.
+	LoadedJob     string `protobuf:"bytes,7,opt,name=loaded_job,json=loadedJob,proto3" json:"loaded_job,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GroupStatus) Reset() {
@@ -670,6 +676,13 @@ func (x *GroupStatus) GetWaiterQueueDepth() int64 {
 		return x.WaiterQueueDepth
 	}
 	return 0
+}
+
+func (x *GroupStatus) GetLoadedJob() string {
+	if x != nil {
+		return x.LoadedJob
+	}
+	return ""
 }
 
 // SnapshotAgentJobState represents the state of a job's accelerator context
@@ -763,7 +776,7 @@ const file_accelerator_orchestrator_proto_rawDesc = "" +
 	"\bgroup_id\x18\x01 \x01(\tR\agroupId\"\xc2\x01\n" +
 	"\x16GetGroupStatusResponse\x12D\n" +
 	"\x05group\x18\x01 \x01(\v2..accelerator_orchestrator.v1alpha1.GroupStatusR\x05group\x12b\n" +
-	"\x10agent_job_states\x18\x02 \x03(\v28.accelerator_orchestrator.v1alpha1.SnapshotAgentJobStateR\x0eagentJobStates\"\xb5\x03\n" +
+	"\x10agent_job_states\x18\x02 \x03(\v28.accelerator_orchestrator.v1alpha1.SnapshotAgentJobStateR\x0eagentJobStates\"\xd4\x03\n" +
 	"\vGroupStatus\x12\x19\n" +
 	"\bgroup_id\x18\x01 \x01(\tR\agroupId\x12U\n" +
 	"\vgroup_state\x18\x02 \x01(\x0e24.accelerator_orchestrator.v1alpha1.GroupStatus.StateR\n" +
@@ -773,7 +786,9 @@ const file_accelerator_orchestrator_proto_rawDesc = "" +
 	"lockingJob\x12\x1d\n" +
 	"\n" +
 	"active_job\x18\x05 \x01(\tR\tactiveJob\x12,\n" +
-	"\x12waiter_queue_depth\x18\x06 \x01(\x03R\x10waiterQueueDepth\"\x80\x01\n" +
+	"\x12waiter_queue_depth\x18\x06 \x01(\x03R\x10waiterQueueDepth\x12\x1d\n" +
+	"\n" +
+	"loaded_job\x18\a \x01(\tR\tloadedJob\"\x80\x01\n" +
 	"\x05State\x12\x15\n" +
 	"\x11STATE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rSTATE_UNKNOWN\x10\x01\x12\x0e\n" +

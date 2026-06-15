@@ -36,6 +36,10 @@ type GroupStatus struct {
 	nodes          []string
 	state          pb.GroupStatus_State
 	stateTimestamp time.Time
+	// loadedJob is a job that the controller has loaded all
+	// the snapshotted context for on the nodes. Context for all
+	// other jobs will have been offloaded as well.
+	loadedJob string
 }
 
 func (s *GroupStatus) Nodes() []string {
@@ -64,6 +68,18 @@ func (s *GroupStatus) SetState(state pb.GroupStatus_State) {
 	}
 	s.state = state
 	s.stateTimestamp = time.Now()
+}
+
+func (s *GroupStatus) LoadedJob() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.loadedJob
+}
+
+func (s *GroupStatus) SetLoadedJob(jobID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadedJob = jobID
 }
 
 // Group represents the in-memory and persistent state of a time-slice group.
@@ -189,6 +205,7 @@ type GroupSnapshot struct {
 	LockingJob       string
 	ActiveJob        string
 	WaiterQueueDepth int
+	LoadedJob        string
 }
 
 // Snapshot returns a consistent, point-in-time snapshot of the group's state.
@@ -199,6 +216,8 @@ func (g *Group) Snapshot() *GroupSnapshot {
 	// Deep copy nodes slice
 	nodes := make([]string, len(g.status.nodes))
 	copy(nodes, g.status.nodes)
+
+	loadedJob := g.status.loadedJob
 
 	g.spec.mu.RLock()
 	defer g.spec.mu.RUnlock()
@@ -211,6 +230,7 @@ func (g *Group) Snapshot() *GroupSnapshot {
 		LockingJob:       g.spec.lockingJob,
 		ActiveJob:        g.spec.activeJob,
 		WaiterQueueDepth: g.spec.queue.Len(),
+		LoadedJob:        loadedJob,
 	}
 }
 
