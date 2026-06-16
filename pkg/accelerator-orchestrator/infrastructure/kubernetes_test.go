@@ -18,9 +18,11 @@ import (
 )
 
 type fakeSnapshotAgentStore struct {
-	statusFunc   func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
-	closeFunc    func(nodeName string) error
-	snapshotFunc func(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.SnapshotResponse, error)
+	statusFunc    func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
+	closeFunc     func(nodeName string) error
+	snapshotFunc  func(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.SnapshotResponse, error)
+	operationFunc func(ctx context.Context, nodeName, operationID string) (*agentpb.GetOperationResponse, error)
+	restoreFunc   func(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.RestoreResponse, error)
 }
 
 func (f *fakeSnapshotAgentStore) GetStatus(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error) {
@@ -44,6 +46,24 @@ func (f *fakeSnapshotAgentStore) Snapshot(
 		return f.snapshotFunc(ctx, nodeName, jobID, groupID)
 	}
 	return &agentpb.SnapshotResponse{}, nil
+}
+
+func (f *fakeSnapshotAgentStore) GetOperation(
+	ctx context.Context, nodeName, operationID string,
+) (*agentpb.GetOperationResponse, error) {
+	if f.operationFunc != nil {
+		return f.operationFunc(ctx, nodeName, operationID)
+	}
+	return &agentpb.GetOperationResponse{}, nil
+}
+
+func (f *fakeSnapshotAgentStore) Restore(
+	ctx context.Context, nodeName, jobID, groupID string,
+) (*agentpb.RestoreResponse, error) {
+	if f.restoreFunc != nil {
+		return f.restoreFunc(ctx, nodeName, jobID, groupID)
+	}
+	return &agentpb.RestoreResponse{}, nil
 }
 
 func TestObserveGroupState_Cleanup(t *testing.T) {

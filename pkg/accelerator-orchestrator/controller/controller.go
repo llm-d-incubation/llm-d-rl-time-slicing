@@ -14,6 +14,10 @@ import (
 	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 )
 
+const (
+	operationPollInterval = 1 * time.Second
+)
+
 // handleCrash is a helper that recovers from panics, logs the panic and stack trace.
 // It is intended to be used in `defer` statements in goroutines.
 func handleCrash(ctx context.Context) {
@@ -246,13 +250,50 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 		}
 	}
 
+	// TODO: crash recovery detect that an agent is still in the middle of transistioning. We will not have the operation
+	// number but we can still wait till it leaves that state.
+
 	for jobID, state := range agentJobStates {
-		if jobID != activeJobID && state == pb.SnapshotAgentJobState_STATE_RUNNING {
-			slog.InfoContext(ctx, "Triggering snapshot for job", "jobID", jobID, "state", state)
-			if _, err := c.agentStore.Snapshot(ctx, nodeName, jobID, groupID); err != nil {
-				return fmt.Errorf("failed to trigger snapshot for job %s on node %s: %w", jobID, nodeName, err)
-			}
+		if jobID == activeJobID || state != pb.SnapshotAgentJobState_STATE_RUNNING {
+			continue
 		}
+
+		slog.InfoContext(ctx, "Triggering snapshot for job", "jobID", jobID, "state", state)
+		resp, err := c.agentStore.Snapshot(ctx, nodeName, jobID, groupID)
+		if err != nil {
+			return fmt.Errorf("failed to trigger snapshot for job %s on node %s: %w", jobID, nodeName, err)
+		}
+		if err := c.waitForOperation(ctx, nodeName, resp.OperationId); err != nil {
+			return fmt.Errorf("failed while waiting for snapshot operation %s for job %s on node %s: %w",
+				resp.OperationId, jobID, nodeName, err)
+		}
+		if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
+			return fmt.Errorf("failed to refresh agent state after snapshot: %w", err)
+		}
+	}
+
+	// 4. Restore logic (checking if active job needs to be restored)
+	if activeJobID == "" {
+		return nil
+	}
+
+	state, ok := agentJobStates[activeJobID]
+	if !ok || state != pb.SnapshotAgentJobState_STATE_SAVED {
+		return nil
+	}
+
+	slog.InfoContext(ctx, "Triggering restore for active job", "jobID", activeJobID, "state", state)
+	resp, err := c.agentStore.Restore(ctx, nodeName, activeJobID, groupID)
+	if err != nil {
+		return fmt.Errorf("failed to trigger restore for active job %s on node %s: %w",
+			activeJobID, nodeName, err)
+	}
+	if err := c.waitForOperation(ctx, nodeName, resp.OperationId); err != nil {
+		return fmt.Errorf("failed waiting for restore op %s for job %s on %s: %w",
+			resp.OperationId, activeJobID, nodeName, err)
+	}
+	if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
+		return fmt.Errorf("failed to refresh agent state after restore: %w", err)
 	}
 
 	return nil
@@ -273,27 +314,36 @@ func (c *Controller) ObserveJobContext(ctx context.Context, groupID string) erro
 	groupNodes := g.Status().Nodes()
 
 	for _, nodeName := range groupNodes {
-		resp, err := c.agentStore.GetStatus(ctx, nodeName)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to get status from snapshot agent", "error", err, "node", nodeName)
+		if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// observeNodeJobContext queries the snapshot agent for a single node and updates job context states in the store.
+// It logs and ignores agent communication errors (non-fatal), but returns store errors (fatal).
+func (c *Controller) observeNodeJobContext(ctx context.Context, groupID, nodeName string) error {
+	resp, err := c.agentStore.GetStatus(ctx, nodeName)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get status from snapshot agent", "error", err, "node", nodeName)
+		return nil
+	}
+
+	for _, js := range resp.JobStatuses {
+		// Only update if the job is known in this group
+		_, err := c.jobStore.Get(ctx, groupID, js.JobId)
+		if errors.Is(err, store.ErrNotFound) {
 			continue
+		} else if err != nil {
+			return fmt.Errorf("failed to get job %s from store: %w", js.JobId, err)
 		}
 
-		for _, js := range resp.JobStatuses {
-			// Only update if the job is known in this group
-			_, err := c.jobStore.Get(ctx, groupID, js.JobId)
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			} else if err != nil {
-				return err
-			}
-
-			state := translateJobState(js.State)
-			if err := c.jobStore.UpdateContextState(ctx, groupID, js.JobId, nodeName, state); err != nil {
-				return err
-			}
-			slog.InfoContext(ctx, "Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
+		state := translateJobState(js.State)
+		if err := c.jobStore.UpdateContextState(ctx, groupID, js.JobId, nodeName, state); err != nil {
+			return fmt.Errorf("failed to update job context state for job %s on node %s: %w", js.JobId, nodeName, err)
 		}
+		slog.DebugContext(ctx, "Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
 	}
 	return nil
 }
@@ -312,5 +362,46 @@ func translateJobState(s agentpb.JobState) pb.SnapshotAgentJobState_State {
 		return pb.SnapshotAgentJobState_STATE_FAULTED
 	default:
 		return pb.SnapshotAgentJobState_STATE_UNSPECIFIED
+	}
+}
+
+// waitForOperation blocks until the given operation on the node completes or fails.
+func (c *Controller) waitForOperation(ctx context.Context, nodeName, operationID string) error {
+	ticker := time.NewTicker(operationPollInterval)
+	defer ticker.Stop()
+
+	slog.InfoContext(ctx, "Waiting for agent operation to complete", "operationID", operationID, "node", nodeName)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for operation %s: %w", operationID, ctx.Err())
+		case <-ticker.C:
+			resp, err := c.agentStore.GetOperation(ctx, nodeName, operationID)
+			if err != nil {
+				slog.WarnContext(ctx, "Failed to get operation status, will retry",
+					"error", err, "operationID", operationID, "node", nodeName)
+				continue
+			}
+
+			switch resp.Status {
+			case agentpb.OperationStatus_OPERATION_STATUS_COMPLETE:
+				slog.InfoContext(ctx, "Operation completed successfully",
+					"operationID", operationID, "node", nodeName, "elapsedMs", resp.ElapsedMs)
+				return nil
+			case agentpb.OperationStatus_OPERATION_STATUS_FAILED:
+				errStr := "unknown error"
+				if resp.Error != nil {
+					errStr = *resp.Error
+				}
+				return fmt.Errorf("operation %s failed: %s", operationID, errStr)
+			case agentpb.OperationStatus_OPERATION_STATUS_PENDING:
+				slog.DebugContext(ctx, "Operation still pending",
+					"operationID", operationID, "node", nodeName, "elapsedMs", resp.ElapsedMs)
+			default:
+				slog.WarnContext(ctx, "Unknown operation status",
+					"status", resp.Status, "operationID", operationID, "node", nodeName)
+			}
+		}
 	}
 }

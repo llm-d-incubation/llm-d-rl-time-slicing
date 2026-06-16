@@ -36,6 +36,8 @@ func (m *mockInfrastructureOrchestrator) ObserveGroupState(ctx context.Context, 
 type mockSnapshotAgentStore struct {
 	getStatusFunc func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
 	snapshotFunc  func(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.SnapshotResponse, error)
+	operationFunc func(ctx context.Context, nodeName, operationID string) (*agentpb.GetOperationResponse, error)
+	restoreFunc   func(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.RestoreResponse, error)
 }
 
 func (m *mockSnapshotAgentStore) GetStatus(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error) {
@@ -56,6 +58,24 @@ func (m *mockSnapshotAgentStore) Snapshot(
 		return m.snapshotFunc(ctx, nodeName, jobID, groupID)
 	}
 	return &agentpb.SnapshotResponse{}, nil
+}
+
+func (m *mockSnapshotAgentStore) GetOperation(
+	ctx context.Context, nodeName, operationID string,
+) (*agentpb.GetOperationResponse, error) {
+	if m.operationFunc != nil {
+		return m.operationFunc(ctx, nodeName, operationID)
+	}
+	return &agentpb.GetOperationResponse{}, nil
+}
+
+func (m *mockSnapshotAgentStore) Restore(
+	ctx context.Context, nodeName, jobID, groupID string,
+) (*agentpb.RestoreResponse, error) {
+	if m.restoreFunc != nil {
+		return m.restoreFunc(ctx, nodeName, jobID, groupID)
+	}
+	return &agentpb.RestoreResponse{}, nil
 }
 
 // TestController_ReconcileSuccess verifies that the controller calls ObserveGroupState
@@ -451,12 +471,37 @@ func TestController_Reconcile_TriggersSnapshot(t *testing.T) {
 
 	// 3. Mock SnapshotAgentStore to track calls
 	snapshotCalled := make(chan string, 1)
+	getStatusCalls := 0
 	mockAgentStore := &mockSnapshotAgentStore{
+		getStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+			if node == nodeName {
+				getStatusCalls++
+				state := agentpb.JobState_JOB_STATE_RUNNING
+				if getStatusCalls > 1 {
+					state = agentpb.JobState_JOB_STATE_SAVED
+				}
+				return &agentpb.StatusResponse{
+					JobStatuses: []*agentpb.JobStatus{
+						{JobId: "job-2", State: state},
+						{JobId: "job-1", State: agentpb.JobState_JOB_STATE_IDLE},
+					},
+				}, nil
+			}
+			return &agentpb.StatusResponse{}, nil
+		},
 		snapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
 			if node == nodeName && jobID == "job-2" && gID == groupID {
 				snapshotCalled <- jobID
 			}
 			return &agentpb.SnapshotResponse{OperationId: "op-123"}, nil
+		},
+		operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			if node == nodeName && operationID == "op-123" {
+				return &agentpb.GetOperationResponse{
+					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
+				}, nil
+			}
+			return &agentpb.GetOperationResponse{}, nil
 		},
 	}
 
@@ -487,6 +532,19 @@ func TestController_Reconcile_TriggersSnapshot(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timed out waiting for Snapshot to be called")
+	}
+
+	// Verify that the job state in store was refreshed to SAVED
+	err = waitWithTimeout(func() bool {
+		j, err := jobStore.Get(ctx, groupID, "job-2")
+		if err != nil {
+			return false
+		}
+		state, ok := j.ContextState()[nodeName]
+		return ok && state == pb.SnapshotAgentJobState_STATE_SAVED
+	}, 2*time.Second)
+	if err != nil {
+		t.Errorf("Timed out waiting for job-2 state to be refreshed to SAVED in store")
 	}
 }
 
@@ -613,5 +671,113 @@ func TestController_ObserveJobContext(t *testing.T) {
 	}
 	if state != pb.SnapshotAgentJobState_STATE_RUNNING {
 		t.Errorf("Expected job-1 state to be RUNNING, got %v", state)
+	}
+}
+
+func TestController_Reconcile_TriggersRestore(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.DefaultTypedControllerRateLimiter[string](),
+		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+	)
+
+	groupID := "group-1"
+	nodeName := "node-1"
+
+	// 1. Setup group and nodes
+	testGroup, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	testGroup.Status().SetNodes([]string{nodeName})
+	testGroup.Spec().SetActiveJob("job-1")
+
+	// 2. Setup jobs in store
+	job1 := store.NewJob(groupID, "job-1")
+	job1.UpdateContextState(nodeName, pb.SnapshotAgentJobState_STATE_SAVED)
+
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+
+	// 3. Mock SnapshotAgentStore to track calls
+	restoreCalled := make(chan string, 1)
+	getStatusCalls := 0
+	mockAgentStore := &mockSnapshotAgentStore{
+		getStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+			if node == nodeName {
+				getStatusCalls++
+				state := agentpb.JobState_JOB_STATE_SAVED
+				if getStatusCalls > 1 {
+					state = agentpb.JobState_JOB_STATE_RUNNING
+				}
+				return &agentpb.StatusResponse{
+					JobStatuses: []*agentpb.JobStatus{
+						{JobId: "job-1", State: state},
+					},
+				}, nil
+			}
+			return &agentpb.StatusResponse{}, nil
+		},
+		restoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+			if node == nodeName && jobID == "job-1" && gID == groupID {
+				restoreCalled <- jobID
+			}
+			return &agentpb.RestoreResponse{OperationId: "op-123"}, nil
+		},
+		operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			if node == nodeName && operationID == "op-123" {
+				return &agentpb.GetOperationResponse{
+					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
+				}, nil
+			}
+			return &agentpb.GetOperationResponse{}, nil
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, queue, mockOrch, mockAgentStore)
+
+	// Start the controller
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	// Trigger reconcile
+	queue.Add(groupID)
+
+	// Verify Restore was called
+	select {
+	case jobID := <-restoreCalled:
+		if jobID != "job-1" {
+			t.Errorf("Expected restore to be called for job-1, got %s", jobID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for Restore to be called")
+	}
+
+	// Verify that the job state in store was refreshed to RUNNING
+	err = waitWithTimeout(func() bool {
+		j, err := jobStore.Get(ctx, groupID, "job-1")
+		if err != nil {
+			return false
+		}
+		state, ok := j.ContextState()[nodeName]
+		return ok && state == pb.SnapshotAgentJobState_STATE_RUNNING
+	}, 2*time.Second)
+	if err != nil {
+		t.Errorf("Timed out waiting for job-1 state to be refreshed to RUNNING in store")
 	}
 }
