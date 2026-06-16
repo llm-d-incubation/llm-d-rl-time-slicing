@@ -88,6 +88,7 @@ func run() error {
 		jobStore,
 		queue,
 		infraOrch,
+		snapshotAgentStore,
 	)
 
 	// Start informers
