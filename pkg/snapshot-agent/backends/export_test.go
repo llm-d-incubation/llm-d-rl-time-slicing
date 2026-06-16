@@ -2,7 +2,7 @@ package backends
 
 import "context"
 
-// Exported for testing
+// Exported for testing.
 var (
 	GetCudaCheckpointPath = (*CudaCheckpoint).getCudaCheckpointPath
 	RunSudoCommand        = (*CudaCheckpoint).runSudoCommand

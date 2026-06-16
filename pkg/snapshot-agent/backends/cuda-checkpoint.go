@@ -20,8 +20,14 @@ type nvmlClient interface {
 
 type defaultNvmlClient struct{}
 
-func (d *defaultNvmlClient) Init() nvml.Return           { return nvml.Init() }
-func (d *defaultNvmlClient) Shutdown() nvml.Return       { return nvml.Shutdown() }
+func (d *defaultNvmlClient) Init() nvml.Return {
+	return nvml.Init()
+}
+
+func (d *defaultNvmlClient) Shutdown() nvml.Return {
+	return nvml.Shutdown()
+}
+
 func (d *defaultNvmlClient) DeviceGetCount() (int, nvml.Return) {
 	return nvml.DeviceGetCount()
 }
