@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -129,6 +130,68 @@ func TestGetPodPIDs(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name:      "PIDs not in pod cgroup",
+			podName:   "test-pod",
+			namespace: "test-ns",
+			setupMocks: func() {
+				podUID := "test-uid"
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "test-ns",
+						UID:       types.UID(podUID),
+					},
+				}
+				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+					return fake.NewSimpleClientset(pod), nil
+				}
+				utils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
+				utils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
+				device := &mockDevice{
+					computeProcs: []nvml.ProcessInfo{{Pid: 400}, {Pid: 500}},
+				}
+				utils.NvmlDeviceGetHandleByIndex = func(index int) (utils.DeviceInterface, nvml.Return) {
+					return device, nvml.SUCCESS
+				}
+				utils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
+					return false, nil // None of the PIDs belong to this pod
+				}
+			},
+			expectedPIDs: nil,
+			expectError:  false,
+		},
+		{
+			name:      "IsPIDInPodCgroupFunc error",
+			podName:   "test-pod",
+			namespace: "test-ns",
+			setupMocks: func() {
+				podUID := "test-uid"
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "test-ns",
+						UID:       types.UID(podUID),
+					},
+				}
+				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+					return fake.NewSimpleClientset(pod), nil
+				}
+				utils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
+				utils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
+				device := &mockDevice{
+					computeProcs: []nvml.ProcessInfo{{Pid: 600}},
+				}
+				utils.NvmlDeviceGetHandleByIndex = func(index int) (utils.DeviceInterface, nvml.Return) {
+					return device, nvml.SUCCESS
+				}
+				utils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
+					return false, fmt.Errorf("cgroup error")
+				}
+			},
+			expectedPIDs: nil,
+			expectError:  false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -139,8 +202,12 @@ func TestGetPodPIDs(t *testing.T) {
 				t.Errorf("GetPodPIDs() error = %v, expectError %v", err, tt.expectError)
 				return
 			}
-			if !tt.expectError && !reflect.DeepEqual(pids, tt.expectedPIDs) {
-				t.Errorf("GetPodPIDs() = %v, expected %v", pids, tt.expectedPIDs)
+			if !tt.expectError {
+				sort.Ints(pids)
+				sort.Ints(tt.expectedPIDs)
+				if !reflect.DeepEqual(pids, tt.expectedPIDs) {
+					t.Errorf("GetPodPIDs() = %v, expected %v", pids, tt.expectedPIDs)
+				}
 			}
 		})
 	}
