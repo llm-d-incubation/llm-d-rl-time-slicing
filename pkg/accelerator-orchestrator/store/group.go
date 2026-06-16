@@ -128,6 +128,7 @@ func (g *Group) Lock(ctx context.Context, jobID string) error {
 	return nil
 }
 
+// Unlock persistently releases the lock for the group.
 func (g *Group) Unlock(ctx context.Context, jobID string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -139,4 +140,35 @@ func (g *Group) Unlock(ctx context.Context, jobID string) error {
 	}
 	g.lockingJob = ""
 	return nil
+}
+
+// GroupSnapshot represents an immutable, point-in-time copy of a Group's state.
+type GroupSnapshot struct {
+	ID               string
+	Nodes            []string
+	State            pb.GroupStatus_State
+	StateTimestamp   time.Time
+	LockingJob       string
+	ActiveJob        string
+	WaiterQueueDepth int
+}
+
+// Snapshot returns a consistent, point-in-time snapshot of the group's state.
+func (g *Group) Snapshot() *GroupSnapshot {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	// Deep copy nodes slice
+	nodes := make([]string, len(g.nodes))
+	copy(nodes, g.nodes)
+
+	return &GroupSnapshot{
+		ID:               g.id,
+		Nodes:            nodes,
+		State:            g.state,
+		StateTimestamp:   g.stateTimestamp,
+		LockingJob:       g.lockingJob,
+		ActiveJob:        g.activeJob,
+		WaiterQueueDepth: g.queue.Len(),
+	}
 }

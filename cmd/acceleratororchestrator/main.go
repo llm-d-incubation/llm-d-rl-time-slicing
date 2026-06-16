@@ -95,7 +95,7 @@ func run() error {
 	podInformerFactory.Start(ctx.Done())
 
 	slog.InfoContext(ctx, "Starting Accelerator Orchestrator server")
-	return server.StartServer(ctx, *port, ctrl, *controllerWorkers)
+	return server.StartServer(ctx, *port, ctrl, groupStore, jobStore, *controllerWorkers)
 }
 
 func buildKubeConfig(kubeconfigPath string) (*rest.Config, error) {

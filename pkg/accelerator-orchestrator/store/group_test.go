@@ -188,3 +188,56 @@ func TestNewGroup_InitializeLock(t *testing.T) {
 		t.Errorf("NewGroup did not initialize lockingJob from lockStore, got %q, want %q", group.LockingJob(), jobID)
 	}
 }
+
+func TestGroup_Snapshot(t *testing.T) {
+	ctx := context.Background()
+	lockStore := store.NewMemLockStore()
+	if err := lockStore.Lock(ctx, "group-1", "job-lock"); err != nil {
+		t.Fatalf("failed to lock: %v", err)
+	}
+	group, err := store.NewGroup(ctx, "group-1", lockStore)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+
+	group.SetNodes([]string{"node-a", "node-b"})
+	group.SetState(pb.GroupStatus_STATE_IDLE)
+	group.SetActiveJob("job-active")
+	group.GetWaitingJobQueue().Enqueue("job-wait-1")
+	group.GetWaitingJobQueue().Enqueue("job-wait-2")
+
+	// Take snapshot
+	snap := group.Snapshot()
+
+	// Verify snapshot values
+	if snap.ID != "group-1" {
+		t.Errorf("Snap ID = %q, want %q", snap.ID, "group-1")
+	}
+	if !reflect.DeepEqual(snap.Nodes, []string{"node-a", "node-b"}) {
+		t.Errorf("Snap Nodes = %+v, want %+v", snap.Nodes, []string{"node-a", "node-b"})
+	}
+	if snap.State != pb.GroupStatus_STATE_IDLE {
+		t.Errorf("Snap State = %v, want %v", snap.State, pb.GroupStatus_STATE_IDLE)
+	}
+	if snap.LockingJob != "job-lock" {
+		t.Errorf("Snap LockingJob = %q, want %q", snap.LockingJob, "job-lock")
+	}
+	if snap.ActiveJob != "job-active" {
+		t.Errorf("Snap ActiveJob = %q, want %q", snap.ActiveJob, "job-active")
+	}
+	if snap.WaiterQueueDepth != 2 {
+		t.Errorf("Snap WaiterQueueDepth = %d, want %d", snap.WaiterQueueDepth, 2)
+	}
+
+	// Modify original group
+	group.SetNodes([]string{"node-c"})
+	group.SetState(pb.GroupStatus_STATE_LOCKED)
+
+	if reflect.DeepEqual(snap.Nodes, group.Nodes()) {
+		t.Errorf("Snap Nodes changed after original changed (deep copy failed)")
+	}
+	state, _ := group.State()
+	if snap.State == state {
+		t.Errorf("Snap State changed after original changed")
+	}
+}

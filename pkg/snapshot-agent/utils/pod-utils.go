@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	// JobIDLabel is the label used to identify the job ID.
-	JobIDLabel string = "timeslice.io/job-id"
+	// JobIDLabel is the label used to identify pods by their job ID.
+	JobIDLabel = "timeslice.io/job-id"
 )
 
 var (
