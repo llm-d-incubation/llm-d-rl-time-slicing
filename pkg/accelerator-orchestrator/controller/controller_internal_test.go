@@ -50,46 +50,46 @@ func TestController_WaitForOperation(t *testing.T) {
 	nodeName := "node-1"
 	opID := "op-123"
 
-	t.Run("Success Immediate", func(t *testing.T) {
-		mockAgent := &mockAgentStoreForInternal{
+	pendingCalls := 0
+
+	tests := []struct {
+		name          string
+		operationFunc func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error)
+		ctx           func() (context.Context, context.CancelFunc)
+		wantErr       error
+		wantErrMsg    string
+		verify        func(t *testing.T, duration time.Duration)
+	}{
+		{
+			name: "Success Immediate",
 			operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
 				return &agentpb.GetOperationResponse{
 					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
 				}, nil
 			},
-		}
-		c := &Controller{agentStore: mockAgent}
-		err := c.waitForOperation(context.Background(), nodeName, opID)
-		if err != nil {
-			t.Errorf("Expected no error, got %v", err)
-		}
-	})
-
-	t.Run("Failure Immediate", func(t *testing.T) {
-		errMsg := "something went wrong"
-		mockAgent := &mockAgentStoreForInternal{
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.Background(), func() {}
+			},
+		},
+		{
+			name: "Failure Immediate",
 			operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+				errMsg := "something went wrong"
 				return &agentpb.GetOperationResponse{
 					Status: agentpb.OperationStatus_OPERATION_STATUS_FAILED,
 					Error:  &errMsg,
 				}, nil
 			},
-		}
-		c := &Controller{agentStore: mockAgent}
-		err := c.waitForOperation(context.Background(), nodeName, opID)
-		if err == nil {
-			t.Error("Expected error, got nil")
-		} else if err.Error() != "operation op-123 failed: something went wrong" {
-			t.Errorf("Unexpected error message: %v", err)
-		}
-	})
-
-	t.Run("Pending Then Success", func(t *testing.T) {
-		calls := 0
-		mockAgent := &mockAgentStoreForInternal{
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.Background(), func() {}
+			},
+			wantErrMsg: "operation op-123 failed: something went wrong",
+		},
+		{
+			name: "Pending Then Success",
 			operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
-				calls++
-				if calls < 3 {
+				pendingCalls++
+				if pendingCalls < 3 {
 					return &agentpb.GetOperationResponse{
 						Status: agentpb.OperationStatus_OPERATION_STATUS_PENDING,
 					}, nil
@@ -98,42 +98,69 @@ func TestController_WaitForOperation(t *testing.T) {
 					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
 				}, nil
 			},
-		}
-		c := &Controller{agentStore: mockAgent}
-
-		start := time.Now()
-		err := c.waitForOperation(context.Background(), nodeName, opID)
-		duration := time.Since(start)
-
-		if err != nil {
-			t.Errorf("Expected no error, got %v", err)
-		}
-		if calls != 3 {
-			t.Errorf("Expected 3 calls, got %d", calls)
-		}
-		if duration < 2*time.Second {
-			t.Errorf("Expected test to take at least 2 seconds, took %v", duration)
-		}
-	})
-
-	t.Run("Context Timeout", func(t *testing.T) {
-		mockAgent := &mockAgentStoreForInternal{
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.Background(), func() {}
+			},
+			verify: func(t *testing.T, duration time.Duration) {
+				t.Helper()
+				if pendingCalls != 3 {
+					t.Errorf("Expected 3 calls, got %d", pendingCalls)
+				}
+				if duration < 2*time.Second {
+					t.Errorf("Expected test to take at least 2 seconds, took %v", duration)
+				}
+			},
+		},
+		{
+			name: "Context Timeout",
 			operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
 				return &agentpb.GetOperationResponse{
 					Status: agentpb.OperationStatus_OPERATION_STATUS_PENDING,
 				}, nil
 			},
-		}
-		c := &Controller{agentStore: mockAgent}
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 500*time.Millisecond)
+			},
+			wantErr: context.DeadlineExceeded,
+		},
+	}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockAgent := &mockAgentStoreForInternal{
+				operationFunc: tc.operationFunc,
+			}
+			c := &Controller{agentStore: mockAgent}
 
-		err := c.waitForOperation(ctx, nodeName, opID)
-		if err == nil {
-			t.Error("Expected error due to timeout, got nil")
-		} else if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(errors.Unwrap(err), context.DeadlineExceeded) {
-			t.Errorf("Expected context deadline exceeded error, got %v", err)
-		}
-	})
+			ctx, cancel := tc.ctx()
+			defer cancel()
+
+			start := time.Now()
+			err := c.waitForOperation(ctx, nodeName, opID)
+			duration := time.Since(start)
+
+			switch {
+			case tc.wantErr != nil:
+				if err == nil {
+					t.Errorf("Expected error %v, got nil", tc.wantErr)
+				} else if !errors.Is(err, tc.wantErr) && !errors.Is(errors.Unwrap(err), tc.wantErr) {
+					t.Errorf("Expected error to wrap %v, got %v", tc.wantErr, err)
+				}
+			case tc.wantErrMsg != "":
+				if err == nil {
+					t.Errorf("Expected error message %q, got nil", tc.wantErrMsg)
+				} else if err.Error() != tc.wantErrMsg {
+					t.Errorf("Expected error message %q, got %q", tc.wantErrMsg, err.Error())
+				}
+			default:
+				if err != nil {
+					t.Errorf("Expected no error, got %v", err)
+				}
+			}
+
+			if tc.verify != nil {
+				tc.verify(t, duration)
+			}
+		})
+	}
 }
