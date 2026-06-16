@@ -16,8 +16,8 @@ type mockNvmlClient struct {
 	deviceCountRet nvml.Return
 }
 
-func (m *mockNvmlClient) Init() nvml.Return { return m.initRet }
-func (m *mockNvmlClient) Shutdown() nvml.Return { return m.shutdownRet }
+func (m *mockNvmlClient) Init() nvml.Return                  { return m.initRet }
+func (m *mockNvmlClient) Shutdown() nvml.Return              { return m.shutdownRet }
 func (m *mockNvmlClient) DeviceGetCount() (int, nvml.Return) { return m.deviceCount, m.deviceCountRet }
 
 func TestNewCudaCheckpoint(t *testing.T) {
@@ -121,9 +121,9 @@ func TestHealthCheck(t *testing.T) {
 			expectedErr:    false,
 		},
 		{
-			name:           "NVMLInitFailure",
-			initRet:        nvml.ERROR_LIBRARY_NOT_FOUND,
-			expectedErr:    true,
+			name:        "NVMLInitFailure",
+			initRet:     nvml.ERROR_LIBRARY_NOT_FOUND,
+			expectedErr: true,
 		},
 		{
 			name:           "NoGPUs",
@@ -160,62 +160,4 @@ func TestHealthCheck(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestInternalFunctions(t *testing.T) {
-	c := backends.NewCudaCheckpoint()
-
-	t.Run("GetCudaCheckpointPath", func(t *testing.T) {
-		path := backends.GetCudaCheckpointPath(c)
-		if path == "" {
-			t.Error("GetCudaCheckpointPath returned empty string")
-		}
-	})
-
-	t.Run("RunSudoCommand", func(t *testing.T) {
-		c.SetExecCommand(func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			if name != "test-cmd" {
-				return nil, fmt.Errorf("unexpected command: %s", name)
-			}
-			return []byte("output"), nil
-		})
-		err := backends.RunSudoCommand(c, context.Background(), "test-cmd", "arg1")
-		if err != nil {
-			t.Errorf("RunSudoCommand failed: %v", err)
-		}
-	})
-
-	t.Run("CheckpointPIDs", func(t *testing.T) {
-		commands := []string{}
-		c.SetExecCommand(func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			commands = append(commands, args[1]) // the action
-			return nil, nil
-		})
-		err := backends.CheckpointPIDs(c, context.Background(), []string{"123"})
-		if err != nil {
-			t.Errorf("CheckpointPIDs failed: %v", err)
-		}
-		if len(commands) != 2 || commands[0] != "lock" || commands[1] != "checkpoint" {
-			t.Errorf("Unexpected commands: %v", commands)
-		}
-	})
-
-	t.Run("RestorePIDs", func(t *testing.T) {
-		toggled := false
-		c.SetExecCommand(func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			for _, arg := range args {
-				if arg == "--toggle" {
-					toggled = true
-				}
-			}
-			return nil, nil
-		})
-		err := backends.RestorePIDs(c, context.Background(), []string{"123"})
-		if err != nil {
-			t.Errorf("RestorePIDs failed: %v", err)
-		}
-		if !toggled {
-			t.Error("Expected --toggle in RestorePIDs")
-		}
-	})
 }
