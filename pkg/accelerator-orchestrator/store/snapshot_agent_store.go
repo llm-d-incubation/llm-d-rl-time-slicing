@@ -15,6 +15,7 @@ import (
 type SnapshotAgentStore interface {
 	GetStatus(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
 	CloseClient(nodeName string) error
+	Snapshot(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.SnapshotResponse, error)
 }
 
 type clientEntry struct {
@@ -100,6 +101,27 @@ func (s *GRPCSnapshotAgentStore) GetStatus(ctx context.Context, nodeName string)
 			timestamp: time.Now(),
 		}
 		s.mu.Unlock()
+	}
+
+	return resp, nil
+}
+
+// Snapshot triggers a snapshot on the agent for the given node.
+func (s *GRPCSnapshotAgentStore) Snapshot(
+	ctx context.Context, nodeName, jobID, groupID string,
+) (*agentpb.SnapshotResponse, error) {
+	address := s.resolveNodeAddress(nodeName)
+	client, err := s.getClient(address)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Snapshot(ctx, &agentpb.SnapshotRequest{
+		JobId: jobID,
+		Group: groupID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to trigger snapshot on agent at %s: %w", address, err)
 	}
 
 	return resp, nil

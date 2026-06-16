@@ -21,6 +21,7 @@ func TestContextHandler(t *testing.T) {
 	ctx = logging.WithJobID(ctx, "job-999")
 	ctx = logging.WithGroupID(ctx, "group-888")
 	ctx = logging.WithWorkerID(ctx, 42)
+	ctx = logging.WithNodeName(ctx, "node-123")
 
 	logger.InfoContext(ctx, "Hello World")
 
@@ -43,5 +44,8 @@ func TestContextHandler(t *testing.T) {
 	}
 	if data["WorkerID"] != float64(42) {
 		t.Errorf("Expected WorkerID 42, got %v", data["WorkerID"])
+	}
+	if data["NodeName"] != "node-123" {
+		t.Errorf("Expected NodeName 'node-123', got %v", data["NodeName"])
 	}
 }

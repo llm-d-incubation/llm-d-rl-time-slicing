@@ -19,8 +19,9 @@ import (
 )
 
 type fakeSnapshotAgentStore struct {
-	statusFunc func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
-	closeFunc  func(nodeName string) error
+	statusFunc   func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
+	closeFunc    func(nodeName string) error
+	snapshotFunc func(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.SnapshotResponse, error)
 }
 
 func (f *fakeSnapshotAgentStore) GetStatus(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error) {
@@ -35,6 +36,15 @@ func (f *fakeSnapshotAgentStore) CloseClient(nodeName string) error {
 		return f.closeFunc(nodeName)
 	}
 	return nil
+}
+
+func (f *fakeSnapshotAgentStore) Snapshot(
+	ctx context.Context, nodeName, jobID, groupID string,
+) (*agentpb.SnapshotResponse, error) {
+	if f.snapshotFunc != nil {
+		return f.snapshotFunc(ctx, nodeName, jobID, groupID)
+	}
+	return &agentpb.SnapshotResponse{}, nil
 }
 
 func TestObserveGroupState_Cleanup(t *testing.T) {

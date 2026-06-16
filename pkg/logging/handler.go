@@ -10,6 +10,7 @@ type (
 	jobIDKeyType        struct{}
 	groupIDKeyType      struct{}
 	workerIDKeyType     struct{}
+	nodeNameKeyType     struct{}
 )
 
 // WithServerMethod returns a new context with the server method name.
@@ -30,6 +31,11 @@ func WithGroupID(ctx context.Context, groupID string) context.Context {
 // WithWorkerID returns a new context with the Worker ID.
 func WithWorkerID(ctx context.Context, workerID int) context.Context {
 	return context.WithValue(ctx, workerIDKeyType{}, workerID)
+}
+
+// WithNodeName returns a new context with the Node Name.
+func WithNodeName(ctx context.Context, nodeName string) context.Context {
+	return context.WithValue(ctx, nodeNameKeyType{}, nodeName)
 }
 
 // ContextHandler is a slog.Handler that extracts logging metadata from context
@@ -56,6 +62,9 @@ func (h *ContextHandler) Handle(ctx context.Context, r slog.Record) error {
 	}
 	if workerID, ok := ctx.Value(workerIDKeyType{}).(int); ok {
 		r.AddAttrs(slog.Int("WorkerID", workerID))
+	}
+	if nodeName, ok := ctx.Value(nodeNameKeyType{}).(string); ok && nodeName != "" {
+		r.AddAttrs(slog.String("NodeName", nodeName))
 	}
 	return h.Handler.Handle(ctx, r)
 }

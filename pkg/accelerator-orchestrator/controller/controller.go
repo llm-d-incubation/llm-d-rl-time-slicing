@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 )
@@ -85,6 +86,7 @@ type Controller struct {
 	groupStore        *store.GroupStore
 	jobStore          *store.JobStore
 	infraOrchestrator InfrastructureOrchestrator
+	agentStore        store.SnapshotAgentStore
 }
 
 // NewController creates a new Controller with the provided stores, queue, and infrastructure orchestrator.
@@ -93,12 +95,14 @@ func NewController(
 	jobStore *store.JobStore,
 	queue WorkQueue,
 	infraOrchestrator InfrastructureOrchestrator,
+	agentStore store.SnapshotAgentStore,
 ) *Controller {
 	return &Controller{
 		queue:             queue,
 		groupStore:        groupStore,
 		jobStore:          jobStore,
 		infraOrchestrator: infraOrchestrator,
+		agentStore:        agentStore,
 	}
 }
 
@@ -197,7 +201,7 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 	// 3. Act
 	// TODO: add optional fan out parallism for node reconciliation
 	for _, node := range g.Status().Nodes() {
-		if err := c.reconcileNode(ctx, node, activeJob); err != nil {
+		if err := c.reconcileNode(ctx, g.ID(), node, activeJob); err != nil {
 			return fmt.Errorf("failed to reconcile node %s: %w", node, err)
 		}
 	}
@@ -211,8 +215,40 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 }
 
 // reconcileNode reconciles the state of a single node for the active job.
-func (c *Controller) reconcileNode(ctx context.Context, nodeName, activeJobID string) error {
-	// TODO: Stub
+func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activeJobID string) error {
+	ctx = logging.WithNodeName(ctx, nodeName)
+	jobs, err := c.jobStore.ListByGroup(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("failed to list jobs for group %s: %w", groupID, err)
+	}
+
+	agentJobStates := make(map[string]pb.SnapshotAgentJobState_State)
+	for _, job := range jobs {
+		state, ok := job.ContextState()[nodeName]
+		if !ok {
+			state = pb.SnapshotAgentJobState_STATE_UNSPECIFIED
+		}
+		agentJobStates[job.JobID()] = state
+	}
+
+	// TODO: Use agentJobStates to reconcile the node state.
+	slog.DebugContext(ctx, "Reconciled node", "node", nodeName, "activeJobID", activeJobID, "agentJobStates", agentJobStates)
+
+	if activeJobID != "" {
+		if state, ok := agentJobStates[activeJobID]; ok && state == pb.SnapshotAgentJobState_STATE_FAULTED {
+			return fmt.Errorf("active job %s is in FAULTED state on node %s, requires human intervention", activeJobID, nodeName)
+		}
+	}
+
+	for jobID, state := range agentJobStates {
+		if jobID != activeJobID && state == pb.SnapshotAgentJobState_STATE_RUNNING {
+			slog.InfoContext(ctx, "Triggering snapshot for job", "jobID", jobID, "state", state)
+			if _, err := c.agentStore.Snapshot(ctx, nodeName, jobID, groupID); err != nil {
+				return fmt.Errorf("failed to trigger snapshot for job %s on node %s: %w", jobID, nodeName, err)
+			}
+		}
+	}
+
 	return nil
 }
 
