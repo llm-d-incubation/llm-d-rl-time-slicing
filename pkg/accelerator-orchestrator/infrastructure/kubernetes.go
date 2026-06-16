@@ -172,7 +172,7 @@ func (k *KubernetesOrchestrator) updateGroupNodes(ctx context.Context, groupID s
 	}
 
 	// Clean up clients for nodes that were removed from the group
-	oldNodes := g.Nodes()
+	oldNodes := g.Status().Nodes()
 	removedNodes := findRemovedNodes(oldNodes, groupNodes)
 	for _, nodeName := range removedNodes {
 		if err := k.snapshotAgentStore.CloseClient(nodeName); err != nil {
@@ -180,7 +180,7 @@ func (k *KubernetesOrchestrator) updateGroupNodes(ctx context.Context, groupID s
 		}
 	}
 
-	g.SetNodes(groupNodes)
+	g.Status().SetNodes(groupNodes)
 	slog.InfoContext(ctx, "Updated nodes for group", "nodes", groupNodes)
 	return nil
 }
@@ -266,7 +266,7 @@ func (k *KubernetesOrchestrator) cleanupGroup(ctx context.Context, groupID strin
 	// Close clients for all nodes that were in the group
 	oldGroup, err := k.groupStore.Get(ctx, groupID)
 	if err == nil && oldGroup != nil {
-		for _, nodeName := range oldGroup.Nodes() {
+		for _, nodeName := range oldGroup.Status().Nodes() {
 			if err := k.snapshotAgentStore.CloseClient(nodeName); err != nil {
 				slog.ErrorContext(ctx, "Failed to close snapshot agent client on group deletion", "error", err, "node", nodeName)
 			}

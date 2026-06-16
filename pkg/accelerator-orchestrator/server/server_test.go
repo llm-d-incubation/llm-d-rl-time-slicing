@@ -272,7 +272,7 @@ func TestServer_GetGroupStatus(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to create group: %v", err)
 				}
-				g.SetState(pb.GroupStatus_STATE_UNKNOWN)
+				g.Status().SetState(pb.GroupStatus_STATE_UNKNOWN)
 				return gs, store.NewJobStore()
 			},
 			groupID:      "group-1",
@@ -306,7 +306,7 @@ func TestServer_GetGroupStatus(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to create group: %v", err)
 				}
-				g.SetState(pb.GroupStatus_STATE_IDLE)
+				g.Status().SetState(pb.GroupStatus_STATE_IDLE)
 				return gs, store.NewJobStore()
 			},
 			groupID:      "group-1",
@@ -328,16 +328,16 @@ func TestServer_GetGroupStatus(t *testing.T) {
 			name: "success with multiple jobs and agent states",
 			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
 				t.Helper()
-				gs := store.NewGroupStore(store.NewMemLockStore())
+				lockStore := store.NewMemLockStore()
+				if err := lockStore.Lock(ctx, "group-1", "job-1"); err != nil {
+					t.Fatalf("failed to setup lock in lockStore: %v", err)
+				}
+				gs := store.NewGroupStore(lockStore)
 				g, _, err := gs.GetOrCreate(ctx, "group-1")
 				if err != nil {
 					t.Fatalf("failed to create group: %v", err)
 				}
-				g.SetState(pb.GroupStatus_STATE_LOCKED)
-				g.SetActiveJob("job-1")
-				if err := g.Lock(ctx, "job-1"); err != nil {
-					t.Fatalf("failed to lock group: %v", err)
-				}
+				g.Status().SetState(pb.GroupStatus_STATE_LOCKED)
 
 				js := store.NewJobStore()
 

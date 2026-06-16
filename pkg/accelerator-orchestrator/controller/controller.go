@@ -180,11 +180,44 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 		return fmt.Errorf("failed to observe group state: %w", err)
 	}
 
-	// 2. Determine Desired State (TODO)
+	// TODO: deduce activejob for restart case when group is in STATE_IDLE_YIELDED
 
-	// 3. Act (TODO)
+	// 2. Determine Desired State
+	g, err := c.groupStore.Get(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("failed to get group %s from store: %w", groupID, err)
+	}
 
-	// 4. Update Status (TODO)
+	if _, err := g.Spec().TryPromote(ctx); err != nil {
+		return fmt.Errorf("failed to promote next job: %w", err)
+	}
 
+	activeJob := g.Spec().ActiveJob()
+
+	// 3. Act
+	// TODO: add optional fan out parallism for node reconciliation
+	for _, node := range g.Status().Nodes() {
+		if err := c.reconcileNode(ctx, node, activeJob); err != nil {
+			return fmt.Errorf("failed to reconcile node %s: %w", node, err)
+		}
+	}
+
+	// 4. Update Status
+	if err := c.updateGroupStatus(ctx, g); err != nil {
+		return fmt.Errorf("failed to update group status: %w", err)
+	}
+
+	return nil
+}
+
+// reconcileNode reconciles the state of a single node for the active job.
+func (c *Controller) reconcileNode(ctx context.Context, nodeName, activeJobID string) error {
+	// TODO: Stub
+	return nil
+}
+
+// updateGroupStatus deduces the group status based on the current state and updates it in the store.
+func (c *Controller) updateGroupStatus(ctx context.Context, g *store.Group) error {
+	// TODO: Stub. implement status deduction
 	return nil
 }

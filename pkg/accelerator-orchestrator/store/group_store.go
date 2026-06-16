@@ -71,7 +71,11 @@ func (s *GroupStore) GetOrCreate(ctx context.Context, id string) (*Group, bool, 
 	}
 
 	var err error
-	g, err = NewGroup(ctx, id, s.lockStore)
+	var wrapper GroupLockStore
+	if s.lockStore != nil {
+		wrapper = NewGroupLockStoreWrapper(s.lockStore, id)
+	}
+	g, err = NewGroup(ctx, id, wrapper)
 	if err != nil {
 		return nil, false, err
 	}
@@ -104,4 +108,29 @@ func (s *GroupStore) Delete(ctx context.Context, id string) error {
 		delete(s.groups, id)
 	}
 	return nil
+}
+
+type groupLockStoreWrapper struct {
+	lockStore LockStore
+	groupID   string
+}
+
+// NewGroupLockStoreWrapper creates a new GroupLockStore by wrapping a LockStore and a groupID.
+func NewGroupLockStoreWrapper(lockStore LockStore, groupID string) GroupLockStore {
+	return &groupLockStoreWrapper{
+		lockStore: lockStore,
+		groupID:   groupID,
+	}
+}
+
+func (w *groupLockStoreWrapper) GetLock(ctx context.Context) (string, error) {
+	return w.lockStore.GetLock(ctx, w.groupID)
+}
+
+func (w *groupLockStoreWrapper) Lock(ctx context.Context, jobID string) error {
+	return w.lockStore.Lock(ctx, w.groupID, jobID)
+}
+
+func (w *groupLockStoreWrapper) Unlock(ctx context.Context, jobID string) error {
+	return w.lockStore.Unlock(ctx, w.groupID, jobID)
 }
