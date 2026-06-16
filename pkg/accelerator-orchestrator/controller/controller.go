@@ -241,18 +241,27 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 		agentJobStates[job.JobID()] = state
 	}
 
-	// TODO: Use agentJobStates to reconcile the node state.
-	slog.DebugContext(ctx, "Reconciled node", "node", nodeName, "activeJobID", activeJobID, "agentJobStates", agentJobStates)
+	slog.DebugContext(ctx, "Reconciling node", "activeJobID", activeJobID, "agentJobStates", agentJobStates)
 
+	// 1. Early exits for no reconciliation work needed/possible
 	if activeJobID != "" {
+		// Already running
+		if state, ok := agentJobStates[activeJobID]; ok && state == pb.SnapshotAgentJobState_STATE_RUNNING {
+			slog.InfoContext(ctx, "Active job is already running, exiting early", "activeJobID", activeJobID)
+			return nil
+		}
+
+		// Faulted group
 		if state, ok := agentJobStates[activeJobID]; ok && state == pb.SnapshotAgentJobState_STATE_FAULTED {
 			return fmt.Errorf("active job %s is in FAULTED state on node %s, requires human intervention", activeJobID, nodeName)
 		}
 	}
 
+	// 2. Wait out any existing transitions
 	// TODO: crash recovery detect that an agent is still in the middle of transistioning. We will not have the operation
 	// number but we can still wait till it leaves that state.
 
+	// 3. Ensure no other jobs have their context loaded
 	for jobID, state := range agentJobStates {
 		if jobID == activeJobID || state != pb.SnapshotAgentJobState_STATE_RUNNING {
 			continue
@@ -272,11 +281,11 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 		}
 	}
 
-	// 4. Restore logic (checking if active job needs to be restored)
 	if activeJobID == "" {
 		return nil
 	}
 
+	// 4. Ensure active job is loaded where there is available context
 	state, ok := agentJobStates[activeJobID]
 	if !ok || state != pb.SnapshotAgentJobState_STATE_SAVED {
 		return nil
@@ -367,10 +376,13 @@ func translateJobState(s agentpb.JobState) pb.SnapshotAgentJobState_State {
 
 // waitForOperation blocks until the given operation on the node completes or fails.
 func (c *Controller) waitForOperation(ctx context.Context, nodeName, operationID string) error {
+	ctx = logging.WithNodeName(ctx, nodeName)
+	ctx = logging.WithOperationID(ctx, operationID)
+
 	ticker := time.NewTicker(operationPollInterval)
 	defer ticker.Stop()
 
-	slog.InfoContext(ctx, "Waiting for agent operation to complete", "operationID", operationID, "node", nodeName)
+	slog.InfoContext(ctx, "Waiting for agent operation to complete")
 
 	for {
 		select {
@@ -379,15 +391,13 @@ func (c *Controller) waitForOperation(ctx context.Context, nodeName, operationID
 		case <-ticker.C:
 			resp, err := c.agentStore.GetOperation(ctx, nodeName, operationID)
 			if err != nil {
-				slog.WarnContext(ctx, "Failed to get operation status, will retry",
-					"error", err, "operationID", operationID, "node", nodeName)
+				slog.WarnContext(ctx, "Failed to get operation status, will retry", "error", err)
 				continue
 			}
 
 			switch resp.Status {
 			case agentpb.OperationStatus_OPERATION_STATUS_COMPLETE:
-				slog.InfoContext(ctx, "Operation completed successfully",
-					"operationID", operationID, "node", nodeName, "elapsedMs", resp.ElapsedMs)
+				slog.InfoContext(ctx, "Operation completed successfully", "elapsedMs", resp.ElapsedMs)
 				return nil
 			case agentpb.OperationStatus_OPERATION_STATUS_FAILED:
 				errStr := "unknown error"
@@ -396,11 +406,9 @@ func (c *Controller) waitForOperation(ctx context.Context, nodeName, operationID
 				}
 				return fmt.Errorf("operation %s failed: %s", operationID, errStr)
 			case agentpb.OperationStatus_OPERATION_STATUS_PENDING:
-				slog.DebugContext(ctx, "Operation still pending",
-					"operationID", operationID, "node", nodeName, "elapsedMs", resp.ElapsedMs)
+				slog.DebugContext(ctx, "Operation still pending", "elapsedMs", resp.ElapsedMs)
 			default:
-				slog.WarnContext(ctx, "Unknown operation status",
-					"status", resp.Status, "operationID", operationID, "node", nodeName)
+				slog.WarnContext(ctx, "Unknown operation status", "status", resp.Status)
 			}
 		}
 	}
