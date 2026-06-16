@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
-	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
+	snapshotutils "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -32,23 +32,23 @@ func (m *mockDevice) GetGraphicsRunningProcesses() ([]nvml.ProcessInfo, nvml.Ret
 }
 
 func TestGetPodPIDs(t *testing.T) {
-	origGetK8sClient := utils.GetK8sClient
-	origNvmlInit := utils.NvmlInit
-	origNvmlShutdown := utils.NvmlShutdown
-	origNvmlDeviceGetCount := utils.NvmlDeviceGetCount
-	origNvmlDeviceGetHandleByIndex := utils.NvmlDeviceGetHandleByIndex
-	origIsPIDInPodCgroupFunc := utils.IsPIDInPodCgroupFunc
+	origGetK8sClient := snapshotutils.GetK8sClient
+	origNvmlInit := snapshotutils.NvmlInit
+	origNvmlShutdown := snapshotutils.NvmlShutdown
+	origNvmlDeviceGetCount := snapshotutils.NvmlDeviceGetCount
+	origNvmlDeviceGetHandleByIndex := snapshotutils.NvmlDeviceGetHandleByIndex
+	origIsPIDInPodCgroupFunc := snapshotutils.IsPIDInPodCgroupFunc
 
 	defer func() {
-		utils.GetK8sClient = origGetK8sClient
-		utils.NvmlInit = origNvmlInit
-		utils.NvmlShutdown = origNvmlShutdown
-		utils.NvmlDeviceGetCount = origNvmlDeviceGetCount
-		utils.NvmlDeviceGetHandleByIndex = origNvmlDeviceGetHandleByIndex
-		utils.IsPIDInPodCgroupFunc = origIsPIDInPodCgroupFunc
+		snapshotutils.GetK8sClient = origGetK8sClient
+		snapshotutils.NvmlInit = origNvmlInit
+		snapshotutils.NvmlShutdown = origNvmlShutdown
+		snapshotutils.NvmlDeviceGetCount = origNvmlDeviceGetCount
+		snapshotutils.NvmlDeviceGetHandleByIndex = origNvmlDeviceGetHandleByIndex
+		snapshotutils.IsPIDInPodCgroupFunc = origIsPIDInPodCgroupFunc
 	}()
 
-	utils.NvmlShutdown = func() nvml.Return { return nvml.SUCCESS }
+	snapshotutils.NvmlShutdown = func() nvml.Return { return nvml.SUCCESS }
 
 	tests := []struct {
 		name         string
@@ -71,19 +71,19 @@ func TestGetPodPIDs(t *testing.T) {
 						UID:       types.UID(podUID),
 					},
 				}
-				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
 					return fake.NewSimpleClientset(pod), nil
 				}
-				utils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
-				utils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
+				snapshotutils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
+				snapshotutils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
 				device := &mockDevice{
 					computeProcs:  []nvml.ProcessInfo{{Pid: 100}, {Pid: 200}},
 					graphicsProcs: []nvml.ProcessInfo{{Pid: 200}, {Pid: 300}},
 				}
-				utils.NvmlDeviceGetHandleByIndex = func(index int) (utils.DeviceInterface, nvml.Return) {
+				snapshotutils.NvmlDeviceGetHandleByIndex = func(index int) (snapshotutils.DeviceInterface, nvml.Return) {
 					return device, nvml.SUCCESS
 				}
-				utils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
+				snapshotutils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
 					return pid == 100 || pid == 300, nil
 				}
 			},
@@ -95,7 +95,7 @@ func TestGetPodPIDs(t *testing.T) {
 			podName:   "pod",
 			namespace: "ns",
 			setupMocks: func() {
-				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
 					return nil, fmt.Errorf("k8s error")
 				}
 			},
@@ -106,12 +106,12 @@ func TestGetPodPIDs(t *testing.T) {
 			podName:   "pod",
 			namespace: "ns",
 			setupMocks: func() {
-				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
 					return fake.NewSimpleClientset(&corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: "ns", UID: "uid"},
 					}), nil
 				}
-				utils.NvmlInit = func() nvml.Return { return nvml.ERROR_UNKNOWN }
+				snapshotutils.NvmlInit = func() nvml.Return { return nvml.ERROR_UNKNOWN }
 			},
 			expectError: true,
 		},
@@ -120,13 +120,13 @@ func TestGetPodPIDs(t *testing.T) {
 			podName:   "pod",
 			namespace: "ns",
 			setupMocks: func() {
-				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
 					return fake.NewSimpleClientset(&corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: "ns", UID: "uid"},
 					}), nil
 				}
-				utils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
-				utils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 0, nvml.ERROR_UNKNOWN }
+				snapshotutils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
+				snapshotutils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 0, nvml.ERROR_UNKNOWN }
 			},
 			expectError: true,
 		},
@@ -143,18 +143,18 @@ func TestGetPodPIDs(t *testing.T) {
 						UID:       types.UID(podUID),
 					},
 				}
-				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
 					return fake.NewSimpleClientset(pod), nil
 				}
-				utils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
-				utils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
+				snapshotutils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
+				snapshotutils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
 				device := &mockDevice{
 					computeProcs: []nvml.ProcessInfo{{Pid: 400}, {Pid: 500}},
 				}
-				utils.NvmlDeviceGetHandleByIndex = func(index int) (utils.DeviceInterface, nvml.Return) {
+				snapshotutils.NvmlDeviceGetHandleByIndex = func(index int) (snapshotutils.DeviceInterface, nvml.Return) {
 					return device, nvml.SUCCESS
 				}
-				utils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
+				snapshotutils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
 					return false, nil // None of the PIDs belong to this pod
 				}
 			},
@@ -174,18 +174,18 @@ func TestGetPodPIDs(t *testing.T) {
 						UID:       types.UID(podUID),
 					},
 				}
-				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
 					return fake.NewSimpleClientset(pod), nil
 				}
-				utils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
-				utils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
+				snapshotutils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
+				snapshotutils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
 				device := &mockDevice{
 					computeProcs: []nvml.ProcessInfo{{Pid: 600}},
 				}
-				utils.NvmlDeviceGetHandleByIndex = func(index int) (utils.DeviceInterface, nvml.Return) {
+				snapshotutils.NvmlDeviceGetHandleByIndex = func(index int) (snapshotutils.DeviceInterface, nvml.Return) {
 					return device, nvml.SUCCESS
 				}
-				utils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
+				snapshotutils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
 					return false, fmt.Errorf("cgroup error")
 				}
 			},
@@ -197,7 +197,7 @@ func TestGetPodPIDs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.setupMocks()
-			pids, err := utils.GetPodPIDs(context.Background(), tt.podName, tt.namespace)
+			pids, err := snapshotutils.GetPodPIDs(context.Background(), tt.podName, tt.namespace)
 			if (err != nil) != tt.expectError {
 				t.Errorf("GetPodPIDs() error = %v, expectError %v", err, tt.expectError)
 				return
@@ -214,8 +214,8 @@ func TestGetPodPIDs(t *testing.T) {
 }
 
 func TestGetLocalPods(t *testing.T) {
-	origGetK8sClient := utils.GetK8sClient
-	defer func() { utils.GetK8sClient = origGetK8sClient }()
+	origGetK8sClient := snapshotutils.GetK8sClient
+	defer func() { snapshotutils.GetK8sClient = origGetK8sClient }()
 
 	nodeName := "test-node"
 	jobID := "test-job"
@@ -235,13 +235,13 @@ func TestGetLocalPods(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "pod1",
 						Labels: map[string]string{
-							utils.SnapshotAgentLabel: utils.SnapshotAgentValue,
-							utils.JobIDLabel:         jobID,
+							snapshotutils.SnapshotAgentLabel: snapshotutils.SnapshotAgentValue,
+							snapshotutils.JobIDLabel:         jobID,
 						},
 					},
 					Spec: corev1.PodSpec{NodeName: nodeName},
 				}
-				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
 					return fake.NewSimpleClientset(&pod1), nil
 				}
 			},
@@ -258,7 +258,7 @@ func TestGetLocalPods(t *testing.T) {
 			name:    "K8s Client Failure",
 			nodeEnv: nodeName,
 			setupMocks: func() {
-				utils.GetK8sClient = func() (kubernetes.Interface, error) {
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
 					return nil, fmt.Errorf("k8s error")
 				}
 			},
@@ -276,7 +276,7 @@ func TestGetLocalPods(t *testing.T) {
 			}
 
 			tt.setupMocks()
-			pods, err := utils.GetLocalPods(context.Background(), jobID)
+			pods, err := snapshotutils.GetLocalPods(context.Background(), jobID)
 			if (err != nil) != tt.expectError {
 				t.Errorf("GetLocalPods() error = %v, expectError %v", err, tt.expectError)
 				return
@@ -349,7 +349,7 @@ func TestIsPIDInPodCgroupInternal(t *testing.T) {
 				}
 			}
 
-			got, err := utils.IsPIDInPodCgroupInternal(cgroupPath, tt.podUID)
+			got, err := snapshotutils.IsPIDInPodCgroupInternal(cgroupPath, tt.podUID)
 			if (err != nil) != tt.wantError {
 				t.Errorf("IsPIDInPodCgroupInternal() error = %v, wantError %v", err, tt.wantError)
 				return
