@@ -308,9 +308,113 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 	return nil
 }
 
+// isJobLoaded checks if a specific job is currently loaded on the nodes of the group.
+// A job J is considered loaded if, for every node N in the group, the job's state on N
+// is either STATE_RUNNING, or STATE_UNSPECIFIED and no other job is running on N.
+// If multiple jobs are running on the same node, it returns an error (impossible state).
+func (c *Controller) isJobLoaded(ctx context.Context, group *store.Group, jobID string) (bool, error) {
+	if jobID == "" {
+		return false, nil
+	}
+	jobs, err := c.jobStore.ListByGroup(ctx, group.ID())
+	if err != nil {
+		return false, fmt.Errorf("failed to list jobs for group %s: %w", group.ID(), err)
+	}
+
+	nodes := group.Status().Nodes()
+	if len(nodes) == 0 {
+		return false, nil
+	}
+
+	// Map of node -> jobID of the job running on it.
+	// If multiple jobs are running on the same node, we error out.
+	nodeRunningJob := make(map[string]string)
+	for _, job := range jobs {
+		for node, state := range job.ContextState() {
+			if state == pb.SnapshotAgentJobState_STATE_RUNNING {
+				if current, ok := nodeRunningJob[node]; ok && current != job.JobID() {
+					return false, fmt.Errorf("impossible state: multiple jobs running on node %s: %s and %s", node, current, job.JobID())
+				}
+				nodeRunningJob[node] = job.JobID()
+			}
+		}
+	}
+
+	targetJob, err := c.jobStore.Get(ctx, group.ID(), jobID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get job %s: %w", jobID, err)
+	}
+
+	contextState := targetJob.ContextState()
+	for _, node := range nodes {
+		state, ok := contextState[node]
+		if !ok {
+			state = pb.SnapshotAgentJobState_STATE_UNSPECIFIED
+		}
+
+		switch state {
+		case pb.SnapshotAgentJobState_STATE_RUNNING:
+			// Safe, checked for conflicts already
+		case pb.SnapshotAgentJobState_STATE_UNSPECIFIED:
+			if nodeRunningJob[node] != "" {
+				// Another job is running on this node
+				return false, nil
+			}
+		default:
+			// STATE_SAVED, STATE_FAULTED, etc.
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// determineGroupState deduces the high-level group state based on locking, active, and loaded job IDs.
+func determineGroupState(lockingJobID, activeJobID, loadedJobID string) pb.GroupStatus_State {
+	activeJobLoaded := (activeJobID != "" && activeJobID == loadedJobID)
+
+	if lockingJobID != "" {
+		if activeJobLoaded {
+			return pb.GroupStatus_STATE_LOCKED
+		}
+		return pb.GroupStatus_STATE_SWITCHING
+	}
+
+	// Unlocked
+	if activeJobID != "" {
+		return pb.GroupStatus_STATE_IDLE_YIELDED
+	}
+
+	return pb.GroupStatus_STATE_IDLE
+}
+
 // updateGroupStatus deduces the group status based on the current state and updates it in the store.
-func (c *Controller) updateGroupStatus(ctx context.Context, g *store.Group) error {
-	// TODO: Stub. implement status deduction
+func (c *Controller) updateGroupStatus(ctx context.Context, group *store.Group) error {
+	activeJobID := group.Spec().ActiveJob()
+	activeJobLoaded := false
+	if activeJobID != "" {
+		var err error
+		activeJobLoaded, err = c.isJobLoaded(ctx, group, activeJobID)
+		if err != nil {
+			return fmt.Errorf("failed to check if active job %s is loaded: %w", activeJobID, err)
+		}
+	}
+
+	if activeJobLoaded {
+		group.Status().SetLoadedJob(activeJobID)
+	} else {
+		group.Status().SetLoadedJob("")
+	}
+
+	lockingJobID := group.Spec().LockingJob()
+	loadedJobID := group.Status().LoadedJob()
+
+	state := determineGroupState(lockingJobID, activeJobID, loadedJobID)
+	group.Status().SetState(state)
+
 	return nil
 }
 
