@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -10,6 +11,7 @@ import (
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
+	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 )
 
 // handleCrash is a helper that recovers from panics, logs the panic and stack trace.
@@ -184,6 +186,10 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 		return fmt.Errorf("failed to observe group state: %w", err)
 	}
 
+	if err := c.ObserveJobContext(ctx, groupID); err != nil {
+		return fmt.Errorf("failed to observe job context: %w", err)
+	}
+
 	// TODO: deduce activejob for restart case when group is in STATE_IDLE_YIELDED
 
 	// 2. Determine Desired State
@@ -256,4 +262,55 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 func (c *Controller) updateGroupStatus(ctx context.Context, g *store.Group) error {
 	// TODO: Stub. implement status deduction
 	return nil
+}
+
+// ObserveJobContext queries snapshot agents for all nodes in the group and updates job context states.
+func (c *Controller) ObserveJobContext(ctx context.Context, groupID string) error {
+	g, err := c.groupStore.Get(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("failed to get group %s from store: %w", groupID, err)
+	}
+	groupNodes := g.Status().Nodes()
+
+	for _, nodeName := range groupNodes {
+		resp, err := c.agentStore.GetStatus(ctx, nodeName)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to get status from snapshot agent", "error", err, "node", nodeName)
+			continue
+		}
+
+		for _, js := range resp.JobStatuses {
+			// Only update if the job is known in this group
+			_, err := c.jobStore.Get(ctx, groupID, js.JobId)
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			} else if err != nil {
+				return err
+			}
+
+			state := translateJobState(js.State)
+			if err := c.jobStore.UpdateContextState(ctx, groupID, js.JobId, nodeName, state); err != nil {
+				return err
+			}
+			slog.InfoContext(ctx, "Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
+		}
+	}
+	return nil
+}
+
+func translateJobState(s agentpb.JobState) pb.SnapshotAgentJobState_State {
+	switch s {
+	case agentpb.JobState_JOB_STATE_IDLE:
+		return pb.SnapshotAgentJobState_STATE_IDLE
+	case agentpb.JobState_JOB_STATE_RUNNING:
+		return pb.SnapshotAgentJobState_STATE_RUNNING
+	case agentpb.JobState_JOB_STATE_TRANSITIONING:
+		return pb.SnapshotAgentJobState_STATE_TRANSITIONING
+	case agentpb.JobState_JOB_STATE_SAVED:
+		return pb.SnapshotAgentJobState_STATE_SAVED
+	case agentpb.JobState_JOB_STATE_FAULTED:
+		return pb.SnapshotAgentJobState_STATE_FAULTED
+	default:
+		return pb.SnapshotAgentJobState_STATE_UNSPECIFIED
+	}
 }

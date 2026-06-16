@@ -21,11 +21,9 @@ import (
 	"log/slog"
 	"strings"
 
-	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
-	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -157,11 +155,6 @@ func (k *KubernetesOrchestrator) ObserveGroupState(ctx context.Context, groupID 
 		return err
 	}
 
-	// 5. Query snapshot agents and update job context states
-	if err := k.updateJobContext(ctx, groupID, groupNodes); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -218,34 +211,6 @@ func (k *KubernetesOrchestrator) updateJobsAndPods(ctx context.Context, groupID 
 				return err
 			}
 			slog.InfoContext(ctx, "Deleted job from store because it has no pods", "job", ej.JobID())
-		}
-	}
-	return nil
-}
-
-func (k *KubernetesOrchestrator) updateJobContext(ctx context.Context, groupID string, groupNodes []string) error {
-	// Call snapshotagentstore status for every node in the group & populate job context
-	for _, nodeName := range groupNodes {
-		resp, err := k.snapshotAgentStore.GetStatus(ctx, nodeName)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed to get status from snapshot agent", "error", err, "node", nodeName)
-			continue
-		}
-
-		for _, js := range resp.JobStatuses {
-			// Only update if the job is known in this group
-			_, err := k.jobStore.Get(ctx, groupID, js.JobId)
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			} else if err != nil {
-				return err
-			}
-
-			state := translateJobState(js.State)
-			if err := k.jobStore.UpdateContextState(ctx, groupID, js.JobId, nodeName, state); err != nil {
-				return err
-			}
-			slog.InfoContext(ctx, "Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
 		}
 	}
 	return nil
@@ -403,21 +368,4 @@ func findRemovedNodes(oldNodes, newNodes []string) []string {
 		}
 	}
 	return removed
-}
-
-func translateJobState(s agentpb.JobState) pb.SnapshotAgentJobState_State {
-	switch s {
-	case agentpb.JobState_JOB_STATE_IDLE:
-		return pb.SnapshotAgentJobState_STATE_IDLE
-	case agentpb.JobState_JOB_STATE_RUNNING:
-		return pb.SnapshotAgentJobState_STATE_RUNNING
-	case agentpb.JobState_JOB_STATE_TRANSITIONING:
-		return pb.SnapshotAgentJobState_STATE_TRANSITIONING
-	case agentpb.JobState_JOB_STATE_SAVED:
-		return pb.SnapshotAgentJobState_STATE_SAVED
-	case agentpb.JobState_JOB_STATE_FAULTED:
-		return pb.SnapshotAgentJobState_STATE_FAULTED
-	default:
-		return pb.SnapshotAgentJobState_STATE_UNSPECIFIED
-	}
 }

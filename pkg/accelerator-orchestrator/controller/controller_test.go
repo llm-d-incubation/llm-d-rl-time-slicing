@@ -555,3 +555,63 @@ func TestController_Reconcile_ActiveJobFaultedFails(t *testing.T) {
 		t.Errorf("Expected AddRateLimited to be called at least once, got %d", testQueue.getAddRateLimitedCount())
 	}
 }
+
+func TestController_ObserveJobContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+
+	groupID := "group-1"
+	nodeName := "node-1"
+
+	// 1. Setup group and nodes in store
+	g, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	g.Status().SetNodes([]string{nodeName})
+
+	// 2. Setup job in store (must exist for context to be updated)
+	job := store.NewJob(groupID, "job-1")
+	if err := jobStore.Put(ctx, job); err != nil {
+		t.Fatalf("failed to put job: %v", err)
+	}
+
+	// 3. Mock SnapshotAgentStore to return status
+	mockAgentStore := &mockSnapshotAgentStore{
+		getStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+			if node == nodeName {
+				return &agentpb.StatusResponse{
+					JobStatuses: []*agentpb.JobStatus{
+						{JobId: "job-1", State: agentpb.JobState_JOB_STATE_RUNNING},
+					},
+				}, nil
+			}
+			return &agentpb.StatusResponse{}, nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, nil, nil, mockAgentStore)
+
+	// 4. Call ObserveJobContext
+	err = c.ObserveJobContext(ctx, groupID)
+	if err != nil {
+		t.Fatalf("ObserveJobContext failed: %v", err)
+	}
+
+	// 5. Verify job context state is updated
+	updatedJob, err := jobStore.Get(ctx, groupID, "job-1")
+	if err != nil {
+		t.Fatalf("failed to get job: %v", err)
+	}
+	state, ok := updatedJob.ContextState()[nodeName]
+	if !ok {
+		t.Fatalf("Expected context state for job-1 on node-1 to exist")
+	}
+	if state != pb.SnapshotAgentJobState_STATE_RUNNING {
+		t.Errorf("Expected job-1 state to be RUNNING, got %v", state)
+	}
+}
