@@ -1321,3 +1321,121 @@ func TestController_Reconcile_DeduceLoadedJob_AllUnspecified(t *testing.T) {
 		t.Errorf("Expected state to be STATE_IDLE_YIELDED, got %v", state)
 	}
 }
+
+func TestController_Reconcile_DeduceLoadedJob_NonExistent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.DefaultTypedControllerRateLimiter[string](),
+		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+	)
+
+	groupID := "group-1"
+	nodeNames := []string{"node-1", "node-2"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+	group.Spec().SetActiveJob("job-1")
+
+	// job-1 does NOT exist in jobStore (no pods)
+	// no other jobs exist either
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, queue, mockOrch)
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	queue.Add(groupID)
+
+	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Timed out waiting for reconcile: %v", err)
+	}
+
+	// job-1 should be assumed loaded because it doesn't exist and no other job is running.
+	if group.Status().LoadedJob() != "job-1" {
+		t.Errorf("Expected loadedJob to be 'job-1', got %q", group.Status().LoadedJob())
+	}
+	state, _ := group.Status().State()
+	if state != pb.GroupStatus_STATE_IDLE_YIELDED {
+		t.Errorf("Expected state to be STATE_IDLE_YIELDED, got %v", state)
+	}
+}
+
+func TestController_Reconcile_DeduceLoadedJob_NonExistentButOtherRunning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.DefaultTypedControllerRateLimiter[string](),
+		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+	)
+
+	groupID := "group-1"
+	nodeNames := []string{"node-1", "node-2"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+	group.Spec().SetActiveJob("job-1")
+
+	// job-1 does NOT exist in jobStore (no pods)
+
+	// job-2 IS running on node-1
+	job2 := store.NewJob(groupID, "job-2")
+	job2.UpdateContextState("node-1", pb.SnapshotAgentJobState_STATE_RUNNING)
+	if err := jobStore.Put(ctx, job2); err != nil {
+		t.Fatalf("failed to put job2: %v", err)
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, queue, mockOrch)
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	queue.Add(groupID)
+
+	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Timed out waiting for reconcile: %v", err)
+	}
+
+	// job-1 should NOT be assumed loaded because job-2 is running.
+	if group.Status().LoadedJob() != "" {
+		t.Errorf("Expected loadedJob to be empty, got %q", group.Status().LoadedJob())
+	}
+	state, _ := group.Status().State()
+	if state != pb.GroupStatus_STATE_IDLE_YIELDED {
+		t.Errorf("Expected state to be STATE_IDLE_YIELDED, got %v", state)
+	}
+}

@@ -343,9 +343,14 @@ func (c *Controller) isJobLoaded(ctx context.Context, group *store.Group, jobID 
 	targetJob, err := c.jobStore.Get(ctx, group.ID(), jobID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
+			// To support RL init where the lock is needed before deploying pods,
+			// assume jobs that do not exist (no pods) are loaded
+			// provided no other job is running. We represent this
+			// by using a dummy job with empty context state (unspecified).
+			targetJob = store.NewJob(group.ID(), jobID)
+		} else {
+			return false, fmt.Errorf("failed to get job %s: %w", jobID, err)
 		}
-		return false, fmt.Errorf("failed to get job %s: %w", jobID, err)
 	}
 
 	contextState := targetJob.ContextState()
