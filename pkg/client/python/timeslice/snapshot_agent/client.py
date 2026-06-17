@@ -38,14 +38,14 @@ class SnapshotAgentInterface(ABC):
 
     @abstractmethod
     def snapshot(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
+        self, job_id: str, backend: Union[str, int] = 0
     ) -> SnapshotResponse:
         """Triggers an asynchronous snapshot."""
         pass
 
     @abstractmethod
     def restore(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
+        self, job_id: str, backend: Union[str, int] = 0
     ) -> RestoreResponse:
         """Triggers an asynchronous restoration."""
         pass
@@ -130,13 +130,12 @@ class SnapshotAgentClient(SnapshotAgentInterface):
                 return snapshot_agent_pb2.BACKEND_UNSPECIFIED
 
     def snapshot(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
+        self, job_id: str, backend: Union[str, int] = 0
     ) -> SnapshotResponse:
         """
         Triggers an asynchronous snapshot.
         Args:
             job_id: ID of the job to snapshot.
-            group: Group for the snapshot.
             backend: Backend to use (e.g., 'CUDA' or snapshot_agent_pb2.BACKEND_CUDA).
         Returns:
             SnapshotResponse containing the operation_id.
@@ -146,10 +145,10 @@ class SnapshotAgentClient(SnapshotAgentInterface):
         try:
             backend_enum = self._get_backend_enum(backend)
             request = snapshot_agent_pb2.SnapshotRequest(
-                job_id=job_id, group=group, backend=backend_enum
+                job_id=job_id, backend=backend_enum
             )
             logger.info(
-                f"Calling Snapshot with job_id={job_id}, group={group}, backend={backend_enum}..."
+                f"Calling Snapshot with job_id={job_id}, backend={backend_enum}..."
             )
             response = self.stub.Snapshot(request)
             return SnapshotResponse(operation_id=response.operation_id)
@@ -160,13 +159,12 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             raise SnapshotAgentError(f"Unexpected error: {e}") from e
 
     def restore(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
+        self, job_id: str, backend: Union[str, int] = 0
     ) -> RestoreResponse:
         """
         Triggers an asynchronous restoration.
         Args:
             job_id: ID of the job to restore.
-            group: Group for the restoration.
             backend: Backend to use.
         Returns:
             RestoreResponse containing the operation_id.
@@ -176,10 +174,10 @@ class SnapshotAgentClient(SnapshotAgentInterface):
         try:
             backend_enum = self._get_backend_enum(backend)
             request = snapshot_agent_pb2.RestoreRequest(
-                job_id=job_id, group=group, backend=backend_enum
+                job_id=job_id, backend=backend_enum
             )
             logger.info(
-                f"Calling Restore with job_id={job_id}, group={group}, backend={backend_enum}..."
+                f"Calling Restore with job_id={job_id}, backend={backend_enum}..."
             )
             response = self.stub.Restore(request)
             return RestoreResponse(operation_id=response.operation_id)
@@ -301,21 +299,19 @@ class SnapshotAgentClient(SnapshotAgentInterface):
     def snapshot_and_wait(
         self,
         job_id: str,
-        group: str,
         backend: Union[str, int] = 0,
         poll_interval_sec: float = 1.0,
     ) -> GetOperationResponse:
         """Calls snapshot and waits for completion."""
-        response = self.snapshot(job_id, group, backend)
+        response = self.snapshot(job_id, backend)
         return self.wait_for_operation(response.operation_id, poll_interval_sec)
 
     def restore_and_wait(
         self,
         job_id: str,
-        group: str,
         backend: Union[str, int] = 0,
         poll_interval_sec: float = 1.0,
     ) -> GetOperationResponse:
         """Calls restore and waits for completion."""
-        response = self.restore(job_id, group, backend)
+        response = self.restore(job_id, backend)
         return self.wait_for_operation(response.operation_id, poll_interval_sec)

@@ -27,11 +27,9 @@ func TestNewStateManager(t *testing.T) {
 func TestGetOrCreateJob(t *testing.T) {
 	sm := statemachine.NewStateManager()
 	jobID := "test-job"
-	group := "test-group"
-	groupTwo := "test-group-2"
 
 	sm.InternalMu().Lock()
-	job1 := sm.InternalGetOrCreateJob(jobID, group)
+	job1 := sm.InternalGetOrCreateJob(jobID)
 	sm.InternalMu().Unlock()
 
 	if job1 == nil {
@@ -42,14 +40,11 @@ func TestGetOrCreateJob(t *testing.T) {
 	}
 
 	sm.InternalMu().Lock()
-	job2 := sm.InternalGetOrCreateJob(jobID, groupTwo) // Group should not be updated if already exists
+	job2 := sm.InternalGetOrCreateJob(jobID)
 	sm.InternalMu().Unlock()
 
 	if job2 != job1 {
 		t.Error("getOrCreateJob returned a different instance for existing jobID")
-	}
-	if job2.Group != group {
-		t.Errorf("Expected group %s, got %s", group, job2.Group)
 	}
 }
 
@@ -91,10 +86,9 @@ func TestStartSnapshot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sm := statemachine.NewStateManager()
 			jobID := "job-1"
-			group := "group-1"
 
 			sm.InternalMu().Lock()
-			job := sm.InternalGetOrCreateJob(jobID, group)
+			job := sm.InternalGetOrCreateJob(jobID)
 			job.State = tc.initialState
 			sm.InternalMu().Unlock()
 
@@ -102,7 +96,7 @@ func TestStartSnapshot(t *testing.T) {
 				return tc.workerErr
 			}
 
-			opID, err := sm.StartSnapshot(jobID, group, worker)
+			opID, err := sm.StartSnapshot(jobID, worker)
 
 			if tc.expectErrCode != codes.OK {
 				if err == nil {
@@ -186,10 +180,9 @@ func TestStartRestore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sm := statemachine.NewStateManager()
 			jobID := "job-1"
-			group := "group-1"
 
 			sm.InternalMu().Lock()
-			job := sm.InternalGetOrCreateJob(jobID, group)
+			job := sm.InternalGetOrCreateJob(jobID)
 			job.State = tc.initialState
 			sm.InternalMu().Unlock()
 
@@ -197,7 +190,7 @@ func TestStartRestore(t *testing.T) {
 				return tc.workerErr
 			}
 
-			opID, err := sm.StartRestore(jobID, group, worker)
+			opID, err := sm.StartRestore(jobID, worker)
 
 			if tc.expectErrCode != codes.OK {
 				if err == nil {
@@ -248,8 +241,8 @@ func TestGetJobStatus(t *testing.T) {
 	}
 
 	sm.InternalMu().Lock()
-	sm.InternalGetOrCreateJob("job1", "group1").State = pb.JobState_JOB_STATE_RUNNING
-	sm.InternalGetOrCreateJob("job2", "group1").State = pb.JobState_JOB_STATE_SAVED
+	sm.InternalGetOrCreateJob("job1").State = pb.JobState_JOB_STATE_RUNNING
+	sm.InternalGetOrCreateJob("job2").State = pb.JobState_JOB_STATE_SAVED
 	sm.InternalMu().Unlock()
 
 	statuses := sm.GetJobStatus()
@@ -273,7 +266,7 @@ func TestJobPIDs(t *testing.T) {
 	}
 
 	sm.InternalMu().Lock()
-	sm.InternalGetOrCreateJob(jobID, "group1")
+	sm.InternalGetOrCreateJob(jobID)
 	sm.InternalMu().Unlock()
 
 	sm.UpdateJobPIDs(jobID, pids)
@@ -310,7 +303,6 @@ func TestJobPIDs(t *testing.T) {
 func TestConcurrencyControl(t *testing.T) {
 	sm := statemachine.NewStateManager()
 	jobID := "concurrent-job"
-	group := "group-1"
 
 	// 1. Start a "slow" worker that blocks until we tell it to finish
 	blockWorker := make(chan struct{})
@@ -322,7 +314,7 @@ func TestConcurrencyControl(t *testing.T) {
 		return nil
 	}
 
-	opID1, err := sm.StartSnapshot(jobID, group, slowWorker)
+	opID1, err := sm.StartSnapshot(jobID, slowWorker)
 	if err != nil {
 		t.Fatalf("Failed to start first operation: %v", err)
 	}
@@ -340,11 +332,11 @@ func TestConcurrencyControl(t *testing.T) {
 
 	for i := 0; i < concurrentAttempts; i++ {
 		go func() {
-			_, err := sm.StartSnapshot(jobID, group, func() error { return nil })
+			_, err := sm.StartSnapshot(jobID, func() error { return nil })
 			errs <- err
 		}()
 		go func() {
-			_, err := sm.StartRestore(jobID, group, func() error { return nil })
+			_, err := sm.StartRestore(jobID, func() error { return nil })
 			errs <- err
 		}()
 	}

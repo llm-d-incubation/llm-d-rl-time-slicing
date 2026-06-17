@@ -67,7 +67,6 @@ func TestServer_Snapshot(t *testing.T) {
 
 	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
 		JobId:   "test-job",
-		Group:   "test-group",
 		Backend: pb.Backend_BACKEND_UNSPECIFIED,
 	})
 	if err != nil {
@@ -89,7 +88,6 @@ func TestServer_Restore(t *testing.T) {
 
 	_, err = client.Restore(ctx, &pb.RestoreRequest{
 		JobId:   "test-job",
-		Group:   "test-group",
 		Backend: pb.Backend_BACKEND_UNSPECIFIED,
 	})
 	if err != nil {
@@ -141,7 +139,6 @@ func TestServer_Status(t *testing.T) {
 	jobID := "test-job-status"
 	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
 		JobId:   jobID,
-		Group:   "test-group",
 		Backend: pb.Backend_BACKEND_UNSPECIFIED,
 	})
 	if err != nil {

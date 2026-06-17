@@ -180,8 +180,7 @@ func (JobState) EnumDescriptor() ([]byte, []int) {
 type SnapshotRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Group         string                 `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
-	Backend       Backend                `protobuf:"varint,3,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
+	Backend       Backend                `protobuf:"varint,2,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -219,13 +218,6 @@ func (*SnapshotRequest) Descriptor() ([]byte, []int) {
 func (x *SnapshotRequest) GetJobId() string {
 	if x != nil {
 		return x.JobId
-	}
-	return ""
-}
-
-func (x *SnapshotRequest) GetGroup() string {
-	if x != nil {
-		return x.Group
 	}
 	return ""
 }
@@ -284,8 +276,7 @@ func (x *SnapshotResponse) GetOperationId() string {
 type RestoreRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Group         string                 `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
-	Backend       Backend                `protobuf:"varint,3,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
+	Backend       Backend                `protobuf:"varint,2,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -323,13 +314,6 @@ func (*RestoreRequest) Descriptor() ([]byte, []int) {
 func (x *RestoreRequest) GetJobId() string {
 	if x != nil {
 		return x.JobId
-	}
-	return ""
-}
-
-func (x *RestoreRequest) GetGroup() string {
-	if x != nil {
-		return x.Group
 	}
 	return ""
 }
@@ -712,17 +696,15 @@ var File_snapshot_agent_proto protoreflect.FileDescriptor
 
 const file_snapshot_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x14snapshot_agent.proto\x12\x17snapshot_agent.v1alpha1\"z\n" +
+	"\x14snapshot_agent.proto\x12\x17snapshot_agent.v1alpha1\"d\n" +
 	"\x0fSnapshotRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
-	"\x05group\x18\x02 \x01(\tR\x05group\x12:\n" +
-	"\abackend\x18\x03 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendR\abackend\"5\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12:\n" +
+	"\abackend\x18\x02 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendR\abackend\"5\n" +
 	"\x10SnapshotResponse\x12!\n" +
-	"\foperation_id\x18\x01 \x01(\tR\voperationId\"y\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\"c\n" +
 	"\x0eRestoreRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
-	"\x05group\x18\x02 \x01(\tR\x05group\x12:\n" +
-	"\abackend\x18\x03 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendR\abackend\"4\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12:\n" +
+	"\abackend\x18\x02 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendR\abackend\"4\n" +
 	"\x0fRestoreResponse\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\"8\n" +
 	"\x13GetOperationRequest\x12!\n" +

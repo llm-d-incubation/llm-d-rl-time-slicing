@@ -49,7 +49,7 @@ func (s *Server) getBackendType(backend pb.Backend) backends.BackendType {
 // Snapshot triggers an asynchronous snapshot of the accelerator context for a job.
 func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
 	logger := klog.FromContext(ctx)
-	logger.Info("Snapshot called", "jobID", req.GetJobId(), "group", req.GetGroup(), "backend", req.GetBackend())
+	logger.Info("Snapshot called", "jobID", req.GetJobId(), "backend", req.GetBackend())
 
 	backendType := s.getBackendType(req.GetBackend())
 
@@ -59,7 +59,7 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	}
 
 	bgCtx := context.WithoutCancel(ctx)
-	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() error {
+	opID, err := s.state.StartSnapshot(req.GetJobId(), func() error {
 		logger.Info("Background: Starting snapshot", "jobID", req.GetJobId(), "backend", backendType)
 		pods, err := podutils.GetLocalPods(bgCtx, req.GetJobId())
 		if err != nil {
@@ -99,7 +99,7 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 // Restore triggers an asynchronous restoration of the accelerator context for a job.
 func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.RestoreResponse, error) {
 	logger := klog.FromContext(ctx)
-	logger.Info("Restore called", "jobID", req.GetJobId(), "group", req.GetGroup(), "backend", req.GetBackend())
+	logger.Info("Restore called", "jobID", req.GetJobId(), "backend", req.GetBackend())
 
 	backendType := s.getBackendType(req.GetBackend())
 
@@ -109,7 +109,7 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 	}
 
 	bgCtx := context.WithoutCancel(ctx)
-	opID, err := s.state.StartRestore(req.GetJobId(), req.GetGroup(), func() error {
+	opID, err := s.state.StartRestore(req.GetJobId(), func() error {
 		logger.Info("Background: Starting restore", "jobID", req.GetJobId(), "backend", backendType)
 
 		pids, err := s.state.GetJobPIDs(req.GetJobId())

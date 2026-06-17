@@ -22,6 +22,6 @@ func (sm *StateManager) InternalMu() *sync.RWMutex {
 	return &sm.mu
 }
 
-func (sm *StateManager) InternalGetOrCreateJob(jobID, group string) *Job {
-	return sm.getOrCreateJob(jobID, group)
+func (sm *StateManager) InternalGetOrCreateJob(jobID string) *Job {
+	return sm.getOrCreateJob(jobID)
 }

@@ -21,7 +21,6 @@ const (
 // Job represents a per-workload state.
 type Job struct {
 	ID    string
-	Group string
 	State pb.JobState
 	PIDs  []int
 	mu    sync.Mutex
@@ -57,12 +56,11 @@ func NewStateManager() *StateManager {
 
 // getOrCreateJob returns an existing job or creates a new one.
 // Must be called with sm.mu held.
-func (sm *StateManager) getOrCreateJob(jobID, group string) *Job {
+func (sm *StateManager) getOrCreateJob(jobID string) *Job {
 	job, ok := sm.jobs[jobID]
 	if !ok {
 		job = &Job{
 			ID:    jobID,
-			Group: group,
 			State: pb.JobState_JOB_STATE_IDLE,
 		}
 		sm.jobs[jobID] = job
@@ -71,9 +69,9 @@ func (sm *StateManager) getOrCreateJob(jobID, group string) *Job {
 }
 
 // StartSnapshot initiates a snapshot operation if the job state allows it.
-func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) (string, error) {
+func (sm *StateManager) StartSnapshot(jobID string, worker func() error) (string, error) {
 	sm.mu.Lock()
-	job := sm.getOrCreateJob(jobID, group)
+	job := sm.getOrCreateJob(jobID)
 	sm.mu.Unlock()
 
 	job.mu.Lock()
@@ -131,9 +129,9 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) 
 }
 
 // StartRestore initiates a restore operation if the job state allows it.
-func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (string, error) {
+func (sm *StateManager) StartRestore(jobID string, worker func() error) (string, error) {
 	sm.mu.Lock()
-	job := sm.getOrCreateJob(jobID, group)
+	job := sm.getOrCreateJob(jobID)
 	sm.mu.Unlock()
 
 	job.mu.Lock()

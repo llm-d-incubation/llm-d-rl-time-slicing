@@ -26,8 +26,7 @@ enum Backend {
 
 message SnapshotRequest {
   string job_id = 1;
-  string group = 2;
-  Backend backend = 3;
+  Backend backend = 2;
 }
 
 message SnapshotResponse {
@@ -36,8 +35,7 @@ message SnapshotResponse {
 
 message RestoreRequest {
   string job_id = 1;
-  string group = 2;
-  Backend backend = 3;
+  Backend backend = 2;
 }
 
 message RestoreResponse {
