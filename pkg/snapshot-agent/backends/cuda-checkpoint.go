@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
-	"k8s.io/klog/v2"
 )
 
 type nvmlClient interface {
@@ -53,24 +52,22 @@ func NewCudaCheckpoint() *CudaCheckpoint {
 
 // Snapshot triggers a snapshot of the accelerator context for a job.
 func (c *CudaCheckpoint) Snapshot(ctx context.Context, pids []string) error {
-	logger := klog.FromContext(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	logger.Info("Snapshotting PIDs", "pids", pids)
+	slog.InfoContext(ctx, "Snapshotting PIDs", "pids", pids)
 
 	// 1. Lock and Checkpoint CUDA
 	t0 := time.Now()
 	if err := c.checkpointPIDs(ctx, pids); err != nil {
 		return fmt.Errorf("cuda-checkpoint checkpoint failed: %w", err)
 	}
-	logger.Info("cuda-checkpoint action took", "duration", time.Since(t0))
+	slog.InfoContext(ctx, "cuda-checkpoint action took", "duration", time.Since(t0))
 	return nil
 }
 
 // Restore triggers a restoration of the accelerator context for a job.
 func (c *CudaCheckpoint) Restore(ctx context.Context, pids []string) error {
-	logger := klog.FromContext(ctx)
 	if len(pids) == 0 {
 		return fmt.Errorf("at least one PID is required")
 	}
@@ -78,12 +75,12 @@ func (c *CudaCheckpoint) Restore(ctx context.Context, pids []string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	logger.Info("Restoring PIDs", "pids", pids)
+	slog.InfoContext(ctx, "Restoring PIDs", "pids", pids)
 	t0 := time.Now()
 	if err := c.restorePIDs(ctx, pids); err != nil {
 		return fmt.Errorf("cuda-checkpoint toggle failed: %w", err)
 	}
-	logger.Info("cuda-checkpoint toggle took", "duration", time.Since(t0), "pids", pids)
+	slog.InfoContext(ctx, "cuda-checkpoint toggle took", "duration", time.Since(t0), "pids", pids)
 	return nil
 }
 
@@ -145,7 +142,7 @@ func (c *CudaCheckpoint) HealthCheck(ctx context.Context) error {
 	}
 	defer func() {
 		if ret := c.nvml.Shutdown(); ret != nvml.SUCCESS {
-			slog.Error("Failed to shutdown NVML", "error", nvml.ErrorString(ret))
+			slog.ErrorContext(ctx, "Failed to shutdown NVML", "error", nvml.ErrorString(ret))
 		}
 	}()
 

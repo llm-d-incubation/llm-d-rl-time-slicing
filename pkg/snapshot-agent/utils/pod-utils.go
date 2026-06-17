@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -12,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -74,7 +74,6 @@ func GetLocalPods(ctx context.Context, jobID string) ([]corev1.Pod, error) {
 
 // GetPodPIDs returns the host-namespace PIDs of all CUDA-context-holding processes belonging to the specified pod.
 func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
-	logger := klog.FromContext(ctx)
 	// 1. Get the pod UID
 	podUID, err := getPodUID(ctx, podName, namespace)
 	if err != nil {
@@ -82,16 +81,16 @@ func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
 	}
 
 	// 2. Initialize NVML
-	logger.Info("Initializing NVML")
+	slog.InfoContext(ctx, "Initializing NVML")
 	ret := NvmlInit()
 	if ret != nvml.SUCCESS {
-		logger.Error(fmt.Errorf("%s", nvml.ErrorString(ret)), "Failed to initialize NVML")
+		slog.ErrorContext(ctx, "Failed to initialize NVML", "error", nvml.ErrorString(ret))
 		return nil, fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
 	}
-	logger.Info("NVML initialized successfully")
+	slog.InfoContext(ctx, "NVML initialized successfully")
 	defer func() {
 		if ret := NvmlShutdown(); ret != nvml.SUCCESS {
-			logger.Error(fmt.Errorf("%s", nvml.ErrorString(ret)), "Failed to shutdown NVML")
+			slog.ErrorContext(ctx, "Failed to shutdown NVML", "error", nvml.ErrorString(ret))
 		}
 	}()
 

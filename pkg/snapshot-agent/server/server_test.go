@@ -2,7 +2,9 @@ package server_test
 
 import (
 	"context"
+	"log/slog"
 	"net"
+	"os"
 	"testing"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
@@ -14,7 +16,6 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
-	"k8s.io/klog/v2"
 )
 
 const bufSize = 1024 * 1024
@@ -44,7 +45,8 @@ func initGRPCServer() {
 	grpc_health_v1.RegisterHealthServer(s, server.NewHealthServer(backendsMap, backends.BackendNoop))
 	go func() {
 		if err := s.Serve(lis); err != nil {
-			klog.Fatalf("Server exited with error: %v", err)
+			slog.Error("Server exited with error", "error", err)
+			os.Exit(1)
 		}
 	}()
 }

@@ -17,28 +17,33 @@ package main
 import (
 	"context"
 	"flag"
+	"log/slog"
+	"os"
 
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/server"
-	"k8s.io/klog/v2"
 )
 
 func main() {
-	klog.InitFlags(nil)
+	// Initialize slog with ContextHandler
+	jsonHandler := slog.NewJSONHandler(os.Stdout, nil)
+	ctxHandler := logging.NewContextHandler(jsonHandler)
+	slog.SetDefault(slog.New(ctxHandler))
+
 	port := flag.Int("port", 9001, "The port to listen on")
 	flag.Parse()
 
 	ctx := context.Background()
-	logger := klog.FromContext(ctx)
 
 	registeredBackends := map[backends.BackendType]backends.Backend{
 		backends.BackendCuda: backends.NewCudaCheckpoint(),
 		backends.BackendNoop: backends.NewNoopBackend(),
 	}
 
-	logger.Info("Starting Snapshot Agent", "port", *port)
-	if err := server.StartServer(*port, registeredBackends, backends.BackendCuda); err != nil {
-		logger.Error(err, "Failed to start server")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", *port)
+	if err := server.StartServer(ctx, *port, registeredBackends, backends.BackendCuda); err != nil {
+		slog.ErrorContext(ctx, "Failed to start server", "error", err)
+		os.Exit(1)
 	}
 }
