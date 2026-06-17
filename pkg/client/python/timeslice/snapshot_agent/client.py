@@ -37,16 +37,12 @@ class SnapshotAgentInterface(ABC):
     """Abstract base class for SnapshotAgentService client."""
 
     @abstractmethod
-    def snapshot(
-        self, job_id: str, backend: Union[str, int] = 0
-    ) -> SnapshotResponse:
+    def snapshot(self, job_id: str, backend: Union[str, int] = 0) -> SnapshotResponse:
         """Triggers an asynchronous snapshot."""
         pass
 
     @abstractmethod
-    def restore(
-        self, job_id: str, backend: Union[str, int] = 0
-    ) -> RestoreResponse:
+    def restore(self, job_id: str, backend: Union[str, int] = 0) -> RestoreResponse:
         """Triggers an asynchronous restoration."""
         pass
 
@@ -129,9 +125,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
                 )
                 return snapshot_agent_pb2.BACKEND_UNSPECIFIED
 
-    def snapshot(
-        self, job_id: str, backend: Union[str, int] = 0
-    ) -> SnapshotResponse:
+    def snapshot(self, job_id: str, backend: Union[str, int] = 0) -> SnapshotResponse:
         """
         Triggers an asynchronous snapshot.
         Args:
@@ -158,9 +152,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             logger.error(f"Unexpected error in Snapshot: {e}")
             raise SnapshotAgentError(f"Unexpected error: {e}") from e
 
-    def restore(
-        self, job_id: str, backend: Union[str, int] = 0
-    ) -> RestoreResponse:
+    def restore(self, job_id: str, backend: Union[str, int] = 0) -> RestoreResponse:
         """
         Triggers an asynchronous restoration.
         Args:
