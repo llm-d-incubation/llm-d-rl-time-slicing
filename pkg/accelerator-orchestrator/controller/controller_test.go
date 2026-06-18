@@ -34,50 +34,7 @@ func (m *mockInfrastructureOrchestrator) ObserveGroupState(ctx context.Context, 
 	return nil
 }
 
-type mockSnapshotAgentStore struct {
-	getStatusFunc func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error)
-	snapshotFunc  func(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.SnapshotResponse, error)
-	operationFunc func(ctx context.Context, nodeName, operationID string) (*agentpb.GetOperationResponse, error)
-	restoreFunc   func(ctx context.Context, nodeName, jobID, groupID string) (*agentpb.RestoreResponse, error)
-}
 
-func (m *mockSnapshotAgentStore) GetStatus(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error) {
-	if m.getStatusFunc != nil {
-		return m.getStatusFunc(ctx, nodeName)
-	}
-	return &agentpb.StatusResponse{}, nil
-}
-
-func (m *mockSnapshotAgentStore) CloseClient(nodeName string) error {
-	return nil
-}
-
-func (m *mockSnapshotAgentStore) Snapshot(
-	ctx context.Context, nodeName, jobID, groupID string,
-) (*agentpb.SnapshotResponse, error) {
-	if m.snapshotFunc != nil {
-		return m.snapshotFunc(ctx, nodeName, jobID, groupID)
-	}
-	return &agentpb.SnapshotResponse{}, nil
-}
-
-func (m *mockSnapshotAgentStore) GetOperation(
-	ctx context.Context, nodeName, operationID string,
-) (*agentpb.GetOperationResponse, error) {
-	if m.operationFunc != nil {
-		return m.operationFunc(ctx, nodeName, operationID)
-	}
-	return &agentpb.GetOperationResponse{}, nil
-}
-
-func (m *mockSnapshotAgentStore) Restore(
-	ctx context.Context, nodeName, jobID, groupID string,
-) (*agentpb.RestoreResponse, error) {
-	if m.restoreFunc != nil {
-		return m.restoreFunc(ctx, nodeName, jobID, groupID)
-	}
-	return &agentpb.RestoreResponse{}, nil
-}
 
 // TestController_ReconcileSuccess verifies that the controller calls ObserveGroupState
 // and successfully processes the item.
@@ -102,7 +59,7 @@ func TestController_ReconcileSuccess(t *testing.T) {
 		},
 	}
 
-	mockAgentStore := &mockSnapshotAgentStore{}
+	mockAgentStore := &controller.MockSnapshotAgentStore{}
 	c := controller.NewController(groupStore, jobStore, queue, mockOrch, mockAgentStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -157,7 +114,7 @@ func TestController_ReconcileFailure_Retries(t *testing.T) {
 		},
 	}
 
-	mockAgentStore := &mockSnapshotAgentStore{}
+	mockAgentStore := &controller.MockSnapshotAgentStore{}
 	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -260,7 +217,7 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 		},
 	}
 
-	mockAgentStore := &mockSnapshotAgentStore{}
+	mockAgentStore := &controller.MockSnapshotAgentStore{}
 	c := controller.NewController(groupStore, jobStore, queue, mockOrch, mockAgentStore)
 
 	// Start the controller
@@ -391,7 +348,7 @@ func TestController_Reconcile_OneJobLoopRemainsActive(t *testing.T) {
 		},
 	}
 
-	mockAgentStore := &mockSnapshotAgentStore{}
+	mockAgentStore := &controller.MockSnapshotAgentStore{}
 	c := controller.NewController(groupStore, jobStore, queue, mockOrch, mockAgentStore)
 
 	// Start the controller
@@ -487,8 +444,8 @@ func TestController_Reconcile_TriggersSnapshot(t *testing.T) {
 	// 3. Mock SnapshotAgentStore to track calls
 	snapshotCalled := make(chan string, 1)
 	getStatusCalls := 0
-	mockAgentStore := &mockSnapshotAgentStore{
-		getStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
 			if node == nodeName {
 				getStatusCalls++
 				state := agentpb.JobState_JOB_STATE_RUNNING
@@ -504,13 +461,13 @@ func TestController_Reconcile_TriggersSnapshot(t *testing.T) {
 			}
 			return &agentpb.StatusResponse{}, nil
 		},
-		snapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
+		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
 			if node == nodeName && jobID == "job-2" && gID == groupID {
 				snapshotCalled <- jobID
 			}
 			return &agentpb.SnapshotResponse{OperationId: "op-123"}, nil
 		},
-		operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
 			if node == nodeName && operationID == "op-123" {
 				return &agentpb.GetOperationResponse{
 					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
@@ -597,7 +554,7 @@ func TestController_Reconcile_ActiveJobFaultedFails(t *testing.T) {
 		t.Fatalf("failed to put job1: %v", err)
 	}
 
-	mockAgentStore := &mockSnapshotAgentStore{}
+	mockAgentStore := &controller.MockSnapshotAgentStore{}
 	mockOrch := &mockInfrastructureOrchestrator{
 		observeFunc: func(ctx context.Context, gID string) error {
 			return nil
@@ -654,8 +611,8 @@ func TestController_ObserveJobContext(t *testing.T) {
 	}
 
 	// 3. Mock SnapshotAgentStore to return status
-	mockAgentStore := &mockSnapshotAgentStore{
-		getStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
 			if node == nodeName {
 				return &agentpb.StatusResponse{
 					JobStatuses: []*agentpb.JobStatus{
@@ -723,8 +680,8 @@ func TestController_Reconcile_TriggersRestore(t *testing.T) {
 	// 3. Mock SnapshotAgentStore to track calls
 	restoreCalled := make(chan string, 1)
 	getStatusCalls := 0
-	mockAgentStore := &mockSnapshotAgentStore{
-		getStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
 			if node == nodeName {
 				getStatusCalls++
 				state := agentpb.JobState_JOB_STATE_SAVED
@@ -739,13 +696,13 @@ func TestController_Reconcile_TriggersRestore(t *testing.T) {
 			}
 			return &agentpb.StatusResponse{}, nil
 		},
-		restoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
 			if node == nodeName && jobID == "job-1" && gID == groupID {
 				restoreCalled <- jobID
 			}
 			return &agentpb.RestoreResponse{OperationId: "op-123"}, nil
 		},
-		operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
 			if node == nodeName && operationID == "op-123" {
 				return &agentpb.GetOperationResponse{
 					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
@@ -831,12 +788,12 @@ func TestController_Reconcile_ActiveJobAlreadyRunningExitsEarly(t *testing.T) {
 	}
 
 	// 3. Mock SnapshotAgentStore to fail if any disruptive action is taken.
-	mockAgentStore := &mockSnapshotAgentStore{
-		snapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
 			t.Errorf("Unexpected call to Snapshot")
 			return nil, fmt.Errorf("unexpected call")
 		},
-		restoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
 			t.Errorf("Unexpected call to Restore")
 			return nil, fmt.Errorf("unexpected call")
 		},
