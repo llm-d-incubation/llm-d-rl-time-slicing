@@ -16,7 +16,7 @@
   ## How It Works
   We introduce **collaborative, application-aware time-slicing**. Using a lightweight client library that pairs seamlessly with your existing training and inference frameworks, the system delivers two core capabilities:
   * **Intelligent Scheduling:** Dynamically coordinates accelerator access across concurrent jobs based on their execution phases.
-  * **Ultra-Fast Context Switching:** Performs blazing-fast, transparent state checkpointing and restoration under the hood.
+  * **Fast Context Switching:** Performs fast, transparent state checkpointing and restoration under the hood.
 
 For the full design rationale and preliminary benchmark results, see the [Platform-Native Time-Slicing proposal](https://github.com/llm-d/llm-d/blob/main/docs/proposals/rl-time-slicing-platform.md).
 
