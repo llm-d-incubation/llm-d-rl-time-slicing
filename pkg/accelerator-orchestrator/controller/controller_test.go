@@ -34,8 +34,6 @@ func (m *mockInfrastructureOrchestrator) ObserveGroupState(ctx context.Context, 
 	return nil
 }
 
-
-
 // TestController_ReconcileSuccess verifies that the controller calls ObserveGroupState
 // and successfully processes the item.
 func TestController_ReconcileSuccess(t *testing.T) {

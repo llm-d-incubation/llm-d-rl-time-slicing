@@ -9,8 +9,6 @@ import (
 	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 )
 
-
-
 func TestController_WaitForOperation(t *testing.T) {
 	nodeName := "node-1"
 	opID := "op-123"

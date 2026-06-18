@@ -1,3 +1,4 @@
+//nolint:testpackage // MockSnapshotAgentStore needs to be in package controller to be shared with internal tests.
 package controller
 
 import (
