@@ -26,6 +26,7 @@ enum Backend {
 
 message SnapshotRequest {
   string job_id = 1;
+  // group is an optional identifier for a set of related jobs.
   string group = 2;
   Backend backend = 3;
 }
@@ -36,6 +37,7 @@ message SnapshotResponse {
 
 message RestoreRequest {
   string job_id = 1;
+  // group is an optional identifier for a set of related jobs.
   string group = 2;
   Backend backend = 3;
 }

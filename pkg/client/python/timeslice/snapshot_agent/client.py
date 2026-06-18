@@ -38,14 +38,14 @@ class SnapshotAgentInterface(ABC):
 
     @abstractmethod
     def snapshot(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
+        self, job_id: str, group: str = "", backend: Union[str, int] = 0
     ) -> SnapshotResponse:
         """Triggers an asynchronous snapshot."""
         pass
 
     @abstractmethod
     def restore(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
+        self, job_id: str, group: str = "", backend: Union[str, int] = 0
     ) -> RestoreResponse:
         """Triggers an asynchronous restoration."""
         pass
@@ -130,7 +130,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
                 return snapshot_agent_pb2.BACKEND_UNSPECIFIED
 
     def snapshot(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
+        self, job_id: str, group: str = "", backend: Union[str, int] = 0
     ) -> SnapshotResponse:
         """
         Triggers an asynchronous snapshot.
@@ -160,7 +160,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             raise SnapshotAgentError(f"Unexpected error: {e}") from e
 
     def restore(
-        self, job_id: str, group: str, backend: Union[str, int] = 0
+        self, job_id: str, group: str = "", backend: Union[str, int] = 0
     ) -> RestoreResponse:
         """
         Triggers an asynchronous restoration.
@@ -301,7 +301,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
     def snapshot_and_wait(
         self,
         job_id: str,
-        group: str,
+        group: str = "",
         backend: Union[str, int] = 0,
         poll_interval_sec: float = 1.0,
     ) -> GetOperationResponse:
@@ -312,7 +312,7 @@ class SnapshotAgentClient(SnapshotAgentInterface):
     def restore_and_wait(
         self,
         job_id: str,
-        group: str,
+        group: str = "",
         backend: Union[str, int] = 0,
         poll_interval_sec: float = 1.0,
     ) -> GetOperationResponse:
