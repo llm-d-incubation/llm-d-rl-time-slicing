@@ -25,7 +25,10 @@ enum Backend {
 }
 
 message SnapshotRequest {
+  // job_id is the unique identifier for the job. If group is specified,
+  // job_id should be unique within that group.
   string job_id = 1;
+  // group is an optional identifier for a set of related jobs.
   string group = 2;
   Backend backend = 3;
 }
@@ -35,7 +38,10 @@ message SnapshotResponse {
 }
 
 message RestoreRequest {
+  // job_id is the unique identifier for the job. If group is specified,
+  // job_id should be unique within that group.
   string job_id = 1;
+  // group is an optional identifier for a set of related jobs.
   string group = 2;
   Backend backend = 3;
 }

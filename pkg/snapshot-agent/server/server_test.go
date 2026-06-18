@@ -65,6 +65,7 @@ func TestServer_Snapshot(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
+	// Test with group
 	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
 		JobId:   "test-job",
 		Group:   "test-group",
@@ -72,6 +73,15 @@ func TestServer_Snapshot(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("Expected success (using default noop backend), got error: %v", err)
+	}
+
+	// Test without group
+	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
+		JobId:   "test-job-no-group",
+		Backend: pb.Backend_BACKEND_UNSPECIFIED,
+	})
+	if err != nil {
+		t.Errorf("Expected success with empty group, got error: %v", err)
 	}
 }
 
@@ -87,6 +97,7 @@ func TestServer_Restore(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
+	// Test with group
 	_, err = client.Restore(ctx, &pb.RestoreRequest{
 		JobId:   "test-job",
 		Group:   "test-group",
@@ -94,6 +105,15 @@ func TestServer_Restore(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("Expected success (using default noop backend), got error: %v", err)
+	}
+
+	// Test without group
+	_, err = client.Restore(ctx, &pb.RestoreRequest{
+		JobId:   "test-job-no-group",
+		Backend: pb.Backend_BACKEND_UNSPECIFIED,
+	})
+	if err != nil {
+		t.Errorf("Expected success with empty group, got error: %v", err)
 	}
 }
 
