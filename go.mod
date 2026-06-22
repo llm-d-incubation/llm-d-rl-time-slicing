@@ -3,7 +3,7 @@ module github.com/llm-d-incubation/llm-d-rl-time-slicing
 go 1.25.0
 
 require (
-	github.com/NVIDIA/go-nvml v0.13.1-0
+	github.com/NVIDIA/go-nvml v0.13.2-0
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.10.2
 	google.golang.org/grpc v1.81.1
