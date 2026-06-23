@@ -200,10 +200,12 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	lockStore := store.NewMemLockStore()
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
-	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
-		workqueue.DefaultTypedControllerRateLimiter[string](),
-		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
-	)
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
 
 	groupID := "group-1"
 
@@ -216,7 +218,7 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	}
 
 	mockAgentStore := &controller.MockSnapshotAgentStore{}
-	c := controller.NewController(groupStore, jobStore, queue, mockOrch, mockAgentStore)
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
 
 	// Start the controller
 	go func() {
@@ -236,8 +238,9 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	}
 
 	// Reconcile Phase 1 (job-1 locked)
-	queue.Add(groupID)
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	initialDone := testQueue.getDoneCount()
+	testQueue.Add(groupID)
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > initialDone }, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for Phase 1 reconcile: %v", err)
 	}
@@ -250,8 +253,9 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	testGroup.Spec().RequestLock("job-2")
 
 	// Reconcile Phase 2 (job-2 enqueued, job-1 still locked)
-	queue.Add(groupID)
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	initialDone = testQueue.getDoneCount()
+	testQueue.Add(groupID)
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > initialDone }, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for Phase 2 reconcile: %v", err)
 	}
@@ -270,7 +274,7 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	}
 
 	// Reconcile Phase 3 (job-2 should be active/locking)
-	queue.Add(groupID)
+	testQueue.Add(groupID)
 	err = waitWithTimeout(func() bool {
 		return testGroup.Spec().LockingJob() == "job-2" && testGroup.Spec().ActiveJob() == "job-2"
 	}, 3*time.Second)
@@ -288,8 +292,9 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	testGroup.Spec().RequestLock("job-1")
 
 	// Reconcile Phase 4 (job-1 enqueued, job-2 still locked)
-	queue.Add(groupID)
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	initialDone = testQueue.getDoneCount()
+	testQueue.Add(groupID)
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > initialDone }, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for Phase 4 reconcile: %v", err)
 	}
@@ -308,7 +313,7 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	}
 
 	// Reconcile Phase 5 (job-1 should be active/locking again)
-	queue.Add(groupID)
+	testQueue.Add(groupID)
 	err = waitWithTimeout(func() bool {
 		return testGroup.Spec().LockingJob() == "job-1" && testGroup.Spec().ActiveJob() == "job-1"
 	}, 3*time.Second)
@@ -835,10 +840,12 @@ func TestController_Reconcile_DeduceLoadedJob_Success(t *testing.T) {
 	lockStore := store.NewMemLockStore()
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
-	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
-		workqueue.DefaultTypedControllerRateLimiter[string](),
-		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
-	)
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
 
 	groupID := "group-1"
 	nodeNames := []string{"node-1", "node-2"}
@@ -872,7 +879,7 @@ func TestController_Reconcile_DeduceLoadedJob_Success(t *testing.T) {
 		},
 	}
 
-	c := controller.NewController(groupStore, jobStore, queue, mockOrch, &controller.MockSnapshotAgentStore{})
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, &controller.MockSnapshotAgentStore{})
 
 	go func() {
 		if err := c.Run(ctx, 1); err != nil {
@@ -880,9 +887,9 @@ func TestController_Reconcile_DeduceLoadedJob_Success(t *testing.T) {
 		}
 	}()
 
-	queue.Add(groupID)
+	testQueue.Add(groupID)
 
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for reconcile: %v", err)
 	}
@@ -1015,10 +1022,12 @@ func TestController_Reconcile_DeduceLoadedJob_RunningAndUnspecified(t *testing.T
 	lockStore := store.NewMemLockStore()
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
-	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
-		workqueue.DefaultTypedControllerRateLimiter[string](),
-		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
-	)
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
 
 	groupID := "group-1"
 	nodeNames := []string{"node-1", "node-2"}
@@ -1043,7 +1052,7 @@ func TestController_Reconcile_DeduceLoadedJob_RunningAndUnspecified(t *testing.T
 		},
 	}
 
-	c := controller.NewController(groupStore, jobStore, queue, mockOrch, &controller.MockSnapshotAgentStore{})
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, &controller.MockSnapshotAgentStore{})
 
 	go func() {
 		if err := c.Run(ctx, 1); err != nil {
@@ -1051,9 +1060,9 @@ func TestController_Reconcile_DeduceLoadedJob_RunningAndUnspecified(t *testing.T
 		}
 	}()
 
-	queue.Add(groupID)
+	testQueue.Add(groupID)
 
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for reconcile: %v", err)
 	}
@@ -1261,10 +1270,12 @@ func TestController_Reconcile_DeduceLoadedJob_AllUnspecified(t *testing.T) {
 	lockStore := store.NewMemLockStore()
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
-	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
-		workqueue.DefaultTypedControllerRateLimiter[string](),
-		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
-	)
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
 
 	groupID := "group-1"
 	nodeNames := []string{"node-1", "node-2"}
@@ -1297,7 +1308,7 @@ func TestController_Reconcile_DeduceLoadedJob_AllUnspecified(t *testing.T) {
 		},
 	}
 
-	c := controller.NewController(groupStore, jobStore, queue, mockOrch, &controller.MockSnapshotAgentStore{})
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, &controller.MockSnapshotAgentStore{})
 
 	go func() {
 		if err := c.Run(ctx, 1); err != nil {
@@ -1305,9 +1316,9 @@ func TestController_Reconcile_DeduceLoadedJob_AllUnspecified(t *testing.T) {
 		}
 	}()
 
-	queue.Add(groupID)
+	testQueue.Add(groupID)
 
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for reconcile: %v", err)
 	}
