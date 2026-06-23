@@ -5,5 +5,8 @@ dependencies:
 - name: snapshot-agent
   repository: file://./snapshot-agent
   version: 0.1.0
-digest: sha256:f725b8766f3d4ff07a24396ebcc78db951e0dcedf06c00111cc6d6c602734541
-generated: "2026-06-09T20:48:07.00895014Z"
+- name: nvidia-dra-driver-gpu
+  repository: https://helm.ngc.nvidia.com/nvidia
+  version: 25.8.0
+digest: sha256:9abcd401622d435e29700f949f8b4954a8892c6b8631f5d0e52bae316389be05
+generated: "2026-06-23T23:21:35.295516503Z"

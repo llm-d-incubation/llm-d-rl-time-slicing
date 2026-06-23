@@ -11,3 +11,8 @@ dependencies:
   - name: snapshot-agent
     version: 0.1.0
     repository: "file://./snapshot-agent"
+  - name: nvidia-dra-driver-gpu
+    version: 25.8.0
+    repository: "https://helm.ngc.nvidia.com/nvidia"
+    condition: nvidia-dra-driver-gpu.enabled
+
