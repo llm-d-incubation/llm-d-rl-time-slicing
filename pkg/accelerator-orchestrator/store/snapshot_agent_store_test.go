@@ -61,7 +61,7 @@ func TestGRPCSnapshotAgentStore_GetStatus(t *testing.T) {
 	defer grpcServer.GracefulStop()
 
 	// Test with 5s TTL
-	s := store.NewGRPCSnapshotAgentStore(5 * time.Second)
+	s := store.NewGRPCSnapshotAgentStore(5*time.Second, 9001)
 	resp, err := s.GetStatus(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("GetStatus failed: %v", err)
@@ -113,7 +113,7 @@ func TestGRPCSnapshotAgentStore_GetStatus_Caching(t *testing.T) {
 	defer grpcServer.GracefulStop()
 
 	// Create store with 100ms TTL
-	agentStore := store.NewGRPCSnapshotAgentStore(100 * time.Millisecond)
+	agentStore := store.NewGRPCSnapshotAgentStore(100*time.Millisecond, 9001)
 
 	// 1. First call - cache miss, calls server
 	resp1, err := agentStore.GetStatus(context.Background(), addr)
@@ -178,7 +178,7 @@ func TestGRPCSnapshotAgentStore_GetStatus_NoCaching(t *testing.T) {
 	defer grpcServer.GracefulStop()
 
 	// Create store with 0 TTL (no caching)
-	s := store.NewGRPCSnapshotAgentStore(0)
+	s := store.NewGRPCSnapshotAgentStore(0, 9001)
 
 	// 1. First call - calls server
 	_, err = s.GetStatus(context.Background(), addr)
@@ -226,7 +226,7 @@ func TestGRPCSnapshotAgentStore_CloseClient(t *testing.T) {
 	}()
 
 	// 1. Create store with 5s TTL
-	agentStore := store.NewGRPCSnapshotAgentStore(5 * time.Second)
+	agentStore := store.NewGRPCSnapshotAgentStore(5*time.Second, 9001)
 
 	// 2. First call - succeeds and caches
 	_, err = agentStore.GetStatus(context.Background(), addr)

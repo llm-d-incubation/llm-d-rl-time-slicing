@@ -39,6 +39,7 @@ func run() error {
 	port := flag.Int("port", 50051, "The server port")
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	controllerWorkers := flag.Int("controller-workers", 1, "The number of workers for the controller")
+	snapshotAgentPort := flag.Int("snapshot-agent-port", 9001, "The default port for snapshot agents")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -64,7 +65,7 @@ func run() error {
 	lockStore := store.NewConfigMapLockStore(clientset)
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
-	snapshotAgentStore := store.NewGRPCSnapshotAgentStore(0)
+	snapshotAgentStore := store.NewGRPCSnapshotAgentStore(0, *snapshotAgentPort)
 	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
 		workqueue.DefaultTypedControllerRateLimiter[string](),
 		workqueue.TypedRateLimitingQueueConfig[string]{
