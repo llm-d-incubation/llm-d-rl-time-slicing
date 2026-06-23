@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -210,13 +211,14 @@ func TestServer_Acquire(t *testing.T) {
 				JobId:   tc.jobID,
 			})
 
+			added := mq.GetAdded()
 			if tc.expectEnqueue {
-				if len(mq.added) != 1 || mq.added[0] != tc.groupID {
-					t.Errorf("expected group %s to be enqueued, got %v", tc.groupID, mq.added)
+				if len(added) != 1 || added[0] != tc.groupID {
+					t.Errorf("expected group %s to be enqueued, got %v", tc.groupID, added)
 				}
 			} else {
-				if len(mq.added) != 0 {
-					t.Errorf("expected no enqueue, got %v", mq.added)
+				if len(added) != 0 {
+					t.Errorf("expected no enqueue, got %v", added)
 				}
 			}
 
@@ -378,13 +380,14 @@ func TestServer_Yield(t *testing.T) {
 				JobId:   tc.jobID,
 			})
 
+			added := mq.GetAdded()
 			if tc.expectEnqueue {
-				if len(mq.added) != 1 || mq.added[0] != tc.groupID {
-					t.Errorf("expected group %s to be enqueued, got %v", tc.groupID, mq.added)
+				if len(added) != 1 || added[0] != tc.groupID {
+					t.Errorf("expected group %s to be enqueued, got %v", tc.groupID, added)
 				}
 			} else {
-				if len(mq.added) != 0 {
-					t.Errorf("expected no enqueue, got %v", mq.added)
+				if len(added) != 0 {
+					t.Errorf("expected no enqueue, got %v", added)
 				}
 			}
 
@@ -741,12 +744,24 @@ func TestServer_GetGroupStatus(t *testing.T) {
 
 type mockWorkQueue struct {
 	controller.WorkQueue
+	mu    sync.Mutex
 	added []string
 }
 
 func (m *mockWorkQueue) Add(groupID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.added = append(m.added, groupID)
 }
+
+func (m *mockWorkQueue) GetAdded() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]string, len(m.added))
+	copy(cp, m.added)
+	return cp
+}
+
 func (m *mockWorkQueue) AddRateLimited(groupID string) {}
 func (m *mockWorkQueue) Forget(groupID string)         {}
 func (m *mockWorkQueue) Done(groupID string)           {}
