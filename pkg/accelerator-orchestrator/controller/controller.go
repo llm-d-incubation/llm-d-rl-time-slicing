@@ -112,6 +112,11 @@ func NewController(
 	}
 }
 
+// EnqueueWork enqueues the group ID for reconciliation.
+func (c *Controller) EnqueueWork(groupID string) {
+	c.queue.Add(groupID)
+}
+
 // Run starts the controller's reconciliation loop.
 // It initializes the infrastructure orchestrator, then starts the specified number of worker goroutines.
 // It blocks until the provided context is cancelled.

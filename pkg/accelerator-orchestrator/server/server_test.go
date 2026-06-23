@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"google.golang.org/grpc"
@@ -22,17 +23,20 @@ const bufSize = 1024 * 1024
 
 var lis *bufconn.Listener
 
-func initGRPCServer(groupStore server.GroupStore, jobStore server.JobStore) func() {
+//nolint:gocritic // Conflict with nonamedreturns linter
+func initGRPCServer(groupStore server.GroupStore, jobStore server.JobStore) (*mockWorkQueue, func()) {
 	lis = bufconn.Listen(bufSize)
 	s := grpc.NewServer()
-	pb.RegisterAcceleratorOrchestratorServiceServer(s, server.NewServer(nil, groupStore, jobStore))
+	mq := &mockWorkQueue{}
+	ctrl := controller.NewController(nil, nil, mq, nil, nil)
+	pb.RegisterAcceleratorOrchestratorServiceServer(s, server.NewServer(ctrl, groupStore, jobStore))
 	go func() {
 		if err := s.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			slog.Error("Server exited with error", "error", err)
 			panic(err)
 		}
 	}()
-	return func() {
+	return mq, func() {
 		s.GracefulStop()
 		lis.Close()
 	}
@@ -82,13 +86,14 @@ func bufDialer(context.Context, string) (net.Conn, error) {
 
 func TestServer_Acquire(t *testing.T) {
 	tests := []struct {
-		name         string
-		setupStores  func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore)
-		groupID      string
-		jobID        string
-		timeout      time.Duration
-		expectedCode codes.Code
-		verify       func(t *testing.T, resp *pb.AcquireResponse, err error)
+		name          string
+		setupStores   func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore)
+		groupID       string
+		jobID         string
+		timeout       time.Duration
+		expectedCode  codes.Code
+		verify        func(t *testing.T, resp *pb.AcquireResponse, err error)
+		expectEnqueue bool
 	}{
 		{
 			name: "group not found",
@@ -117,9 +122,10 @@ func TestServer_Acquire(t *testing.T) {
 				}
 				return gs, js
 			},
-			groupID:      "group-1",
-			jobID:        "job-1",
-			expectedCode: codes.Unavailable,
+			groupID:       "group-1",
+			jobID:         "job-1",
+			expectedCode:  codes.Unavailable,
+			expectEnqueue: true,
 		},
 		{
 			name: "timeout waiting for load",
@@ -132,10 +138,11 @@ func TestServer_Acquire(t *testing.T) {
 				}
 				return gs, store.NewJobStore()
 			},
-			groupID:      "group-1",
-			jobID:        "job-1",
-			timeout:      100 * time.Millisecond,
-			expectedCode: codes.DeadlineExceeded,
+			groupID:       "group-1",
+			jobID:         "job-1",
+			timeout:       100 * time.Millisecond,
+			expectedCode:  codes.DeadlineExceeded,
+			expectEnqueue: true,
 		},
 		{
 			name: "success after wait",
@@ -155,9 +162,10 @@ func TestServer_Acquire(t *testing.T) {
 
 				return gs, store.NewJobStore()
 			},
-			groupID:      "group-1",
-			jobID:        "job-1",
-			expectedCode: codes.OK,
+			groupID:       "group-1",
+			jobID:         "job-1",
+			expectedCode:  codes.OK,
+			expectEnqueue: true,
 			verify: func(t *testing.T, resp *pb.AcquireResponse, err error) {
 				t.Helper()
 				if err != nil {
@@ -184,7 +192,7 @@ func TestServer_Acquire(t *testing.T) {
 			}
 			gs, js := tc.setupStores(t, serverCtx)
 
-			cleanup := initGRPCServer(gs, js)
+			mq, cleanup := initGRPCServer(gs, js)
 			defer cleanup()
 			conn, err := grpc.NewClient(
 				"passthrough:///bufnet",
@@ -201,6 +209,16 @@ func TestServer_Acquire(t *testing.T) {
 				GroupId: tc.groupID,
 				JobId:   tc.jobID,
 			})
+
+			if tc.expectEnqueue {
+				if len(mq.added) != 1 || mq.added[0] != tc.groupID {
+					t.Errorf("expected group %s to be enqueued, got %v", tc.groupID, mq.added)
+				}
+			} else {
+				if len(mq.added) != 0 {
+					t.Errorf("expected no enqueue, got %v", mq.added)
+				}
+			}
 
 			if tc.expectedCode != codes.OK {
 				if err == nil {
@@ -225,12 +243,13 @@ func TestServer_Acquire(t *testing.T) {
 
 func TestServer_Yield(t *testing.T) {
 	tests := []struct {
-		name         string
-		setupStores  func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore)
-		groupID      string
-		jobID        string
-		expectedCode codes.Code
-		verify       func(t *testing.T, resp *pb.YieldResponse, err error)
+		name          string
+		setupStores   func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore)
+		groupID       string
+		jobID         string
+		expectedCode  codes.Code
+		verify        func(t *testing.T, resp *pb.YieldResponse, err error)
+		expectEnqueue bool
 	}{
 		{
 			name: "group not found",
@@ -277,9 +296,10 @@ func TestServer_Yield(t *testing.T) {
 				}
 				return gs, store.NewJobStore()
 			},
-			groupID:      "group-1",
-			jobID:        "job-1",
-			expectedCode: codes.OK,
+			groupID:       "group-1",
+			jobID:         "job-1",
+			expectedCode:  codes.OK,
+			expectEnqueue: true,
 			verify: func(t *testing.T, resp *pb.YieldResponse, err error) {
 				t.Helper()
 				if err != nil {
@@ -313,9 +333,10 @@ func TestServer_Yield(t *testing.T) {
 				g.Spec().RequestLock("job-2")
 				return gs, store.NewJobStore()
 			},
-			groupID:      "group-1",
-			jobID:        "job-1",
-			expectedCode: codes.OK,
+			groupID:       "group-1",
+			jobID:         "job-1",
+			expectedCode:  codes.OK,
+			expectEnqueue: true,
 			verify: func(t *testing.T, resp *pb.YieldResponse, err error) {
 				t.Helper()
 				if err != nil {
@@ -339,7 +360,7 @@ func TestServer_Yield(t *testing.T) {
 			ctx := context.Background()
 			gs, js := tc.setupStores(t, ctx)
 
-			cleanup := initGRPCServer(gs, js)
+			mq, cleanup := initGRPCServer(gs, js)
 			defer cleanup()
 			conn, err := grpc.NewClient(
 				"passthrough:///bufnet",
@@ -356,6 +377,16 @@ func TestServer_Yield(t *testing.T) {
 				GroupId: tc.groupID,
 				JobId:   tc.jobID,
 			})
+
+			if tc.expectEnqueue {
+				if len(mq.added) != 1 || mq.added[0] != tc.groupID {
+					t.Errorf("expected group %s to be enqueued, got %v", tc.groupID, mq.added)
+				}
+			} else {
+				if len(mq.added) != 0 {
+					t.Errorf("expected no enqueue, got %v", mq.added)
+				}
+			}
 
 			if tc.expectedCode != codes.OK {
 				if err == nil {
@@ -432,7 +463,7 @@ func TestServer_ListGroups(t *testing.T) {
 			ctx := context.Background()
 			gs := tc.setupStore(t, ctx)
 
-			cleanup := initGRPCServer(gs, nil)
+			_, cleanup := initGRPCServer(gs, nil)
 			defer cleanup()
 			conn, err := grpc.NewClient(
 				"passthrough:///bufnet",
@@ -668,7 +699,7 @@ func TestServer_GetGroupStatus(t *testing.T) {
 			ctx := context.Background()
 			gs, js := tc.setupStores(t, ctx)
 
-			cleanup := initGRPCServer(gs, js)
+			_, cleanup := initGRPCServer(gs, js)
 			defer cleanup()
 			conn, err := grpc.NewClient(
 				"passthrough:///bufnet",
@@ -707,3 +738,17 @@ func TestServer_GetGroupStatus(t *testing.T) {
 		})
 	}
 }
+
+type mockWorkQueue struct {
+	controller.WorkQueue
+	added []string
+}
+
+func (m *mockWorkQueue) Add(groupID string) {
+	m.added = append(m.added, groupID)
+}
+func (m *mockWorkQueue) AddRateLimited(groupID string) {}
+func (m *mockWorkQueue) Forget(groupID string)         {}
+func (m *mockWorkQueue) Done(groupID string)           {}
+func (m *mockWorkQueue) Get() (string, bool)           { return "", false }
+func (m *mockWorkQueue) ShutDown()                     {}

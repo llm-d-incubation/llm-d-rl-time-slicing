@@ -71,6 +71,9 @@ func (s *Server) Acquire(ctx context.Context, req *pb.AcquireRequest) (*pb.Acqui
 
 	// 2. Request Lock
 	group.Spec().RequestLock(jobID)
+	if s.ctrl != nil {
+		s.ctrl.EnqueueWork(groupID)
+	}
 
 	// 3. Wait Loop
 	ticker := time.NewTicker(acquirePollInterval)
@@ -148,6 +151,10 @@ func (s *Server) Yield(ctx context.Context, req *pb.YieldRequest) (*pb.YieldResp
 			return nil, status.Errorf(codes.PermissionDenied, "job %s does not hold lock for group %s", jobID, groupID)
 		}
 		return nil, status.Errorf(codes.Internal, "failed to yield: %v", err)
+	}
+
+	if s.ctrl != nil {
+		s.ctrl.EnqueueWork(groupID)
 	}
 
 	// 4. Construct Response from Snapshot
