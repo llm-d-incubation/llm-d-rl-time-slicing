@@ -1329,10 +1329,12 @@ func TestController_Reconcile_DeduceLoadedJob_NonExistent(t *testing.T) {
 	lockStore := store.NewMemLockStore()
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
-	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
-		workqueue.DefaultTypedControllerRateLimiter[string](),
-		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
-	)
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
 
 	groupID := "group-1"
 	nodeNames := []string{"node-1", "node-2"}
@@ -1353,7 +1355,7 @@ func TestController_Reconcile_DeduceLoadedJob_NonExistent(t *testing.T) {
 		},
 	}
 
-	c := controller.NewController(groupStore, jobStore, queue, mockOrch)
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, &controller.MockSnapshotAgentStore{})
 
 	go func() {
 		if err := c.Run(ctx, 1); err != nil {
@@ -1361,9 +1363,9 @@ func TestController_Reconcile_DeduceLoadedJob_NonExistent(t *testing.T) {
 		}
 	}()
 
-	queue.Add(groupID)
+	testQueue.Add(groupID)
 
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for reconcile: %v", err)
 	}
@@ -1385,10 +1387,12 @@ func TestController_Reconcile_DeduceLoadedJob_NonExistentButOtherRunning(t *test
 	lockStore := store.NewMemLockStore()
 	groupStore := store.NewGroupStore(lockStore)
 	jobStore := store.NewJobStore()
-	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
-		workqueue.DefaultTypedControllerRateLimiter[string](),
-		workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
-	)
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
 
 	groupID := "group-1"
 	nodeNames := []string{"node-1", "node-2"}
@@ -1409,13 +1413,47 @@ func TestController_Reconcile_DeduceLoadedJob_NonExistentButOtherRunning(t *test
 		t.Fatalf("failed to put job2: %v", err)
 	}
 
+	snapshotCalled := make(chan string, 1)
+	getStatusCallsNode1 := 0
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+			if node == "node-1" {
+				getStatusCallsNode1++
+				state := agentpb.JobState_JOB_STATE_RUNNING
+				if getStatusCallsNode1 > 1 {
+					state = agentpb.JobState_JOB_STATE_SAVED
+				}
+				return &agentpb.StatusResponse{
+					JobStatuses: []*agentpb.JobStatus{
+						{JobId: "job-2", State: state},
+					},
+				}, nil
+			}
+			return &agentpb.StatusResponse{}, nil
+		},
+		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
+			if node == "node-1" && jobID == "job-2" && gID == groupID {
+				snapshotCalled <- jobID
+			}
+			return &agentpb.SnapshotResponse{OperationId: "op-123"}, nil
+		},
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			if node == "node-1" && operationID == "op-123" {
+				return &agentpb.GetOperationResponse{
+					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
+				}, nil
+			}
+			return &agentpb.GetOperationResponse{}, nil
+		},
+	}
+
 	mockOrch := &mockInfrastructureOrchestrator{
 		observeFunc: func(ctx context.Context, gID string) error {
 			return nil
 		},
 	}
 
-	c := controller.NewController(groupStore, jobStore, queue, mockOrch)
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
 
 	go func() {
 		if err := c.Run(ctx, 1); err != nil {
@@ -1423,16 +1461,25 @@ func TestController_Reconcile_DeduceLoadedJob_NonExistentButOtherRunning(t *test
 		}
 	}()
 
-	queue.Add(groupID)
+	testQueue.Add(groupID)
 
-	err = waitWithTimeout(func() bool { return queue.Len() == 0 }, 2*time.Second)
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
 	if err != nil {
 		t.Fatalf("Timed out waiting for reconcile: %v", err)
 	}
 
-	// job-1 should NOT be assumed loaded because job-2 is running.
-	if group.Status().LoadedJob() != "" {
-		t.Errorf("Expected loadedJob to be empty, got %q", group.Status().LoadedJob())
+	select {
+	case jobID := <-snapshotCalled:
+		if jobID != "job-2" {
+			t.Errorf("Expected snapshot to be called for job-2 on node-1, got %s", jobID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for Snapshot to be called")
+	}
+
+	// job-1 should be assumed loaded because we snapshotted job-2 and nothing else is running.
+	if group.Status().LoadedJob() != "job-1" {
+		t.Errorf("Expected loadedJob to be 'job-1', got %q", group.Status().LoadedJob())
 	}
 	state, _ := group.Status().State()
 	if state != pb.GroupStatus_STATE_IDLE_YIELDED {
