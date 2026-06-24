@@ -3,7 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
-	"strings"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -201,10 +202,10 @@ func (s *GRPCSnapshotAgentStore) CloseClient(nodeName string) error {
 }
 
 func (s *GRPCSnapshotAgentStore) resolveNodeAddress(nodeName string) string {
-	// If the nodeName already contains a port (e.g. "127.0.0.1:12345" in unit tests), use it as-is.
-	if strings.Contains(nodeName, ":") {
+	// If the nodeName already contains a port, use it as-is.
+	if _, _, err := net.SplitHostPort(nodeName); err == nil {
 		return nodeName
 	}
 	// Otherwise, append the default snapshot-agent port.
-	return fmt.Sprintf("%s:%d", nodeName, s.defaultPort)
+	return net.JoinHostPort(nodeName, strconv.Itoa(s.defaultPort))
 }
