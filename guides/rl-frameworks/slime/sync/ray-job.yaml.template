@@ -1,0 +1,172 @@
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: ${JOB_NAME}
+spec:
+  entrypoint: /opt/scripts/run_disaggregated_grpo.sh
+  shutdownAfterJobFinishes: true
+  ttlSecondsAfterFinished: 60
+  runtimeEnvYAML: |
+    env_vars:
+      PYTHONPATH: "/root/Megatron-LM"
+      CUDA_DEVICE_MAX_CONNECTIONS: "1"
+
+  submitterPodTemplate:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        cloud.google.com/gke-nodepool: utility-pool-large
+      containers:
+      - name: ray-job-submitter
+        image: rayproject/ray:2.9.0
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+
+  rayClusterSpec:
+    rayVersion: '2.9.0'
+    enableInTreeAutoscaling: true
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: '0.0.0.0'
+      template:
+        spec:
+          nodeSelector:
+            cloud.google.com/gke-nodepool: utility-pool-large
+          containers:
+          - name: ray-head
+            image: slimerl/slime@sha256:c95eb968649ee8e2a567c500df5a5643c9f85951622646fe6e08244d939e4b94
+            lifecycle:
+              postStart:
+                exec:
+                  command: ["/bin/sh", "-c", "/opt/scripts/setup_node.sh"]
+            resources:
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+              requests:
+                cpu: "300m"
+                memory: "1Gi"
+            volumeMounts:
+            - name: script-vol
+              mountPath: /opt/scripts
+          volumes:
+          - name: script-vol
+            configMap:
+              name: slime-job-script
+              defaultMode: 0755 # Make script executable
+
+    workerGroupSpecs:
+    # 1. TRAINER POOL
+    - groupName: trainer-group
+      minReplicas: 0
+      maxReplicas: 1
+      replicas: 0
+      rayStartParams:
+        num-cpus: '8'
+        num-gpus: '1'
+        resources: '"{\"trainers\": 1}"'
+      template:
+        metadata:
+          labels:
+            slime-role: trainer
+            timeslice.io/job-id: "${JOB_NAME}"
+            timeslice.io/group: "trainers"
+        spec:
+          nodeSelector:
+            group.timeslice.io/trainers: "true"
+          tolerations:
+          - key: "nvidia.com/gpu"
+            operator: "Equal"
+            value: "present"
+            effect: "NoSchedule"
+          - key: "timeslice.io/shared"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
+          resourceClaims:
+          - name: accelerator
+            resourceClaimName: shared-trainers-gpu-claim
+          containers:
+          - name: ray-worker-trainer
+            image: slimerl/slime@sha256:c95eb968649ee8e2a567c500df5a5643c9f85951622646fe6e08244d939e4b94
+            lifecycle:
+              postStart:
+                exec:
+                  command: ["/bin/sh", "-c", "/opt/scripts/setup_node.sh"]
+            resources:
+              limits:
+                cpu: "8"
+                memory: "96Gi"
+              requests:
+                cpu: "4"
+                memory: "32Gi"
+              claims:
+              - name: accelerator
+            volumeMounts:
+            - name: script-vol
+              mountPath: /opt/scripts
+          volumes:
+          - name: script-vol
+            configMap:
+              name: slime-job-script
+              defaultMode: 0755
+
+    # 2. ROLLOUT POOL
+    - groupName: rollout-group
+      minReplicas: 0
+      maxReplicas: 1
+      replicas: 0
+      rayStartParams:
+        num-cpus: '8'
+        num-gpus: '1'
+        resources: '"{\"samplers\": 1}"'
+      template:
+        metadata:
+          labels:
+            slime-role: rollout
+            timeslice.io/job-id: "${JOB_NAME}"
+            timeslice.io/group: "samplers"
+        spec:
+          nodeSelector:
+            group.timeslice.io/samplers: "true"
+          tolerations:
+          - key: "nvidia.com/gpu"
+            operator: "Equal"
+            value: "present"
+            effect: "NoSchedule"
+          - key: "timeslice.io/shared"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
+          resourceClaims:
+          - name: accelerator
+            resourceClaimName: shared-samplers-gpu-claim
+          containers:
+          - name: ray-worker-rollout
+            image: slimerl/slime@sha256:c95eb968649ee8e2a567c500df5a5643c9f85951622646fe6e08244d939e4b94
+            lifecycle:
+              postStart:
+                exec:
+                  command: ["/bin/sh", "-c", "/opt/scripts/setup_node.sh"]
+            resources:
+              limits:
+                cpu: "8"
+                memory: "32Gi"
+              requests:
+                cpu: "4"
+                memory: "16Gi"
+              claims:
+              - name: accelerator
+            volumeMounts:
+            - name: script-vol
+              mountPath: /opt/scripts
+          volumes:
+          - name: script-vol
+            configMap:
+              name: slime-job-script
+              defaultMode: 0755
