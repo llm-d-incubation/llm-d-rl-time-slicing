@@ -157,12 +157,12 @@ class TestOrchestratorClient(unittest.TestCase):
         self.mock_stub.ListGroups.assert_called_once()
         self.assertEqual(groups, ["group-1", "group-2"])
 
-    def test_lock_context_manager(self):
+    def test_on_accelerators_context_manager(self):
         # Mock acquire and release
         self.client.acquire = MagicMock()
         self.client.release = MagicMock()
 
-        with self.client.lock(timeout_sec=5.0):
+        with self.client.on_accelerators(timeout_sec=5.0):
             self.client.acquire.assert_called_once_with(
                 job_id=None, group_id=None, timeout_sec=5.0
             )
@@ -170,13 +170,13 @@ class TestOrchestratorClient(unittest.TestCase):
 
         self.client.release.assert_called_once_with(job_id=None, group_id=None)
 
-    def test_lock_context_manager_exception(self):
+    def test_on_accelerators_context_manager_exception(self):
         # Verify release is called even if block raises error
         self.client.acquire = MagicMock()
         self.client.release = MagicMock()
 
         try:
-            with self.client.lock():
+            with self.client.on_accelerators():
                 raise ValueError("Something went wrong")
         except ValueError:
             pass
@@ -281,11 +281,11 @@ class TestOrchestratorClient(unittest.TestCase):
         self.assertEqual(request.group_id, "override-group")
         self.assertEqual(status.group.group_id, "override-group")
 
-    def test_lock_override_args(self):
+    def test_on_accelerators_override_args(self):
         self.client.acquire = MagicMock()
         self.client.release = MagicMock()
 
-        with self.client.lock(
+        with self.client.on_accelerators(
             job_id="override-job", group_id="override-group", timeout_sec=5.0
         ):
             self.client.acquire.assert_called_once_with(

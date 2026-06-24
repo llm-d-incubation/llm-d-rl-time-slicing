@@ -6,7 +6,7 @@ The `OrchestratorClient` coordinates access to shared accelerators (GPUs/TPUs) a
 
 ### Explicit Acquire & Release
 
-You can explicitly control the lock using `acquire()` and `release()`. It is highly recommended to use a `try...finally` block to ensure the lock is always released.
+You can explicitly control accelerator access using `acquire()` and `release()`. It is highly recommended to use a `try...finally` block to ensure the access is always released.
 
 ```python
 from timeslice import OrchestratorClient
@@ -33,9 +33,9 @@ finally:
     client.close()
 ```
 
-### Context Manager (`lock`)
+### Context Manager (`on_accelerators`)
 
-A cleaner and safer way to manage the lock lifecycle is using the `lock()` context manager, which automatically handles acquisition and release.
+A cleaner and safer way to manage accelerator access is using the `on_accelerators()` context manager, which automatically handles acquisition and release.
 
 ```python
 from timeslice import OrchestratorClient
@@ -43,26 +43,26 @@ from timeslice import OrchestratorClient
 client = OrchestratorClient("orchestrator-service:50051", "my-job", "shared-gpu")
 
 # Automatically acquires on enter, releases on exit (even if exceptions occur)
-with client.lock(timeout_sec=30.0):
+with client.on_accelerators(timeout_sec=30.0):
     print("GPU access secured!")
     # Run GPU kernels...
 ```
 
 ### Decorator Usage
 
-The `lock()` context manager also supports decorator usage out of the box. The lock is acquired when the decorated function is called and released when it returns.
+The `on_accelerators()` method also supports decorator usage out of the box. Exclusive accelerator access is acquired when the decorated function is called and released when it returns.
 
 ```python
 from timeslice import OrchestratorClient
 
 client = OrchestratorClient("orchestrator-service:50051", "my-job", "shared-gpu")
 
-@client.lock(timeout_sec=10.0)
+@client.on_accelerators(timeout_sec=10.0)
 def run_gpu_kernel():
-    print("Running GPU kernel under orchestrator lock...")
+    print("Running GPU kernel on accelerators...")
     # GPU work...
 
-# Call the function; lock is managed automatically
+# Call the function; accelerator access is managed automatically
 run_gpu_kernel()
 ```
 
@@ -80,8 +80,8 @@ client = OrchestratorClient(target="orchestrator-service:50051")
 client.acquire(job_id="job-A", group_id="group-A")
 client.release(job_id="job-A", group_id="group-A")
 
-# You can also use the lock context manager with overrides
-with client.lock(job_id="job-B", group_id="group-B"):
+# You can also use the context manager with overrides
+with client.on_accelerators(job_id="job-B", group_id="group-B"):
     # Runs with job-B on group-B
     pass
 ```
@@ -92,7 +92,7 @@ with client.lock(job_id="job-B", group_id="group-B"):
 
 In a typical Reinforcement Learning setup, a single training job might need to coordinate access across two different GPU resource pools: one dedicated to **Sampling** (generating experience rollouts) and another dedicated to **Training** (updating model weights).
 
-Using `OrchestratorClient` as a **decorator**, we can cleanly bind GPU lock management directly to the execution functions. This keeps the orchestration loop in `main()` extremely clean and readable.
+Using `OrchestratorClient` as a **decorator** (`@client.on_accelerators()`), we can cleanly bind GPU access management directly to the execution functions. This keeps the orchestration loop in `main()` extremely clean and readable.
 
 ```python
 import time
@@ -113,24 +113,24 @@ sampler_client = OrchestratorClient(ORCHESTRATOR_TARGET, job_id=RL_JOB_ID, group
 trainer_client = OrchestratorClient(ORCHESTRATOR_TARGET, job_id=RL_JOB_ID, group_id=TRAINING_GROUP)
 
 
-# Decorate functions to automatically manage GPU locks when they are invoked
+# Decorate functions to automatically manage GPU access when they are invoked
 
-@sampler_client.lock()
+@sampler_client.on_accelerators()
 def deploy_sampler_pods():
     print(f"[Deployer] Launching sampler pods in group '{SAMPLING_GROUP}'...")
     time.sleep(1)
 
-@trainer_client.lock()
+@trainer_client.on_accelerators()
 def deploy_trainer_pods():
     print(f"[Deployer] Launching trainer pods in group '{TRAINING_GROUP}'...")
     time.sleep(1)
 
-@sampler_client.lock()
+@sampler_client.on_accelerators()
 def run_sampling_phase():
     print(f"[Samplers] Generating rollouts on GPUs in group '{SAMPLING_GROUP}'...")
     time.sleep(2)  # Simulating GPU load
 
-@trainer_client.lock()
+@trainer_client.on_accelerators()
 def run_training_phase():
     print(f"[Trainer] Updating policy weights on GPUs in group '{TRAINING_GROUP}'...")
     time.sleep(3)  # Simulating GPU load
@@ -138,13 +138,13 @@ def run_training_phase():
 
 def main():
     # 1. Deploy Sampler Pods
-    # Calling this function automatically acquires the sampling group lock
+    # Calling this function automatically acquires the sampling group access
     print("\n=== Phase 1: Deploying Samplers ===")
     deploy_sampler_pods()
     print("[System] Samplers deployed and initialized.")
 
     # 2. Deploy Trainer Pods
-    # Calling this function automatically acquires the training group lock
+    # Calling this function automatically acquires the training group access
     print("\n=== Phase 2: Deploying Trainers ===")
     deploy_trainer_pods()
     print("[System] Trainers deployed and initialized.")

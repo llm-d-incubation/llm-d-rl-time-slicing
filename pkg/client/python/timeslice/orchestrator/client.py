@@ -233,17 +233,22 @@ class OrchestratorClient:
             raise wrap_grpc_error(e) from e
 
     @contextlib.contextmanager
-    def lock(
+    def on_accelerators(
         self,
         job_id: Optional[str] = None,
         group_id: Optional[str] = None,
         timeout_sec: Optional[float] = None,
     ):
-        """Context manager for safe acquire/release flow.
+        """Context manager/decorator for safe acquire/release flow on accelerators.
 
-        Usage:
-            with client.lock():
+        Usage as context manager:
+            with client.on_accelerators():
                 # exclusive access here
+
+        Usage as decorator:
+            @client.on_accelerators()
+            def my_gpu_function():
+                # runs with exclusive access
         """
         self.acquire(job_id=job_id, group_id=group_id, timeout_sec=timeout_sec)
         try:
