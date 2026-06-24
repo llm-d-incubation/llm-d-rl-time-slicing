@@ -209,7 +209,7 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 	activeJob := g.Spec().ActiveJob()
 
 	// 3. Act
-	// TODO: add optional fan out parallism for node reconciliation
+	// TODO: add optional fan out parallelism for node reconciliation
 	for _, node := range g.Status().Nodes() {
 		if err := c.reconcileNode(ctx, g.ID(), node, activeJob); err != nil {
 			return fmt.Errorf("failed to reconcile node %s: %w", node, err)
@@ -258,7 +258,7 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 	}
 
 	// 2. Wait out any existing transitions
-	// TODO: crash recovery detect that an agent is still in the middle of transistioning. We will not have the operation
+	// TODO: crash recovery detect that an agent is still in the middle of transitioning. We will not have the operation
 	// number but we can still wait till it leaves that state.
 
 	// 3. Ensure no other jobs have their context loaded
