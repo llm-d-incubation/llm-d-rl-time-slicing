@@ -35,7 +35,7 @@ finally:
 
 ### Context Manager (`on_accelerators`)
 
-A cleaner and safer way to manage accelerator access is using the `on_accelerators()` context manager, which automatically handles acquisition and release.
+A cleaner and safer way to manage accelerator access is using the `on_accelerators()` context manager, which automatically handles acquisition and release. It yields an `AcquireResult` that you can inspect inside the block.
 
 ```python
 from timeslice import OrchestratorClient
@@ -43,8 +43,8 @@ from timeslice import OrchestratorClient
 client = OrchestratorClient("orchestrator-service:50051", "my-job", "shared-gpu")
 
 # Automatically acquires on enter, releases on exit (even if exceptions occur)
-with client.on_accelerators(timeout_sec=30.0):
-    print("GPU access secured!")
+with client.on_accelerators(timeout_sec=30.0) as result:
+    print(f"GPU access secured! Waited {result.waited_ms}ms.")
     # Run GPU kernels...
 ```
 
@@ -81,9 +81,9 @@ client.acquire(job_id="job-A", group_id="group-A")
 client.release(job_id="job-A", group_id="group-A")
 
 # You can also use the context manager with overrides
-with client.on_accelerators(job_id="job-B", group_id="group-B"):
+with client.on_accelerators(job_id="job-B", group_id="group-B") as result:
     # Runs with job-B on group-B
-    pass
+    print(f"Acquired group-B! Waited {result.waited_ms}ms.")
 ```
 
 ---

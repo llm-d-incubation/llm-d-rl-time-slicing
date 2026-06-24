@@ -162,7 +162,8 @@ class TestOrchestratorClient(unittest.TestCase):
         self.client.acquire = MagicMock()
         self.client.release = MagicMock()
 
-        with self.client.on_accelerators(timeout_sec=5.0):
+        with self.client.on_accelerators(timeout_sec=5.0) as result:
+            self.assertEqual(result, self.client.acquire.return_value)
             self.client.acquire.assert_called_once_with(
                 job_id=None, group_id=None, timeout_sec=5.0
             )
@@ -287,7 +288,8 @@ class TestOrchestratorClient(unittest.TestCase):
 
         with self.client.on_accelerators(
             job_id="override-job", group_id="override-group", timeout_sec=5.0
-        ):
+        ) as result:
+            self.assertEqual(result, self.client.acquire.return_value)
             self.client.acquire.assert_called_once_with(
                 job_id="override-job", group_id="override-group", timeout_sec=5.0
             )

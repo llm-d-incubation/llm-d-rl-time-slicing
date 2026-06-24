@@ -242,17 +242,17 @@ class OrchestratorClient:
         """Context manager/decorator for safe acquire/release flow on accelerators.
 
         Usage as context manager:
-            with client.on_accelerators():
-                # exclusive access here
+            with client.on_accelerators() as result:
+                # exclusive access here, inspect result.waited_ms
 
         Usage as decorator:
             @client.on_accelerators()
             def my_gpu_function():
                 # runs with exclusive access
         """
-        self.acquire(job_id=job_id, group_id=group_id, timeout_sec=timeout_sec)
+        result = self.acquire(job_id=job_id, group_id=group_id, timeout_sec=timeout_sec)
         try:
-            yield
+            yield result
         finally:
             self.release(job_id=job_id, group_id=group_id)
 
