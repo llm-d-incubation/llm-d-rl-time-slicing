@@ -66,6 +66,26 @@ def run_gpu_kernel():
 run_gpu_kernel()
 ```
 
+### Optional Initialization & Dynamic Overrides
+
+The `job_id` and `group_id` are optional on construction. If omitted, they **must** be provided dynamically during the method calls. You can also override the constructor-configured values on a per-call basis.
+
+```python
+from timeslice import OrchestratorClient
+
+# Initialize without job_id and group_id
+client = OrchestratorClient(target="orchestrator-service:50051")
+
+# Pass them dynamically during acquire/release
+client.acquire(job_id="job-A", group_id="group-A")
+client.release(job_id="job-A", group_id="group-A")
+
+# You can also use the lock context manager with overrides
+with client.lock(job_id="job-B", group_id="group-B"):
+    # Runs with job-B on group-B
+    pass
+```
+
 ---
 
 ## Comprehensive Example: Reinforcement Learning (RL) Job (Decorator Pattern)

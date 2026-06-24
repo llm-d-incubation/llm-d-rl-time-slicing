@@ -35,16 +35,16 @@ class OrchestratorClient:
     def __init__(
         self,
         target: str,
-        job_id: str,
-        group_id: str,
+        job_id: Optional[str] = None,
+        group_id: Optional[str] = None,
         channel_options: Optional[List[Tuple[str, Any]]] = None,
     ):
         """Initializes the Orchestrator Client.
 
         Args:
             target: gRPC server address (e.g., 'localhost:50051').
-            job_id: Unique identifier of the job.
-            group_id: Unique identifier of the time-slice group.
+            job_id: Optional unique identifier of the job.
+            group_id: Optional unique identifier of the time-slice group.
             channel_options: Optional gRPC channel options.
         """
         self.target = target
@@ -70,21 +70,41 @@ class OrchestratorClient:
     def __del__(self):
         self.close()
 
-    def acquire(self, timeout_sec: Optional[float] = None) -> AcquireResult:
-        """Acquires exclusive access to the pre-configured time-slice group.
+    def acquire(
+        self,
+        job_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        timeout_sec: Optional[float] = None,
+    ) -> AcquireResult:
+        """Acquires exclusive access to the time-slice group.
 
         This call blocks until access is granted or timeout is reached.
 
         Args:
+            job_id: Optional job_id to override the constructor value.
+            group_id: Optional group_id to override the constructor value.
             timeout_sec: Optional timeout in seconds for the RPC call.
 
         Returns:
             AcquireResult containing success, waited_ms, and context_restored.
 
         Raises:
+            ValueError: If job_id or group_id is not provided either here or in the constructor.
             OrchestratorError: If the RPC fails.
         """
-        request = pb2.AcquireRequest(job_id=self.job_id, group_id=self.group_id)
+        resolved_job_id = job_id or self.job_id
+        resolved_group_id = group_id or self.group_id
+
+        if not resolved_job_id:
+            raise ValueError(
+                "job_id must be provided either in the constructor or in the method call."
+            )
+        if not resolved_group_id:
+            raise ValueError(
+                "group_id must be provided either in the constructor or in the method call."
+            )
+
+        request = pb2.AcquireRequest(job_id=resolved_job_id, group_id=resolved_group_id)
         try:
             # Note: timeout in grpc is passed as 'timeout' keyword argument in seconds
             response = self._stub.Acquire(request, timeout=timeout_sec)
@@ -96,21 +116,41 @@ class OrchestratorClient:
         except grpc.RpcError as e:
             raise wrap_grpc_error(e) from e
 
-    def release(self, timeout_sec: Optional[float] = None) -> YieldResult:
-        """Releases exclusive access to the pre-configured time-slice group.
+    def release(
+        self,
+        job_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        timeout_sec: Optional[float] = None,
+    ) -> YieldResult:
+        """Releases exclusive access to the time-slice group.
 
         Returns immediately once recorded.
 
         Args:
+            job_id: Optional job_id to override the constructor value.
+            group_id: Optional group_id to override the constructor value.
             timeout_sec: Optional timeout in seconds for the RPC call.
 
         Returns:
             YieldResult containing success, pending_waiters, and snapshot_deferred.
 
         Raises:
+            ValueError: If job_id or group_id is not provided either here or in the constructor.
             OrchestratorError: If the RPC fails.
         """
-        request = pb2.YieldRequest(job_id=self.job_id, group_id=self.group_id)
+        resolved_job_id = job_id or self.job_id
+        resolved_group_id = group_id or self.group_id
+
+        if not resolved_job_id:
+            raise ValueError(
+                "job_id must be provided either in the constructor or in the method call."
+            )
+        if not resolved_group_id:
+            raise ValueError(
+                "group_id must be provided either in the constructor or in the method call."
+            )
+
+        request = pb2.YieldRequest(job_id=resolved_job_id, group_id=resolved_group_id)
         try:
             response = self._stub.Yield(request, timeout=timeout_sec)
             return YieldResult(
@@ -122,20 +162,28 @@ class OrchestratorClient:
             raise wrap_grpc_error(e) from e
 
     def get_status(
-        self, timeout_sec: Optional[float] = None
+        self, group_id: Optional[str] = None, timeout_sec: Optional[float] = None
     ) -> OrchestratorGroupStatus:
-        """Returns the detailed status of the pre-configured time-slice group.
+        """Returns the detailed status of the time-slice group.
 
         Args:
+            group_id: Optional group_id to override the constructor value.
             timeout_sec: Optional timeout in seconds for the RPC call.
 
         Returns:
             OrchestratorGroupStatus containing group status and agent states.
 
         Raises:
+            ValueError: If group_id is not provided either here or in the constructor.
             OrchestratorError: If the RPC fails.
         """
-        request = pb2.GetGroupStatusRequest(group_id=self.group_id)
+        resolved_group_id = group_id or self.group_id
+        if not resolved_group_id:
+            raise ValueError(
+                "group_id must be provided either in the constructor or in the method call."
+            )
+
+        request = pb2.GetGroupStatusRequest(group_id=resolved_group_id)
         try:
             response = self._stub.GetGroupStatus(request, timeout=timeout_sec)
 
@@ -198,18 +246,23 @@ class OrchestratorClient:
             raise wrap_grpc_error(e) from e
 
     @contextlib.contextmanager
-    def lock(self, timeout_sec: Optional[float] = None):
+    def lock(
+        self,
+        job_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        timeout_sec: Optional[float] = None,
+    ):
         """Context manager for safe acquire/release flow.
 
         Usage:
             with client.lock():
                 # exclusive access here
         """
-        self.acquire(timeout_sec=timeout_sec)
+        self.acquire(job_id=job_id, group_id=group_id, timeout_sec=timeout_sec)
         try:
             yield
         finally:
-            self.release()
+            self.release(job_id=job_id, group_id=group_id)
 
     def _map_group_state(self, proto_state: int) -> GroupLockState:
         try:

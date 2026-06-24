@@ -175,10 +175,12 @@ class TestOrchestratorClient(unittest.TestCase):
         self.client.release = MagicMock()
 
         with self.client.lock(timeout_sec=5.0):
-            self.client.acquire.assert_called_once_with(timeout_sec=5.0)
+            self.client.acquire.assert_called_once_with(
+                job_id=None, group_id=None, timeout_sec=5.0
+            )
             self.client.release.assert_not_called()
 
-        self.client.release.assert_called_once()
+        self.client.release.assert_called_once_with(job_id=None, group_id=None)
 
     def test_lock_context_manager_exception(self):
         # Verify release is called even if block raises error
@@ -191,8 +193,10 @@ class TestOrchestratorClient(unittest.TestCase):
         except ValueError:
             pass
 
-        self.client.acquire.assert_called_once()
-        self.client.release.assert_called_once()
+        self.client.acquire.assert_called_once_with(
+            job_id=None, group_id=None, timeout_sec=None
+        )
+        self.client.release.assert_called_once_with(job_id=None, group_id=None)
 
     def test_grpc_error_mapping_unavailable(self):
         # Mock gRPC error
@@ -215,6 +219,95 @@ class TestOrchestratorClient(unittest.TestCase):
 
         with self.assertRaises(OrchestratorTimeoutError):
             self.client.acquire()
+
+    def test_init_optional_args(self):
+        # We can create a client with only target
+        client = OrchestratorClient(self.target)
+        self.assertIsNone(client.job_id)
+        self.assertIsNone(client.group_id)
+        client.close()
+
+    def test_acquire_missing_args_raises_value_error(self):
+        client = OrchestratorClient(self.target)
+
+        # Missing both
+        with self.assertRaises(ValueError) as ctx:
+            client.acquire()
+        self.assertIn("job_id must be provided", str(ctx.exception))
+
+        # Missing group_id
+        with self.assertRaises(ValueError) as ctx:
+            client.acquire(job_id="some-job")
+        self.assertIn("group_id must be provided", str(ctx.exception))
+
+        client.close()
+
+    def test_acquire_override_args(self):
+        # Mock Acquire response
+        mock_response = pb2.AcquireResponse(
+            success=True, waited_ms=50, context_restored=False
+        )
+        self.mock_stub.Acquire.return_value = mock_response
+
+        # Call acquire with overrides
+        result = self.client.acquire(job_id="override-job", group_id="override-group")
+
+        # Verify call used overrides instead of constructor values ("test-job", "test-group")
+        self.mock_stub.Acquire.assert_called_once()
+        args, _ = self.mock_stub.Acquire.call_args
+        request = args[0]
+        self.assertEqual(request.job_id, "override-job")
+        self.assertEqual(request.group_id, "override-group")
+        self.assertTrue(result.success)
+
+    def test_release_override_args(self):
+        mock_response = pb2.YieldResponse(
+            success=True, pending_waiters=0, snapshot_deferred=True
+        )
+        self.mock_stub.Yield.return_value = mock_response
+
+        result = self.client.release(job_id="override-job", group_id="override-group")
+
+        self.mock_stub.Yield.assert_called_once()
+        args, _ = self.mock_stub.Yield.call_args
+        request = args[0]
+        self.assertEqual(request.job_id, "override-job")
+        self.assertEqual(request.group_id, "override-group")
+        self.assertTrue(result.success)
+        self.assertEqual(result.pending_waiters, 0)
+        self.assertTrue(result.snapshot_deferred)
+
+    def test_get_status_override_args(self):
+        mock_response = pb2.GetGroupStatusResponse(
+            group=pb2.GroupStatus(
+                group_id="override-group", group_state=pb2.GroupStatus.State.STATE_IDLE
+            )
+        )
+        self.mock_stub.GetGroupStatus.return_value = mock_response
+
+        status = self.client.get_status(group_id="override-group")
+
+        self.mock_stub.GetGroupStatus.assert_called_once()
+        args, _ = self.mock_stub.GetGroupStatus.call_args
+        request = args[0]
+        self.assertEqual(request.group_id, "override-group")
+        self.assertEqual(status.group.group_id, "override-group")
+
+    def test_lock_override_args(self):
+        self.client.acquire = MagicMock()
+        self.client.release = MagicMock()
+
+        with self.client.lock(
+            job_id="override-job", group_id="override-group", timeout_sec=5.0
+        ):
+            self.client.acquire.assert_called_once_with(
+                job_id="override-job", group_id="override-group", timeout_sec=5.0
+            )
+            self.client.release.assert_not_called()
+
+        self.client.release.assert_called_once_with(
+            job_id="override-job", group_id="override-group"
+        )
 
 
 if __name__ == "__main__":
