@@ -1,10 +1,9 @@
 import contextlib
-import pathlib
-import sys
 from typing import Any, List, Optional, Tuple
 
 import grpc
 
+from timeslice.orchestrator._generated import pb2, pb2_grpc
 from timeslice.orchestrator.exceptions import wrap_grpc_error
 from timeslice.orchestrator.types import (
     AgentJobState,
@@ -15,18 +14,6 @@ from timeslice.orchestrator.types import (
     SnapshotAgentJobState,
     YieldResult,
 )
-
-# Setup path for generated files
-_generated_dir = str(pathlib.Path(__file__).parent / "_generated")
-if _generated_dir not in sys.path:
-    sys.path.insert(0, _generated_dir)
-
-try:
-    import accelerator_orchestrator_pb2 as pb2  # noqa: E402
-    import accelerator_orchestrator_pb2_grpc as pb2_grpc  # noqa: E402
-finally:
-    if _generated_dir in sys.path:
-        sys.path.remove(_generated_dir)
 
 
 class OrchestratorClient:

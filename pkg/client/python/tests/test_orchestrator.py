@@ -11,19 +11,7 @@ from timeslice.orchestrator.exceptions import (
 )
 from timeslice.orchestrator.types import AgentJobState, GroupLockState
 
-# Import the generated proto messages for mocking responses
-# We need to add _generated to path to import them in the test if needed,
-# but we can also just let OrchestratorClient import them and we access them via the client module,
-# or we can use the same import trick.
-import pathlib
-import sys
-
-_generated_dir = str(
-    pathlib.Path(__file__).parent.parent / "timeslice" / "orchestrator" / "_generated"
-)
-if _generated_dir not in sys.path:
-    sys.path.insert(0, _generated_dir)
-import accelerator_orchestrator_pb2 as pb2  # noqa: E402
+from timeslice.orchestrator._generated import pb2
 
 
 class TestOrchestratorClient(unittest.TestCase):
