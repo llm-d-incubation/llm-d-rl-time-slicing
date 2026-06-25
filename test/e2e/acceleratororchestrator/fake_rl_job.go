@@ -232,15 +232,15 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 
 	for _, node := range nodes.Items {
 		podName := fmt.Sprintf("pod-%s-%s-%s", f.name, groupID, node.Name)
-		
+
 		// Pull pod definition from factory
 		pod := f.podFactory.GetPod(groupID)
-		
+
 		// Customize for this run
 		pod.Name = podName
 		pod.Namespace = "default"
 		pod.Spec.NodeName = node.Name
-		
+
 		// Inject timeslice labels (must remain in fake_rl_job.go)
 		if pod.Labels == nil {
 			pod.Labels = make(map[string]string)

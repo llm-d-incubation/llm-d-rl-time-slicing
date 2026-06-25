@@ -177,5 +177,3 @@ var yieldCmd = &cobra.Command{
 		return nil
 	},
 }
-
-

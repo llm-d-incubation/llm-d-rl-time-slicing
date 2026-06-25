@@ -27,9 +27,9 @@ import (
 )
 
 var inspectCmd = &cobra.Command{
-	Use:   "inspect",
-	Short: "Inspect orchestrator and snapshot-agent deployment status",
-	Long:  `Checks the Kubernetes cluster to ensure both the accelerator-orchestrator deployment and snapshot-agent daemonset are deployed and running, and returns their image versions.`,
+	Use:           "inspect",
+	Short:         "Inspect orchestrator and snapshot-agent deployment status",
+	Long:          `Checks the Kubernetes cluster to ensure both the accelerator-orchestrator deployment and snapshot-agent daemonset are deployed and running, and returns their image versions.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -100,7 +100,7 @@ func verifyCluster(ctx context.Context, clientset *kubernetes.Clientset) (bool, 
 	deployments, err := clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/name=acceleratororchestrator",
 	})
-	
+
 	var orchDep *appsv1.Deployment
 	if err == nil && len(deployments.Items) > 0 {
 		orchDep = &deployments.Items[0]
@@ -129,7 +129,7 @@ func verifyCluster(ctx context.Context, clientset *kubernetes.Clientset) (bool, 
 		if orchDep.Spec.Replicas != nil {
 			desired = *orchDep.Spec.Replicas
 		}
-		
+
 		if ready > 0 {
 			orchPassed = true
 			var image string
@@ -204,7 +204,7 @@ func verifyCluster(ctx context.Context, clientset *kubernetes.Clientset) (bool, 
 	// 3. Verify Node Labels
 	var nodePassed bool
 	var nodeDetails []string
-	
+
 	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		nodePassed = false
@@ -216,7 +216,7 @@ func verifyCluster(ctx context.Context, clientset *kubernetes.Clientset) (bool, 
 			Group string
 		}
 		var labeledNodes []LabeledNodeInfo
-		
+
 		for _, node := range nodes.Items {
 			for k, v := range node.Labels {
 				if strings.HasPrefix(k, nodeLabelPrefix) && v == "true" {
@@ -229,7 +229,7 @@ func verifyCluster(ctx context.Context, clientset *kubernetes.Clientset) (bool, 
 				}
 			}
 		}
-		
+
 		if len(labeledNodes) > 0 {
 			nodePassed = true
 			nodeDetails = []string{

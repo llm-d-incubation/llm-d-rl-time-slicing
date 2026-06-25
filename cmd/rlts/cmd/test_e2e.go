@@ -36,9 +36,9 @@ var testCmd = &cobra.Command{
 }
 
 var orchestratorTestCmd = &cobra.Command{
-	Use:   "orchestrator",
-	Short: "Run E2E scenario tests against the cluster",
-	Long:  `Runs the E2E scenario tests (Single RL Job and Queued RL Jobs) against the active Kubernetes cluster and the deployed Accelerator Orchestrator.`,
+	Use:           "orchestrator",
+	Short:         "Run E2E scenario tests against the cluster",
+	Long:          `Runs the E2E scenario tests (Single RL Job and Queued RL Jobs) against the active Kubernetes cluster and the deployed Accelerator Orchestrator.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -75,7 +75,7 @@ var orchestratorTestCmd = &cobra.Command{
 		if !overallPassed {
 			return fmt.Errorf("prerequisite check failed: orchestrator/agents are not ready or no labeled nodes found. Aborting E2E tests")
 		}
-		fmt.Println("Prerequisite Verification: PASSED\n")
+		fmt.Printf("Prerequisite Verification: PASSED\n\n")
 
 		// 4. STEP 2: Specific E2E Requirement Check (samplers and trainers groups)
 		fmt.Println("=== Step 2: Checking E2E Specific Node Requirements ===")
@@ -124,7 +124,7 @@ var orchestratorTestCmd = &cobra.Command{
 		// Connect with a timeout to fail fast if unreachable
 		dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer dialCancel()
-		conn, err := google_grpc.DialContext(dialCtx, orchestratorAddr, 
+		conn, err := google_grpc.DialContext(dialCtx, orchestratorAddr,
 			google_grpc.WithTransportCredentials(insecure.NewCredentials()),
 			google_grpc.WithBlock(), // Block until connection is established
 		)
@@ -133,7 +133,7 @@ var orchestratorTestCmd = &cobra.Command{
 		}
 		defer conn.Close()
 		client := pb.NewAcceleratorOrchestratorServiceClient(conn)
-		fmt.Println("Connected successfully.\n")
+		fmt.Printf("Connected successfully.\n\n")
 
 		// 6. STEP 4: Run E2E Scenarios
 		fmt.Println("=== Step 4: Running E2E Scenarios ===")
@@ -146,7 +146,7 @@ var orchestratorTestCmd = &cobra.Command{
 		if !scenario1Passed {
 			fmt.Printf("[FAIL] Single RL Job Scenario failed: %v\n\n", err)
 		} else {
-			fmt.Println("[PASS] Single RL Job Scenario completed successfully\n")
+			fmt.Printf("[PASS] Single RL Job Scenario completed successfully\n\n")
 		}
 
 		// Scenario 2: Queued RL Jobs
@@ -156,7 +156,7 @@ var orchestratorTestCmd = &cobra.Command{
 		if !scenario2Passed {
 			fmt.Printf("[FAIL] Queued RL Jobs Scenario failed: %v\n\n", err)
 		} else {
-			fmt.Println("[PASS] Queued RL Jobs Scenario completed successfully\n")
+			fmt.Printf("[PASS] Queued RL Jobs Scenario completed successfully\n\n")
 		}
 
 		// 7. STEP 5: Final Report

@@ -29,7 +29,6 @@ import (
 func RunSingleRLJobScenario(ctx context.Context, clientset kubernetes.Interface, client pb.AcceleratorOrchestratorServiceClient, logger Logger) error {
 	logger.Log("Starting Single RL Job Scenario")
 
-
 	// Run Fake RL Job
 	job := NewFakeRLJob("my-rl-job", client, clientset, 2, logger) // 2 iterations
 
@@ -69,7 +68,6 @@ func RunSingleRLJobScenario(ctx context.Context, clientset kubernetes.Interface,
 // RunQueuedRLJobsScenario runs the queued RL jobs contention scenario.
 func RunQueuedRLJobsScenario(ctx context.Context, clientset kubernetes.Interface, client pb.AcceleratorOrchestratorServiceClient, logger Logger) error {
 	logger.Log("Starting Queued RL Jobs Scenario")
-
 
 	jobA := NewFakeRLJob("job-a", client, clientset, 1, logger) // 1 iteration
 	jobB := NewFakeRLJob("job-b", client, clientset, 1, logger) // 1 iteration
@@ -192,4 +190,3 @@ func RunQueuedRLJobsScenario(ctx context.Context, clientset kubernetes.Interface
 	logger.Log("Queued RL Jobs Scenario completed successfully")
 	return nil
 }
-

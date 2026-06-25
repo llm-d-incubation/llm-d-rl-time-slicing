@@ -13,8 +13,8 @@ import (
 type trackQueue struct {
 	workqueue.TypedRateLimitingInterface[string]
 	mu                  sync.Mutex
-	doneCount            int
-	addRateLimitedCount  int
+	doneCount           int
+	addRateLimitedCount int
 }
 
 func (t *trackQueue) Done(item string) {
