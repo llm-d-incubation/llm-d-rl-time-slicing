@@ -31,7 +31,7 @@ This will look at the `dependencies` section in `Chart.yaml`, package the local 
 
 You can configure the subcharts by modifying the parent `values.yaml` file. Values for each subchart must be nested under the subchart's name.
 
-This includes the **NVIDIA DRA Driver**, which is included as an optional dependency and enabled by default. If your cluster already has the DRA driver installed, you can disable it by setting `nvidia-dra-driver-gpu.enabled` to `false`.
+DRA is required for timeslicing. This helm file includes the **NVIDIA DRA Driver**, which is included by default for convenience. If your cluster already has the DRA driver installed, you can disable it by setting `nvidia-dra-driver-gpu.enabled` to `false`.
 
 Example `values.yaml`:
 
