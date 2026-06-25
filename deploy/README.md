@@ -13,6 +13,7 @@ This is the parent Helm chart that coordinates the deployment of both the **Acce
 
 *   Helm v3 installed.
 *   Access to a Kubernetes cluster.
+*   GPU nodes must run **NVIDIA GPU Driver 565 or later** to support DRA.
 
 ## Usage
 
@@ -30,6 +31,8 @@ This will look at the `dependencies` section in `Chart.yaml`, package the local 
 
 You can configure the subcharts by modifying the parent `values.yaml` file. Values for each subchart must be nested under the subchart's name.
 
+DRA is required for timeslicing. This helm file includes the **NVIDIA DRA Driver**, which is included by default for convenience. If your cluster already has the DRA driver installed, you can disable it by setting `nvidia-dra-driver-gpu.enabled` to `false`.
+
 Example `values.yaml`:
 
 ```yaml
@@ -41,7 +44,13 @@ acceleratororchestrator:
 snapshot-agent:
   image:
     tag: latest
+
+nvidia-dra-driver-gpu:
+  enabled: true
+  # Default is for COS nodes. For Ubuntu nodes, change to "/opt/nvidia"
+  nvidiaDriverRoot: "/home/kubernetes/bin/nvidia/"
 ```
+
 
 ### 3. Installation
 
