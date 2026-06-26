@@ -9,14 +9,11 @@ on:
   pull_request:
     types: [opened, ready_for_review, review_requested]
   issues:
-    types: [opened]
-
-env:
-  ENABLED: ${{ vars.ENABLE_PROJECT_SYNC != 'false' }}
+    types: [opened, reopened]
 
 jobs:
   sync-pr-review-status:
-    if: env.ENABLED == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_review')
+    if: vars.ENABLE_PROJECT_SYNC != 'false' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_review')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
@@ -124,7 +121,7 @@ jobs:
             core.info(`Updated PR #${pr.number} to "${status}"`);
 
   add-issue-to-project:
-    if: env.ENABLED == 'true' && github.event_name == 'issues'
+    if: vars.ENABLE_PROJECT_SYNC != 'false' && github.event_name == 'issues'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
