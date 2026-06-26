@@ -26,15 +26,17 @@ type Logger interface {
 
 // FakeRLJob simulates a Reinforcement Learning job that orchestrates samplers and trainers.
 type FakeRLJob struct {
-	name          string
-	client        pb.AcceleratorOrchestratorServiceClient
-	clientset     kubernetes.Interface
-	iterations    int
-	t             Logger
-	createdPods   []string // track created pod names for cleanup
-	createdClaims []string // track created claim names for cleanup
-	mu            sync.Mutex
-	podFactory    *PodFactory
+	name               string
+	client             pb.AcceleratorOrchestratorServiceClient
+	clientset          kubernetes.Interface
+	iterations         int
+	t                  Logger
+	createdPods        []string // track created pod names for cleanup
+	createdClaims      []string // track created claim names for cleanup
+	mu                 sync.Mutex
+	podFactory         *PodFactory
+	samplerTemplateKey string
+	trainerTemplateKey string
 
 	// Callbacks to control sampling/training behavior/duration
 	OnSampling func(ctx context.Context)
@@ -47,14 +49,18 @@ func NewFakeRLJob(
 	clientset kubernetes.Interface,
 	iterations int,
 	t Logger,
+	samplerTemplateKey string,
+	trainerTemplateKey string,
 ) *FakeRLJob {
 	return &FakeRLJob{
-		name:       name,
-		client:     client,
-		clientset:  clientset,
-		iterations: iterations,
-		t:          t,
-		podFactory: NewPodFactory(),
+		name:               name,
+		client:             client,
+		clientset:          clientset,
+		iterations:         iterations,
+		t:                  t,
+		podFactory:         NewPodFactory(),
+		samplerTemplateKey: samplerTemplateKey,
+		trainerTemplateKey: trainerTemplateKey,
 	}
 }
 
@@ -272,8 +278,15 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 		}
 		f.t.Logf("[Job %s] Created ResourceClaim %s", f.name, claimName)
 
-		// Pull pod definition from factory
-		pod := f.podFactory.GetPod(groupID)
+		// Pull pod definition from factory using the correct template key
+		var templateKey string
+		switch groupID {
+		case "samplers":
+			templateKey = f.samplerTemplateKey
+		case "trainers":
+			templateKey = f.trainerTemplateKey
+		}
+		pod := f.podFactory.GetPod(templateKey)
 
 		// Customize for this run
 		pod.Name = podName

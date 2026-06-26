@@ -163,7 +163,7 @@ var orchestratorTestCmd = &cobra.Command{
 
 		// Scenario 1: Single RL Job
 		fmt.Println("--- Running Scenario: Single RL Job ---")
-		err = acceleratororchestrator.RunSingleRLJobScenario(ctx, clientset, client, cliLogger)
+		err = acceleratororchestrator.RunSingleRLJobScenario(ctx, clientset, client, cliLogger, samplerTemplateKey, trainerTemplateKey)
 		scenario1Passed := err == nil
 		if !scenario1Passed {
 			fmt.Printf("[FAIL] Single RL Job Scenario failed: %v\n\n", err)
@@ -173,7 +173,7 @@ var orchestratorTestCmd = &cobra.Command{
 
 		// Scenario 2: Queued RL Jobs
 		fmt.Println("--- Running Scenario: Queued RL Jobs ---")
-		err = acceleratororchestrator.RunQueuedRLJobsScenario(ctx, clientset, client, cliLogger)
+		err = acceleratororchestrator.RunQueuedRLJobsScenario(ctx, clientset, client, cliLogger, samplerTemplateKey, trainerTemplateKey)
 		scenario2Passed := err == nil
 		if !scenario2Passed {
 			fmt.Printf("[FAIL] Queued RL Jobs Scenario failed: %v\n\n", err)
@@ -205,9 +205,19 @@ var orchestratorTestCmd = &cobra.Command{
 	},
 }
 
+var (
+	samplerTemplateKey string
+	trainerTemplateKey string
+)
+
 func init() {
 	rootCmd.AddCommand(testCmd)
 	testCmd.AddCommand(orchestratorTestCmd)
+
+	orchestratorTestCmd.Flags().StringVar(&samplerTemplateKey, "sampler-template-key", "",
+		"Name of the Kubernetes PodTemplate to use for sampler pods (blank for default pause pod)")
+	orchestratorTestCmd.Flags().StringVar(&trainerTemplateKey, "trainer-template-key", "",
+		"Name of the Kubernetes PodTemplate to use for trainer pods (blank for default pause pod)")
 }
 
 // cliLogger implements acceleratororchestrator.Logger interface to print to stdout.

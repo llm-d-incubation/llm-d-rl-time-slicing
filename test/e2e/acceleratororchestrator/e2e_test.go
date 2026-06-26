@@ -152,7 +152,7 @@ func TestE2E_SingleRLJob(t *testing.T) {
 	t.Log("Store initialized with samplers and trainers groups")
 
 	// Run Scenario
-	if err := RunSingleRLJobScenario(ctx, clientset, client, t); err != nil {
+	if err := RunSingleRLJobScenario(ctx, clientset, client, t, "", ""); err != nil {
 		t.Fatalf("Scenario failed: %v", err)
 	}
 }
@@ -283,7 +283,7 @@ func TestE2E_QueuedRLJobs(t *testing.T) {
 	t.Log("Store initialized with samplers and trainers groups")
 
 	// Run Scenario
-	if err := RunQueuedRLJobsScenario(ctx, clientset, client, t); err != nil {
+	if err := RunQueuedRLJobsScenario(ctx, clientset, client, t, "", ""); err != nil {
 		t.Fatalf("Scenario failed: %v", err)
 	}
 }

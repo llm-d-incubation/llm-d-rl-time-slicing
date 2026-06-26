@@ -20,37 +20,57 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// PodFactory manages pod templates for different groups.
+// PodFactory manages pod templates keyed by a template name/key.
 type PodFactory struct {
 	mu        sync.RWMutex
 	templates map[string]*corev1.Pod
 }
 
-// NewPodFactory creates a new PodFactory.
+// NewPodFactory creates a new PodFactory and registers the default pause pod.
 func NewPodFactory() *PodFactory {
-	return &PodFactory{
+	factory := &PodFactory{
 		templates: make(map[string]*corev1.Pod),
 	}
+	factory.Register("default", &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "dummy",
+					Image: "registry.k8s.io/pause:3.9",
+				},
+			},
+		},
+	})
+	return factory
 }
 
-// Register registers a pod template for a specific group.
-func (p *PodFactory) Register(groupID string, pod *corev1.Pod) {
+// Register registers a pod template for a specific key.
+func (p *PodFactory) Register(key string, pod *corev1.Pod) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.templates[groupID] = pod
+	p.templates[key] = pod
 }
 
-// GetPod returns a copy of the registered pod template for the group,
-// or a default vanilla pause pod if none is registered.
-func (p *PodFactory) GetPod(groupID string) *corev1.Pod {
+// GetPod returns a copy of the registered pod template for the key.
+// If key is blank or not found, it falls back to the "default" template.
+func (p *PodFactory) GetPod(key string) *corev1.Pod {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	if template, ok := p.templates[groupID]; ok {
+	if key == "" {
+		key = "default"
+	}
+
+	if template, ok := p.templates[key]; ok {
 		return template.DeepCopy()
 	}
 
-	// Default vanilla pod (pause container)
+	// Fallback to default template if the key is not found
+	if template, ok := p.templates["default"]; ok {
+		return template.DeepCopy()
+	}
+
+	// Ultimate fallback (should not be reached as "default" is registered in NewPodFactory)
 	return &corev1.Pod{
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{

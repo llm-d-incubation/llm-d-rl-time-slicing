@@ -31,11 +31,13 @@ func RunSingleRLJobScenario(
 	clientset kubernetes.Interface,
 	client pb.AcceleratorOrchestratorServiceClient,
 	logger Logger,
+	samplerTemplateKey string,
+	trainerTemplateKey string,
 ) error {
 	logger.Log("Starting Single RL Job Scenario")
 
 	// Run Fake RL Job
-	job := NewFakeRLJob("my-rl-job", client, clientset, 2, logger) // 2 iterations
+	job := NewFakeRLJob("my-rl-job", client, clientset, 2, logger, samplerTemplateKey, trainerTemplateKey) // 2 iterations
 
 	// Set custom work durations
 	job.OnSampling = func(ctx context.Context) {
@@ -76,11 +78,13 @@ func RunQueuedRLJobsScenario(
 	clientset kubernetes.Interface,
 	client pb.AcceleratorOrchestratorServiceClient,
 	logger Logger,
+	samplerTemplateKey string,
+	trainerTemplateKey string,
 ) error {
 	logger.Log("Starting Queued RL Jobs Scenario")
 
-	jobA := NewFakeRLJob("job-a", client, clientset, 1, logger) // 1 iteration
-	jobB := NewFakeRLJob("job-b", client, clientset, 1, logger) // 1 iteration
+	jobA := NewFakeRLJob("job-a", client, clientset, 1, logger, samplerTemplateKey, trainerTemplateKey) // 1 iteration
+	jobB := NewFakeRLJob("job-b", client, clientset, 1, logger, samplerTemplateKey, trainerTemplateKey) // 1 iteration
 
 	// Channels for coordination
 	jobASampling := make(chan struct{})
