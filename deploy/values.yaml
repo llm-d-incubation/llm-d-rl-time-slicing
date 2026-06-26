@@ -13,8 +13,6 @@ snapshot-agent:
   enabled: true
   image:
     tag: latest
-  nodeSelector:
-    cloud.google.com/gke-gpu: "true"
   tolerations:
     - key: "nvidia.com/gpu"
       operator: "Equal"
@@ -27,7 +25,7 @@ snapshot-agent:
 
 # Override values for the nvidia-dra-driver-gpu subchart
 nvidia-dra-driver-gpu:
-  enabled: false
+  enabled: true
   namespaceOverride: "timeslice-system"
   nvidiaDriverRoot: "/home/kubernetes/bin/nvidia/" # Use "/opt/nvidia" for Ubuntu nodes
 
