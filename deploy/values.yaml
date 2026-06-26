@@ -39,6 +39,10 @@ nvidia-dra-driver-gpu:
       - key: "nvidia.com/gpu"
         operator: "Exists"
         effect: "NoSchedule"
+      - key: "timeslice.io/shared"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
     affinity:
       nodeAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:
