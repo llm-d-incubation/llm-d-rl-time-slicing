@@ -33,3 +33,14 @@ Thumbs.db
 .envrc
 .secrets.env
 vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/

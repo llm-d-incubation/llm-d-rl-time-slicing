@@ -3,9 +3,9 @@
 import grpc
 import warnings
 
-from . import snapshot_agent_pb2 as snapshot__agent__pb2
+from timeslice.snapshot_agent import snapshot_agent_pb2 as timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2
 
-GRPC_GENERATED_VERSION = '1.81.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in snapshot_agent_pb2_grpc.py depends on'
+        + ' but the generated code in timeslice/snapshot_agent/snapshot_agent_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -37,23 +37,23 @@ class SnapshotAgentServiceStub:
         """
         self.Snapshot = channel.unary_unary(
                 '/snapshot_agent.v1alpha1.SnapshotAgentService/Snapshot',
-                request_serializer=snapshot__agent__pb2.SnapshotRequest.SerializeToString,
-                response_deserializer=snapshot__agent__pb2.SnapshotResponse.FromString,
+                request_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.SnapshotRequest.SerializeToString,
+                response_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.SnapshotResponse.FromString,
                 _registered_method=True)
         self.Restore = channel.unary_unary(
                 '/snapshot_agent.v1alpha1.SnapshotAgentService/Restore',
-                request_serializer=snapshot__agent__pb2.RestoreRequest.SerializeToString,
-                response_deserializer=snapshot__agent__pb2.RestoreResponse.FromString,
+                request_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.RestoreRequest.SerializeToString,
+                response_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.RestoreResponse.FromString,
                 _registered_method=True)
         self.GetOperation = channel.unary_unary(
                 '/snapshot_agent.v1alpha1.SnapshotAgentService/GetOperation',
-                request_serializer=snapshot__agent__pb2.GetOperationRequest.SerializeToString,
-                response_deserializer=snapshot__agent__pb2.GetOperationResponse.FromString,
+                request_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.GetOperationRequest.SerializeToString,
+                response_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.GetOperationResponse.FromString,
                 _registered_method=True)
         self.Status = channel.unary_unary(
                 '/snapshot_agent.v1alpha1.SnapshotAgentService/Status',
-                request_serializer=snapshot__agent__pb2.StatusRequest.SerializeToString,
-                response_deserializer=snapshot__agent__pb2.StatusResponse.FromString,
+                request_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusRequest.SerializeToString,
+                response_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusResponse.FromString,
                 _registered_method=True)
 
 
@@ -94,23 +94,23 @@ def add_SnapshotAgentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Snapshot': grpc.unary_unary_rpc_method_handler(
                     servicer.Snapshot,
-                    request_deserializer=snapshot__agent__pb2.SnapshotRequest.FromString,
-                    response_serializer=snapshot__agent__pb2.SnapshotResponse.SerializeToString,
+                    request_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.SnapshotRequest.FromString,
+                    response_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.SnapshotResponse.SerializeToString,
             ),
             'Restore': grpc.unary_unary_rpc_method_handler(
                     servicer.Restore,
-                    request_deserializer=snapshot__agent__pb2.RestoreRequest.FromString,
-                    response_serializer=snapshot__agent__pb2.RestoreResponse.SerializeToString,
+                    request_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.RestoreRequest.FromString,
+                    response_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.RestoreResponse.SerializeToString,
             ),
             'GetOperation': grpc.unary_unary_rpc_method_handler(
                     servicer.GetOperation,
-                    request_deserializer=snapshot__agent__pb2.GetOperationRequest.FromString,
-                    response_serializer=snapshot__agent__pb2.GetOperationResponse.SerializeToString,
+                    request_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.GetOperationRequest.FromString,
+                    response_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.GetOperationResponse.SerializeToString,
             ),
             'Status': grpc.unary_unary_rpc_method_handler(
                     servicer.Status,
-                    request_deserializer=snapshot__agent__pb2.StatusRequest.FromString,
-                    response_serializer=snapshot__agent__pb2.StatusResponse.SerializeToString,
+                    request_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusRequest.FromString,
+                    response_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -139,8 +139,8 @@ class SnapshotAgentService:
             request,
             target,
             '/snapshot_agent.v1alpha1.SnapshotAgentService/Snapshot',
-            snapshot__agent__pb2.SnapshotRequest.SerializeToString,
-            snapshot__agent__pb2.SnapshotResponse.FromString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.SnapshotRequest.SerializeToString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.SnapshotResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -166,8 +166,8 @@ class SnapshotAgentService:
             request,
             target,
             '/snapshot_agent.v1alpha1.SnapshotAgentService/Restore',
-            snapshot__agent__pb2.RestoreRequest.SerializeToString,
-            snapshot__agent__pb2.RestoreResponse.FromString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.RestoreRequest.SerializeToString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.RestoreResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -193,8 +193,8 @@ class SnapshotAgentService:
             request,
             target,
             '/snapshot_agent.v1alpha1.SnapshotAgentService/GetOperation',
-            snapshot__agent__pb2.GetOperationRequest.SerializeToString,
-            snapshot__agent__pb2.GetOperationResponse.FromString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.GetOperationRequest.SerializeToString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.GetOperationResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -220,8 +220,8 @@ class SnapshotAgentService:
             request,
             target,
             '/snapshot_agent.v1alpha1.SnapshotAgentService/Status',
-            snapshot__agent__pb2.StatusRequest.SerializeToString,
-            snapshot__agent__pb2.StatusResponse.FromString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusRequest.SerializeToString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
