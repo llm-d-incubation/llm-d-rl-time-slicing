@@ -4,124 +4,14 @@ name: Sync Project Board
 # in repo Settings > Secrets and variables > Actions > Variables
 
 on:
-  pull_request_review:
-    types: [submitted, dismissed]
   pull_request:
-    types: [opened, ready_for_review, review_requested]
+    types: [opened]
   issues:
-    types: [opened, reopened]
+    types: [opened]
 
 jobs:
-  sync-pr-review-status:
-    if: vars.ENABLE_PROJECT_SYNC != 'false' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_review')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
-        env:
-          PROJECT_PAT: ${{ secrets.PROJECT_PAT }}
-        with:
-          github-token: ${{ secrets.PROJECT_PAT }}
-          script: |
-            const projectId = 'PVT_kwHOCFc8rs4BbxbM';
-            const fieldId = 'PVTSSF_lAHOCFc8rs4BbxbMzhWfr9M';
-            const options = {
-              'Needs Review': 'ae8b77e7',
-              'In Review': '8a0b6f79',
-              'Approved': '76094e41',
-            };
-
-            const pr = context.payload.pull_request;
-            const prNodeId = pr.node_id;
-
-            // 1. Determine review status
-            const reviews = await github.rest.pulls.listReviews({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-            });
-
-            let status = 'Needs Review';
-            if (reviews.data.length > 0) {
-              const latestByUser = {};
-              for (const r of reviews.data) {
-                latestByUser[r.user.login] = r.state;
-              }
-              const states = Object.values(latestByUser);
-
-              if (states.includes('APPROVED') && !states.includes('CHANGES_REQUESTED')) {
-                status = 'Approved';
-              } else {
-                status = 'In Review';
-              }
-            }
-
-            core.info(`PR #${pr.number} review status: ${status}`);
-
-            // 2. Find the PR item in the project
-            const findItem = await github.graphql(`
-              query($projectId: ID!) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100) {
-                      nodes {
-                        id
-                        content {
-                          ... on PullRequest {
-                            id
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `, { projectId });
-
-            const item = findItem.node.items.nodes.find(
-              i => i.content && i.content.id === prNodeId
-            );
-
-            if (!item) {
-              core.info(`PR #${pr.number} not in project, adding...`);
-              const addResult = await github.graphql(`
-                mutation($projectId: ID!, $contentId: ID!) {
-                  addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
-                    item {
-                      id
-                    }
-                  }
-                }
-              `, { projectId, contentId: prNodeId });
-              var itemId = addResult.addProjectV2ItemById.item.id;
-            } else {
-              var itemId = item.id;
-            }
-
-            // 3. Update the Review Status field
-            await github.graphql(`
-              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $projectId
-                  itemId: $itemId
-                  fieldId: $fieldId
-                  value: { singleSelectOptionId: $optionId }
-                }) {
-                  projectV2Item {
-                    id
-                  }
-                }
-              }
-            `, {
-              projectId,
-              itemId,
-              fieldId,
-              optionId: options[status],
-            });
-
-            core.info(`Updated PR #${pr.number} to "${status}"`);
-
-  add-issue-to-project:
-    if: vars.ENABLE_PROJECT_SYNC != 'false' && github.event_name == 'issues'
+  add-to-project:
+    if: vars.ENABLE_PROJECT_SYNC != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
@@ -129,9 +19,11 @@ jobs:
           github-token: ${{ secrets.PROJECT_PAT }}
           script: |
             const projectId = 'PVT_kwHOCFc8rs4BbxbM';
-            const issue = context.payload.issue;
+            const contentId = (context.payload.pull_request || context.payload.issue).node_id;
+            const number = (context.payload.pull_request || context.payload.issue).number;
+            const type = context.payload.pull_request ? 'PR' : 'Issue';
 
-            core.info(`Adding issue #${issue.number} to project...`);
+            core.info(`Adding ${type} #${number} to project...`);
 
             await github.graphql(`
               mutation($projectId: ID!, $contentId: ID!) {
@@ -141,6 +33,6 @@ jobs:
                   }
                 }
               }
-            `, { projectId, contentId: issue.node_id });
+            `, { projectId, contentId });
 
-            core.info(`Issue #${issue.number} added to project.`);
+            core.info(`${type} #${number} added to project.`);
