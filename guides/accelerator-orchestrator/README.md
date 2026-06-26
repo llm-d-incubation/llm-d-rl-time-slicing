@@ -104,7 +104,7 @@ spec:
   devices:
     requests:
     - name: double-gpus
-      deviceClassName: gpu.nvidia.com # TODO: update this with our deployed device class
+      deviceClassName: gpu.nvidia.com
       allocationMode: ExactCount
       count: 2 # Number of GPUs needed
 ```
