@@ -73,6 +73,52 @@ helm install snapshot-agent ./snapshot-agent \
   --set nvidia.driver.hostPath=/usr/lib/nvidia
 ```
 
+### 5. Deploying on Non-GKE GPU Clusters
+
+If you are deploying the snapshot agent to a non-GKE cluster (e.g., EKS, AKS, or bare-metal), you will likely need to adjust the node selector and driver paths because they differ from GKE defaults.
+
+#### A. Override GPU Node Selector
+Non-GKE clusters typically use different labels to identify GPU nodes. For example, standard NVIDIA GPU nodes often use `nvidia.com/gpu=true` or `hardware=gpu`. 
+
+You can override the GKE-default node selector during installation:
+
+```bash
+helm install snapshot-agent ./snapshot-agent \
+  --namespace timeslice-system \
+  --create-namespace \
+  --set-string "nodeSelector.nvidia\.com/gpu=true"
+```
+
+*Note: You may need to escape the dots in the label key as shown above (`nodeSelector.nvidia\.com/gpu=true`).*
+
+#### B. Override NVIDIA Driver Host Path
+On non-GKE clusters, the NVIDIA driver libraries might be installed in different locations on the host. Common paths include:
+*   `/usr/lib/nvidia`
+*   `/usr/local/nvidia`
+*   `/usr/lib/x86_64-linux-gnu`
+
+You can override the host path using:
+
+```bash
+helm install snapshot-agent ./snapshot-agent \
+  --namespace timeslice-system \
+  --create-namespace \
+  --set nvidia.driver.hostPath=/usr/lib/nvidia
+```
+
+#### C. Override Tolerations
+If your GPU nodes have different taints than the default `nvidia.com/gpu=present:NoSchedule`, you must override the tolerations. For example, if your nodes are tainted with `sku=gpu:NoSchedule`:
+
+```bash
+helm install snapshot-agent ./snapshot-agent \
+  --namespace timeslice-system \
+  --create-namespace \
+  --set tolerations[0].key=sku \
+  --set tolerations[0].operator=Equal \
+  --set tolerations[0].value=gpu \
+  --set tolerations[0].effect=NoSchedule
+```
+
 ## Development Workflow: Custom Images
 
 During development, you will need to build your own container image containing your changes and push it to a custom registry.

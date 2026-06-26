@@ -18,9 +18,9 @@ This directory contains the Helm chart for deploying the Accelerator Orchestrato
 To deploy the orchestrator using the local Helm chart:
 
 1.  **Install the chart**:
-    From the `deploy` directory, install the chart into the `timeslice-system` namespace (creating it if it doesn't exist):
+    From the `deploy` directory, install or upgrade the chart into the `timeslice-system` namespace (creating it if it doesn't exist):
     ```bash
-    helm install acceleratororchestrator ./acceleratororchestrator \
+    helm upgrade --install acceleratororchestrator ./acceleratororchestrator \
       --namespace timeslice-system \
       --create-namespace
     ```
@@ -68,7 +68,7 @@ Once your image is pushed, you can instruct Helm to use it.
 This avoids modifying files in your git tree:
 
 ```bash
-helm install acceleratororchestrator ./acceleratororchestrator \
+helm upgrade --install acceleratororchestrator ./acceleratororchestrator \
   --namespace timeslice-system \
   --create-namespace \
   --set image.repository=your-custom-registry.com/your-project/acceleratororchestrator \
@@ -88,7 +88,7 @@ image:
 
 And then run:
 ```bash
-helm install acceleratororchestrator ./acceleratororchestrator \
+helm upgrade --install acceleratororchestrator ./acceleratororchestrator \
   --namespace timeslice-system \
   --create-namespace
 ```
