@@ -343,10 +343,16 @@ func StartFakeScheduler(ctx context.Context, clientset *fake.Clientset) {
 				continue
 			}
 
-			// 1. Update pod with NodeName and Running status (Simulate Scheduler)
+			// 1. Update pod with NodeName, Running status, and Ready condition (Simulate Scheduler & Kubelet)
 			podCopy := pod.DeepCopy()
 			podCopy.Spec.NodeName = targetNode.Name
 			podCopy.Status.Phase = corev1.PodRunning
+			podCopy.Status.Conditions = []corev1.PodCondition{
+				{
+					Type:   corev1.PodReady,
+					Status: corev1.ConditionTrue,
+				},
+			}
 
 			_, err = clientset.CoreV1().Pods("default").Update(ctx, podCopy, metav1.UpdateOptions{})
 			if err != nil {

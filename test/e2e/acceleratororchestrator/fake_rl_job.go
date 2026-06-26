@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
-	resourcev1 "k8s.io/api/resource/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -26,17 +25,18 @@ type Logger interface {
 
 // FakeRLJob simulates a Reinforcement Learning job that orchestrates samplers and trainers.
 type FakeRLJob struct {
-	name               string
-	client             pb.AcceleratorOrchestratorServiceClient
-	clientset          kubernetes.Interface
-	iterations         int
-	t                  Logger
-	createdPods        []string // track created pod names for cleanup
-	createdClaims      []string // track created claim names for cleanup
-	mu                 sync.Mutex
-	podFactory         *PodFactory
-	samplerTemplateKey string
-	trainerTemplateKey string
+	name                   string
+	client                 pb.AcceleratorOrchestratorServiceClient
+	clientset              kubernetes.Interface
+	iterations             int
+	t                      Logger
+	createdPods            []string // track created pod names for cleanup
+	mu                     sync.Mutex
+	podFactory             *PodFactory
+	samplerTemplateKey     string
+	trainerTemplateKey     string
+	samplerSharedClaimName string
+	trainerSharedClaimName string
 
 	// Callbacks to control sampling/training behavior/duration
 	OnSampling func(ctx context.Context)
@@ -51,16 +51,20 @@ func NewFakeRLJob(
 	t Logger,
 	samplerTemplateKey string,
 	trainerTemplateKey string,
+	samplerSharedClaimName string,
+	trainerSharedClaimName string,
 ) *FakeRLJob {
 	return &FakeRLJob{
-		name:               name,
-		client:             client,
-		clientset:          clientset,
-		iterations:         iterations,
-		t:                  t,
-		podFactory:         NewPodFactory(),
-		samplerTemplateKey: samplerTemplateKey,
-		trainerTemplateKey: trainerTemplateKey,
+		name:                   name,
+		client:                 client,
+		clientset:              clientset,
+		iterations:             iterations,
+		t:                      t,
+		podFactory:             NewPodFactory(),
+		samplerTemplateKey:     samplerTemplateKey,
+		trainerTemplateKey:     trainerTemplateKey,
+		samplerSharedClaimName: samplerSharedClaimName,
+		trainerSharedClaimName: trainerSharedClaimName,
 	}
 }
 
@@ -248,35 +252,14 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 
 	for range nodes.Items {
 		podName := fmt.Sprintf("pod-%s-%s-%s", f.name, groupID, uuid.NewString()[:8])
-		claimName := fmt.Sprintf("claim-%s", podName)
 
-		// 1. Create ResourceClaim for DRA
-		claim := &resourcev1.ResourceClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      claimName,
-				Namespace: "default",
-			},
-			Spec: resourcev1.ResourceClaimSpec{
-				Devices: resourcev1.DeviceClaim{
-					Requests: []resourcev1.DeviceRequest{
-						{
-							Name: "gpu",
-							Exactly: &resourcev1.ExactDeviceRequest{
-								DeviceClassName: "gpu.nvidia.com",
-								AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
-								Count:           1,
-							},
-						},
-					},
-				},
-			},
+		var sharedClaimName string
+		switch groupID {
+		case "samplers":
+			sharedClaimName = f.samplerSharedClaimName
+		case "trainers":
+			sharedClaimName = f.trainerSharedClaimName
 		}
-
-		_, err := f.clientset.ResourceV1().ResourceClaims("default").Create(ctx, claim, metav1.CreateOptions{})
-		if err != nil && !k8serrors.IsAlreadyExists(err) {
-			return fmt.Errorf("failed to create resource claim %s: %w", claimName, err)
-		}
-		f.t.Logf("[Job %s] Created ResourceClaim %s", f.name, claimName)
 
 		// Pull pod definition from factory using the correct template key
 		var templateKey string
@@ -324,7 +307,7 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 		pod.Spec.ResourceClaims = []corev1.PodResourceClaim{
 			{
 				Name:              "gpu-resource",
-				ResourceClaimName: &claimName,
+				ResourceClaimName: &sharedClaimName,
 			},
 		}
 
@@ -345,35 +328,49 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 			f.t.Logf("[Job %s] Deployed pod %s (pending scheduling)", f.name, podName)
 		}
 
-		// Wait for scheduling and validate node
-		f.t.Logf("[Job %s] Waiting for pod %s to be scheduled...", f.name, podName)
-		err = wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-			pod, err := f.clientset.CoreV1().Pods("default").Get(ctx, podName, metav1.GetOptions{})
-			if err != nil {
-				return false, err
-			}
-			if pod.Spec.NodeName == "" {
-				return false, nil // still pending
-			}
-
-			// Verify it is one of the expected nodes for the group
-			isExpectedNode := false
-			for j := range nodes.Items {
-				if pod.Spec.NodeName == nodes.Items[j].Name {
-					isExpectedNode = true
-					break
+		// Wait for scheduling, validate node, and wait for readiness
+		f.t.Logf("[Job %s] Waiting for pod %s to be scheduled and ready...", f.name, podName)
+		err = wait.PollUntilContextTimeout(
+			ctx, 500*time.Millisecond, 10*time.Minute, true,
+			func(ctx context.Context) (bool, error) {
+				pod, err := f.clientset.CoreV1().Pods("default").Get(ctx, podName, metav1.GetOptions{})
+				if err != nil {
+					return false, err
 				}
-			}
-			if !isExpectedNode {
-				return false, fmt.Errorf(
-					"pod %s scheduled to unexpected node %q (expected one of group %s nodes)",
-					podName, pod.Spec.NodeName, groupID,
-				)
-			}
+				if pod.Spec.NodeName == "" {
+					return false, nil // still pending scheduling
+				}
 
-			f.t.Logf("[Job %s] Pod %s successfully scheduled to expected node %s", f.name, podName, pod.Spec.NodeName)
-			return true, nil
-		})
+				// Verify it is one of the expected nodes for the group
+				isExpectedNode := false
+				for j := range nodes.Items {
+					if pod.Spec.NodeName == nodes.Items[j].Name {
+						isExpectedNode = true
+						break
+					}
+				}
+				if !isExpectedNode {
+					return false, fmt.Errorf(
+						"pod %s scheduled to unexpected node %q (expected one of group %s nodes)",
+						podName, pod.Spec.NodeName, groupID,
+					)
+				}
+
+				// Verify pod is ready
+				isReady := false
+				for _, cond := range pod.Status.Conditions {
+					if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+						isReady = true
+						break
+					}
+				}
+				if !isReady {
+					return false, nil // scheduled but not ready yet
+				}
+
+				f.t.Logf("[Job %s] Pod %s is scheduled and ready on node %s", f.name, podName, pod.Spec.NodeName)
+				return true, nil
+			})
 		if err != nil {
 			return fmt.Errorf("failed to verify pod scheduling for %s: %w", podName, err)
 		}
@@ -381,7 +378,6 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 		// Always track for cleanup
 		f.mu.Lock()
 		f.createdPods = append(f.createdPods, podName)
-		f.createdClaims = append(f.createdClaims, claimName)
 		f.mu.Unlock()
 	}
 
@@ -404,19 +400,6 @@ func (f *FakeRLJob) cleanupPods(ctx context.Context) error {
 		}
 	}
 	f.createdPods = nil
-
-	// 2. Delete ResourceClaims
-	for _, claimName := range f.createdClaims {
-		err := f.clientset.ResourceV1().ResourceClaims("default").Delete(ctx, claimName, metav1.DeleteOptions{})
-		if err != nil {
-			if !k8serrors.IsNotFound(err) {
-				f.t.Errorf("[Job %s] Failed to delete resource claim %s: %v", f.name, claimName, err)
-			}
-		} else {
-			f.t.Logf("[Job %s] Deleted resource claim %s", f.name, claimName)
-		}
-	}
-	f.createdClaims = nil
 
 	return nil
 }

@@ -17,9 +17,12 @@ package acceleratororchestrator
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	resourcev1 "k8s.io/api/resource/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -36,8 +39,33 @@ func RunSingleRLJobScenario(
 ) error {
 	logger.Log("Starting Single RL Job Scenario")
 
+	samplerClaim := "claim-shared-single-samplers"
+	trainerClaim := "claim-shared-single-trainers"
+
+	if err := createSharedClaim(ctx, clientset, samplerClaim); err != nil {
+		return err
+	}
+	defer func() {
+		if err := deleteSharedClaim(ctx, clientset, samplerClaim); err != nil {
+			logger.Errorf("Failed to delete shared claim %s: %v", samplerClaim, err)
+		}
+	}()
+
+	if err := createSharedClaim(ctx, clientset, trainerClaim); err != nil {
+		return err
+	}
+	defer func() {
+		if err := deleteSharedClaim(ctx, clientset, trainerClaim); err != nil {
+			logger.Errorf("Failed to delete shared claim %s: %v", trainerClaim, err)
+		}
+	}()
+
 	// Run Fake RL Job
-	job := NewFakeRLJob("my-rl-job", client, clientset, 2, logger, samplerTemplateKey, trainerTemplateKey) // 2 iterations
+	job := NewFakeRLJob(
+		"my-rl-job", client, clientset, 2, logger,
+		samplerTemplateKey, trainerTemplateKey,
+		samplerClaim, trainerClaim,
+	)
 
 	// Set custom work durations
 	job.OnSampling = func(ctx context.Context) {
@@ -83,23 +111,55 @@ func RunQueuedRLJobsScenario(
 ) error {
 	logger.Log("Starting Queued RL Jobs Scenario")
 
-	jobA := NewFakeRLJob("job-a", client, clientset, 1, logger, samplerTemplateKey, trainerTemplateKey) // 1 iteration
-	jobB := NewFakeRLJob("job-b", client, clientset, 1, logger, samplerTemplateKey, trainerTemplateKey) // 1 iteration
+	samplerClaim := "claim-shared-queued-samplers"
+	trainerClaim := "claim-shared-queued-trainers"
+
+	if err := createSharedClaim(ctx, clientset, samplerClaim); err != nil {
+		return err
+	}
+	defer func() {
+		if err := deleteSharedClaim(ctx, clientset, samplerClaim); err != nil {
+			logger.Errorf("Failed to delete shared claim %s: %v", samplerClaim, err)
+		}
+	}()
+
+	if err := createSharedClaim(ctx, clientset, trainerClaim); err != nil {
+		return err
+	}
+	defer func() {
+		if err := deleteSharedClaim(ctx, clientset, trainerClaim); err != nil {
+			logger.Errorf("Failed to delete shared claim %s: %v", trainerClaim, err)
+		}
+	}()
+
+	jobA := NewFakeRLJob(
+		"job-a", client, clientset, 2, logger,
+		samplerTemplateKey, trainerTemplateKey,
+		samplerClaim, trainerClaim,
+	)
+	jobB := NewFakeRLJob(
+		"job-b", client, clientset, 2, logger,
+		samplerTemplateKey, trainerTemplateKey,
+		samplerClaim, trainerClaim,
+	)
 
 	// Channels for coordination
 	jobASampling := make(chan struct{})
 	unblockJobA := make(chan struct{})
 
+	var coordOnce sync.Once
 	// Configure Job A callbacks to block during sampling
 	jobA.OnSampling = func(ctx context.Context) {
-		logger.Log("[Test] Job A is sampling, notifying test and blocking...")
-		close(jobASampling) // Notify test
-		select {
-		case <-unblockJobA:
-			logger.Log("[Test] Job A unblocked, finishing sampling...")
-		case <-ctx.Done():
-			logger.Log("[Test] Job A context cancelled while blocked")
-		}
+		coordOnce.Do(func() {
+			logger.Log("[Test] Job A is sampling, notifying test and blocking...")
+			close(jobASampling) // Notify test
+			select {
+			case <-unblockJobA:
+				logger.Log("[Test] Job A unblocked, finishing sampling...")
+			case <-ctx.Done():
+				logger.Log("[Test] Job A context cancelled while blocked")
+			}
+		})
 	}
 	jobA.OnTraining = func(ctx context.Context) {
 		logger.Log("[Test] Job A training (10ms)...")
@@ -130,7 +190,7 @@ func RunQueuedRLJobsScenario(
 	select {
 	case <-jobASampling:
 		logger.Log("[Test] Confirmed Job A is holding samplers lock")
-	case <-time.After(25 * time.Second):
+	case <-time.After(10 * time.Minute):
 		return fmt.Errorf("timed out waiting for Job A to start sampling")
 	}
 
@@ -174,7 +234,7 @@ func RunQueuedRLJobsScenario(
 		if err != nil {
 			return fmt.Errorf("job A failed: %w", err)
 		}
-	case <-time.After(25 * time.Second):
+	case <-time.After(10 * time.Minute):
 		return fmt.Errorf("timed out waiting for Job A to complete")
 	}
 
@@ -183,7 +243,7 @@ func RunQueuedRLJobsScenario(
 		if err != nil {
 			return fmt.Errorf("job B failed: %w", err)
 		}
-	case <-time.After(25 * time.Second):
+	case <-time.After(10 * time.Minute):
 		return fmt.Errorf("timed out waiting for Job B to complete")
 	}
 
@@ -202,5 +262,43 @@ func RunQueuedRLJobsScenario(
 	}
 
 	logger.Log("Queued RL Jobs Scenario completed successfully")
+	return nil
+}
+
+//nolint:gocritic
+func createSharedClaim(ctx context.Context, clientset kubernetes.Interface, name string) error {
+	claim := &resourcev1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+		},
+		Spec: resourcev1.ResourceClaimSpec{
+			Devices: resourcev1.DeviceClaim{
+				Requests: []resourcev1.DeviceRequest{
+					{
+						Name: "gpu",
+						Exactly: &resourcev1.ExactDeviceRequest{
+							DeviceClassName: "gpu.nvidia.com",
+							AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
+							Count:           1,
+						},
+					},
+				},
+			},
+		},
+	}
+	_, err := clientset.ResourceV1().ResourceClaims("default").Create(ctx, claim, metav1.CreateOptions{})
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create shared claim %s: %w", name, err)
+	}
+	return nil
+}
+
+//nolint:gocritic
+func deleteSharedClaim(ctx context.Context, clientset kubernetes.Interface, name string) error {
+	err := clientset.ResourceV1().ResourceClaims("default").Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete shared claim %s: %w", name, err)
+	}
 	return nil
 }

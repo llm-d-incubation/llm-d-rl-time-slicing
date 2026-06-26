@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // PodFactory manages pod templates keyed by a template name/key.
@@ -37,6 +38,58 @@ func NewPodFactory() *PodFactory {
 				{
 					Name:  "dummy",
 					Image: "registry.k8s.io/pause:3.9",
+				},
+			},
+		},
+	})
+	factory.Register("vllm", &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "vllm-container",
+					Image: "vllm/vllm-openai:latest",
+					Command: []string{
+						"python3",
+						"-m",
+						"vllm.entrypoints.openai.api_server",
+					},
+					Args: []string{
+						"--model", "Qwen/Qwen2-0.5B-Instruct",
+						"--port", "8000",
+					},
+					Ports: []corev1.ContainerPort{
+						{
+							Name:          "http",
+							ContainerPort: 8000,
+						},
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/health",
+								Port: intstr.FromInt(8000),
+							},
+						},
+						InitialDelaySeconds: 15,
+						PeriodSeconds:       5,
+						FailureThreshold:    60,
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "dshm",
+							MountPath: "/dev/shm",
+						},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "dshm",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{
+							Medium: corev1.StorageMediumMemory,
+						},
+					},
 				},
 			},
 		},
