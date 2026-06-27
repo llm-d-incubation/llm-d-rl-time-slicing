@@ -42,6 +42,15 @@ func main() {
 		backends.BackendGpuGcr: backends.NewGpuCr(),
 	}
 
+	// Ensure /mnt/huge-ckpt is writable by everyone (required for GPU-CR workload)
+	if _, err := os.Stat("/mnt/huge-ckpt"); err == nil {
+		if err := os.Chmod("/mnt/huge-ckpt", 0777); err != nil {
+			slog.WarnContext(ctx, "Failed to chmod /mnt/huge-ckpt to 0777", "error", err)
+		} else {
+			slog.InfoContext(ctx, "Successfully set /mnt/huge-ckpt permissions to 0777")
+		}
+	}
+
 	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", *port)
 	if err := server.StartServer(ctx, *port, registeredBackends, backends.BackendCuda); err != nil {
 		slog.ErrorContext(ctx, "Failed to start server", "error", err)

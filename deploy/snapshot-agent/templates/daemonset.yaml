@@ -34,7 +34,7 @@ spec:
             - name: bin-dir
               mountPath: /opt/bin
         - name: install-gpu-cr
-          image: nvidia/cuda:12.2.0-devel-ubuntu22.04
+          image: nvidia/cuda:13.0.0-devel-ubuntu22.04
           command:
             - "sh"
             - "-c"
@@ -46,11 +46,13 @@ spec:
               apt-get update && apt-get install -y git cmake build-essential
               git clone https://github.com/gpu-os/GPU-CR.git /tmp/GPU-CR
               cd /tmp/GPU-CR
+              sed -i 's/#define CR_CKPT_SIGNAL     SIGUSR1/#define CR_CKPT_SIGNAL     (SIGRTMAX - 8)/' src/common.h
+              sed -i 's/#define CR_RESTORE_SIGNAL  SIGUSR2/#define CR_RESTORE_SIGNAL  (SIGRTMAX - 7)/' src/common.h
+              sed -i 's/int fd_control = open(control_name, O_CREAT | O_RDWR, 0755);/int fd_control = open(control_name, O_CREAT | O_RDWR, 0777); fchmod(fd_control, 0777);/' src/comm/share_mem.cpp
               mkdir build && cd build
               cmake -DGPU_VENDOR=NVIDIA ..
               make -j$(nproc)
               cp cr_client /opt/bin/
-              cp /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /opt/bin/
               echo "gpu-cr installed"
           volumeMounts:
             - name: bin-dir
@@ -64,18 +66,16 @@ spec:
           env:
             - name: PATH
               value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin
+            {{- if .Values.nvidia.driver.enabled }}
             - name: LD_LIBRARY_PATH
-              value: "/opt/bin{{ if .Values.nvidia.driver.enabled }}:{{ join \":\" .Values.nvidia.driver.libraryPaths }}{{ end }}"
+              value: {{ join ":" .Values.nvidia.driver.libraryPaths }}
+            {{- end }}
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
             - name: AGENT_PORT
               value: {{ .Values.port | quote }}
-            {{- if .Values.nvidia.driver.enabled }}
-            - name: LD_LIBRARY_PATH
-              value: {{ join ":" .Values.nvidia.driver.libraryPaths }}
-            {{- end }}
             - name: NVIDIA_VISIBLE_DEVICES
               value: "all"
             - name: NVIDIA_DRIVER_CAPABILITIES
@@ -98,6 +98,8 @@ spec:
             - name: nvidia-devices
               mountPath: {{ .Values.nvidia.devices.mountPath }}
             {{- end }}
+            - name: huge-ckpt
+              mountPath: /mnt/huge-ckpt
       volumes:
         - name: bin-dir
           emptyDir: {}
@@ -113,6 +115,10 @@ spec:
             path: {{ .Values.nvidia.devices.hostPath }}
             type: Directory
         {{- end }}
+        - name: huge-ckpt
+          hostPath:
+            path: /var/tmp/huge-ckpt
+            type: DirectoryOrCreate
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
