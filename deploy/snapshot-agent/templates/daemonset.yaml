@@ -25,10 +25,33 @@ spec:
       serviceAccountName: {{ include "snapshot-agent.serviceAccountName" . }}
       hostNetwork: true
       hostPID: true
+      hostIPC: true
       initContainers:
         - name: install-cuda-checkpoint
           image: alpine:latest
           command: ["sh", "-c", "apk add --no-cache wget && wget -qO /opt/bin/cuda-checkpoint https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/main/bin/x86_64_Linux/cuda-checkpoint && chmod +x /opt/bin/cuda-checkpoint && echo 'cuda-checkpoint installed'"]
+          volumeMounts:
+            - name: bin-dir
+              mountPath: /opt/bin
+        - name: install-gpu-cr
+          image: nvidia/cuda:12.2.0-devel-ubuntu22.04
+          command:
+            - "sh"
+            - "-c"
+            - |
+              if [ -f /opt/bin/cr_client ]; then
+                echo "cr_client already installed, skipping build"
+                exit 0
+              fi
+              apt-get update && apt-get install -y git cmake build-essential
+              git clone https://github.com/gpu-os/GPU-CR.git /tmp/GPU-CR
+              cd /tmp/GPU-CR
+              mkdir build && cd build
+              cmake -DGPU_VENDOR=NVIDIA ..
+              make -j$(nproc)
+              cp cr_client /opt/bin/
+              cp /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /opt/bin/
+              echo "gpu-cr installed"
           volumeMounts:
             - name: bin-dir
               mountPath: /opt/bin
@@ -41,6 +64,8 @@ spec:
           env:
             - name: PATH
               value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin
+            - name: LD_LIBRARY_PATH
+              value: "/opt/bin{{ if .Values.nvidia.driver.enabled }}:{{ join \":\" .Values.nvidia.driver.libraryPaths }}{{ end }}"
             - name: NODE_NAME
               valueFrom:
                 fieldRef:

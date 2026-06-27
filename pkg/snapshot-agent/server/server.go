@@ -41,6 +41,8 @@ func (s *Server) getBackendType(backend pb.Backend) backends.BackendType {
 	switch backend {
 	case pb.Backend_BACKEND_CUDA:
 		return backends.BackendCuda
+	case pb.Backend_BACKEND_GPU_GCR:
+		return backends.BackendGpuGcr
 	default:
 		return s.defaultBackend
 	}

@@ -22,6 +22,7 @@ service SnapshotAgentService {
 enum Backend {
   BACKEND_UNSPECIFIED = 0;
   BACKEND_CUDA = 1;
+  BACKEND_GPU_GCR = 2;
 }
 
 message SnapshotRequest {

@@ -37,8 +37,9 @@ func main() {
 	ctx := context.Background()
 
 	registeredBackends := map[backends.BackendType]backends.Backend{
-		backends.BackendCuda: backends.NewCudaCheckpoint(),
-		backends.BackendNoop: backends.NewNoopBackend(),
+		backends.BackendCuda:   backends.NewCudaCheckpoint(),
+		backends.BackendNoop:   backends.NewNoopBackend(),
+		backends.BackendGpuGcr: backends.NewGpuCr(),
 	}
 
 	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", *port)
