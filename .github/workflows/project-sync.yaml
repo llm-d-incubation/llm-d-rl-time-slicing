@@ -4,7 +4,7 @@ name: Sync Project Board
 # in repo Settings > Secrets and variables > Actions > Variables
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened]
   issues:
     types: [opened]
@@ -13,6 +13,7 @@ jobs:
   add-to-project:
     if: vars.ENABLE_PROJECT_SYNC != 'false'
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/github-script@v7
         with:
