@@ -38,7 +38,12 @@ class SnapshotAgentInterface(ABC):
 
     @abstractmethod
     def snapshot(
-        self, job_id: str, group: str = "", backend: Union[str, int] = 0
+        self,
+        job_id: str,
+        group: str = "",
+        backend: Union[str, int] = 0,
+        pids: Optional[list[int]] = None,
+        backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> SnapshotResponse:
         """Triggers an asynchronous snapshot."""
         pass
@@ -130,7 +135,11 @@ class SnapshotAgentClient(SnapshotAgentInterface):
                 return snapshot_agent_pb2.BACKEND_UNSPECIFIED
 
     def snapshot(
-        self, job_id: str, group: str = "", backend: Union[str, int] = 0
+        self,
+        job_id: str,
+        group: str = "",
+        backend: Union[str, int] = 0,
+        backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> SnapshotResponse:
         """
         Triggers an asynchronous snapshot.
@@ -138,18 +147,31 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             job_id: ID of the job to snapshot.
             group: Group for the snapshot.
             backend: Backend to use (e.g., 'CUDA' or snapshot_agent_pb2.BACKEND_CUDA).
+            backend_config: Optional BackendConfig proto. If provided, 'backend' is ignored.
         Returns:
             SnapshotResponse containing the operation_id.
         Raises:
             SnapshotAgentError on gRPC or unexpected errors.
         """
         try:
-            backend_enum = self._get_backend_enum(backend)
+            if backend_config is not None:
+                # Extract backend_enum from backend_config for backward compatibility with old servers
+                if backend_config.HasField("cuda"):
+                    backend_enum = snapshot_agent_pb2.BACKEND_CUDA
+                else:
+                    backend_enum = snapshot_agent_pb2.BACKEND_UNSPECIFIED
+            else:
+                backend_enum = self._get_backend_enum(backend)
+
+            # Send both backend and backend_config for backward compatibility
             request = snapshot_agent_pb2.SnapshotRequest(
-                job_id=job_id, group=group, backend=backend_enum
+                job_id=job_id,
+                group=group,
+                backend=backend_enum,
+                backend_config=backend_config,
             )
             logger.info(
-                f"Calling Snapshot with job_id={job_id}, group={group}, backend={backend_enum}..."
+                f"Calling Snapshot with job_id={job_id}, group={group}, backend={backend_enum}, backend_config={backend_config}..."
             )
             response = self.stub.Snapshot(request)
             return SnapshotResponse(operation_id=response.operation_id)
@@ -304,9 +326,10 @@ class SnapshotAgentClient(SnapshotAgentInterface):
         group: str = "",
         backend: Union[str, int] = 0,
         poll_interval_sec: float = 1.0,
+        backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> GetOperationResponse:
         """Calls snapshot and waits for completion."""
-        response = self.snapshot(job_id, group, backend)
+        response = self.snapshot(job_id, group, backend, backend_config=backend_config)
         return self.wait_for_operation(response.operation_id, poll_interval_sec)
 
     def restore_and_wait(

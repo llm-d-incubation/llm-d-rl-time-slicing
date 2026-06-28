@@ -58,7 +58,7 @@ func initGRPCServer() {
 		"failing":            failingBackend,
 	}
 
-	testServer = NewServer(backendsMap, backends.BackendNoop)
+	testServer = NewServer(backendsMap, backends.BackendNoop, "k8s")
 	pb.RegisterSnapshotAgentServiceServer(s, testServer)
 	grpc_health_v1.RegisterHealthServer(s, NewHealthServer(backendsMap, backends.BackendNoop))
 	go func() {
@@ -418,5 +418,69 @@ func TestServer_Health(t *testing.T) {
 	}
 	if resp.Status != grpc_health_v1.HealthCheckResponse_NOT_SERVING {
 		t.Errorf("Expected status=NOT_SERVING for failing backend, got %v", resp.Status)
+	}
+}
+
+func TestServer_Snapshot_StandaloneMode(t *testing.T) {
+	lisDev := bufconn.Listen(bufSize)
+	s := grpc.NewServer()
+	noopBackend := backends.NewNoopBackend()
+	backendsMap := map[backends.BackendType]backends.Backend{
+		backends.BackendNoop: noopBackend,
+		backends.BackendCuda: noopBackend,
+	}
+	// enable standalone mode
+	standaloneServer := NewServer(backendsMap, backends.BackendNoop, "standalone")
+	pb.RegisterSnapshotAgentServiceServer(s, standaloneServer)
+	go func() {
+		if err := s.Serve(lisDev); err != nil {
+			return
+		}
+	}()
+	defer s.GracefulStop()
+
+	ctx := context.Background()
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lisDev.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial bufnet: %v", err)
+	}
+	defer conn.Close()
+	client := pb.NewSnapshotAgentServiceClient(conn)
+
+	// Test without PIDs in standalone mode (should fail)
+	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
+		JobId: "test-job-standalone",
+	})
+	if err == nil {
+		t.Errorf("Expected failure when PIDs are not provided in standalone mode")
+	} else if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("Expected InvalidArgument error, got: %v", err)
+	}
+
+	// Register the job and transition it to RUNNING in the state machine
+	standaloneServer.state.RegisterJob("test-job-standalone", "")
+	if err := standaloneServer.state.TransitionToRunning("test-job-standalone", []int{123}); err != nil {
+		t.Fatalf("Failed to transition job to RUNNING: %v", err)
+	}
+
+	// Test with PIDs in standalone mode (should succeed)
+	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
+		JobId: "test-job-standalone",
+		BackendConfig: &pb.BackendConfig{
+			Backend: &pb.BackendConfig_Cuda{
+				Cuda: &pb.CudaBackendConfig{
+					ExplicitTarget: &pb.ProcessTarget{
+						Pids: []int32{123},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Errorf("Expected success, got error: %v", err)
 	}
 }

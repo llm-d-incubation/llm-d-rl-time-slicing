@@ -26,14 +26,20 @@ type Server struct {
 	state          *sm.StateManager
 	backendMap     map[backends.BackendType]backends.Backend
 	defaultBackend backends.BackendType
+	deploymentMode string
 }
 
 // NewServer creates a new Server instance.
-func NewServer(backendMap map[backends.BackendType]backends.Backend, defaultBackend backends.BackendType) *Server {
+func NewServer(
+	backendMap map[backends.BackendType]backends.Backend,
+	defaultBackend backends.BackendType,
+	deploymentMode string,
+) *Server {
 	return &Server{
 		state:          sm.NewStateManager(),
 		backendMap:     backendMap,
 		defaultBackend: defaultBackend,
+		deploymentMode: deploymentMode,
 	}
 }
 
@@ -52,9 +58,27 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	ctx = logging.WithJobID(ctx, req.GetJobId())
 	ctx = logging.WithGroupID(ctx, req.GetGroup())
 
-	slog.InfoContext(ctx, "Snapshot called", "backend", req.GetBackend())
+	var backendType backends.BackendType
+	if req.GetBackendConfig() != nil {
+		backendType = s.getSnapshotBackendType(req.GetBackendConfig())
+	} else {
+		//nolint:staticcheck // SA1019: Keep supporting deprecated backend field for backward compatibility
+		backendType = s.getBackendType(req.GetBackend())
+	}
+	slog.InfoContext(ctx, "Snapshot called", "backend", backendType)
 
-	backendType := s.getBackendType(req.GetBackend())
+	var explicitPIDs []int32
+	if req.GetBackendConfig() != nil {
+		if cudaConfig := req.GetBackendConfig().GetCuda(); cudaConfig != nil {
+			if target := cudaConfig.GetExplicitTarget(); target != nil {
+				explicitPIDs = target.GetPids()
+			}
+		}
+	}
+
+	if s.deploymentMode == "standalone" && len(explicitPIDs) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "explicit target PIDs must be specified in standalone mode")
+	}
 
 	backend, ok := s.backendMap[backendType]
 	if !ok {
@@ -64,22 +88,9 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	bgCtx := context.WithoutCancel(ctx)
 	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() error {
 		slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
-		pods, err := podutils.GetLocalPods(bgCtx, req.GetJobId())
+		allPIDs, allPIDStrings, err := resolvePIDs(bgCtx, req.GetJobId(), explicitPIDs)
 		if err != nil {
-			return fmt.Errorf("failed to get local pods: %w", err)
-		}
-
-		if len(pods) == 0 {
-			return fmt.Errorf("no pods found for job %s", req.GetJobId())
-		}
-
-		allPIDs, allPIDStrings, err := getPIDsFromPods(bgCtx, pods)
-		if err != nil {
-			return fmt.Errorf("failed to get PIDs from pods: %w", err)
-		}
-
-		if len(allPIDStrings) == 0 {
-			return fmt.Errorf("no GPU PIDs found for job %s", req.GetJobId())
+			return err
 		}
 
 		err = backend.Snapshot(bgCtx, allPIDStrings)
@@ -97,6 +108,16 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	}
 
 	return &pb.SnapshotResponse{OperationId: opID}, nil
+}
+
+func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.BackendType {
+	if config == nil {
+		return s.defaultBackend
+	}
+	if config.GetCuda() != nil {
+		return backends.BackendCuda
+	}
+	return s.defaultBackend
 }
 
 // Restore triggers an asynchronous restoration of the accelerator context for a job.
@@ -238,6 +259,7 @@ func StartServer(
 	port int,
 	backendMap map[backends.BackendType]backends.Backend,
 	defaultBackend backends.BackendType,
+	deploymentMode string,
 ) error {
 	lc := net.ListenConfig{}
 	lis, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", port))
@@ -252,7 +274,7 @@ func StartServer(
 	}
 
 	// 2. Create Server (which creates StateManager internally)
-	srv := NewServer(backendMap, defaultBackend)
+	srv := NewServer(backendMap, defaultBackend, deploymentMode)
 
 	// 3. Start the Watcher internally
 	watcher, err := NewWatcher(k8sClient, srv.state)
@@ -287,5 +309,38 @@ func getPIDsFromPods(ctx context.Context, pods []v1.Pod) ([]int, []string, error
 			allPIDStrings = append(allPIDStrings, strconv.Itoa(pid))
 		}
 	}
+	return allPIDs, allPIDStrings, nil
+}
+
+//nolint:nonamedreturns // Conflict between gocritic's unnamedResult and nonamedreturns
+func resolvePIDs(ctx context.Context, jobID string, reqPIDs []int32) (allPIDs []int, allPIDStrings []string, err error) {
+	if len(reqPIDs) > 0 {
+		allPIDs = make([]int, 0, len(reqPIDs))
+		allPIDStrings = make([]string, 0, len(reqPIDs))
+		for _, pid := range reqPIDs {
+			allPIDs = append(allPIDs, int(pid))
+			allPIDStrings = append(allPIDStrings, strconv.Itoa(int(pid)))
+		}
+		return allPIDs, allPIDStrings, nil
+	}
+
+	pods, err := podutils.GetLocalPods(ctx, jobID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get local pods: %w", err)
+	}
+
+	if len(pods) == 0 {
+		return nil, nil, fmt.Errorf("no pods found for job %s", jobID)
+	}
+
+	allPIDs, allPIDStrings, errPIDs := getPIDsFromPods(ctx, pods)
+	if errPIDs != nil {
+		return nil, nil, fmt.Errorf("failed to get PIDs from pods: %w", errPIDs)
+	}
+
+	if len(allPIDStrings) == 0 {
+		return nil, nil, fmt.Errorf("no GPU PIDs found for job %s", jobID)
+	}
+
 	return allPIDs, allPIDStrings, nil
 }

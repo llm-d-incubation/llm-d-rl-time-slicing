@@ -24,13 +24,37 @@ enum Backend {
   BACKEND_CUDA = 1;
 }
 
+// ProcessTarget specifies a set of process IDs (PIDs) to target.
+// This is optional in some deployment modes (like 'k8s' where PIDs can be discovered automatically),
+// but required in others (like 'standalone').
+// In the future, we may add other target types (e.g., MemoryTarget)
+// to support different backends.
+message ProcessTarget {
+  repeated int32 pids = 1;
+}
+
+message CudaBackendConfig {
+  ProcessTarget explicit_target = 1;
+}
+
+message BackendConfig {
+  oneof backend {
+    CudaBackendConfig cuda = 1;
+  }
+}
+
 message SnapshotRequest {
   // job_id is the unique identifier for the job. If group is specified,
   // job_id should be unique within that group.
   string job_id = 1;
   // group is an optional identifier for a set of related jobs.
   string group = 2;
-  Backend backend = 3;
+  // Deprecated: Use backend_config instead.
+  Backend backend = 3 [deprecated = true];
+  // backend_config specifies the backend-specific configuration for the snapshot.
+  // If omitted, the default backend (CUDA) will be used with default discovery
+  // based on the deployment mode.
+  BackendConfig backend_config = 4;
 }
 
 message SnapshotResponse {

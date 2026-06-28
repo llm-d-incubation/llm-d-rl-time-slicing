@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n-timeslice/snapshot_agent/snapshot_agent.proto\x12\x17snapshot_agent.v1alpha1\"c\n\x0fSnapshotRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\r\n\x05group\x18\x02 \x01(\t\x12\x31\n\x07\x62\x61\x63kend\x18\x03 \x01(\x0e\x32 .snapshot_agent.v1alpha1.Backend\"(\n\x10SnapshotResponse\x12\x14\n\x0coperation_id\x18\x01 \x01(\t\"b\n\x0eRestoreRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\r\n\x05group\x18\x02 \x01(\t\x12\x31\n\x07\x62\x61\x63kend\x18\x03 \x01(\x0e\x32 .snapshot_agent.v1alpha1.Backend\"\'\n\x0fRestoreResponse\x12\x14\n\x0coperation_id\x18\x01 \x01(\t\"+\n\x13GetOperationRequest\x12\x14\n\x0coperation_id\x18\x01 \x01(\t\"\xee\x01\n\x14GetOperationResponse\x12\x38\n\x06status\x18\x01 \x01(\x0e\x32(.snapshot_agent.v1alpha1.OperationStatus\x12\x1a\n\rstorage_bytes\x18\x02 \x01(\x03H\x00\x88\x01\x01\x12\"\n\x15snapshot_device_bytes\x18\x03 \x01(\x03H\x01\x88\x01\x01\x12\x12\n\nelapsed_ms\x18\x04 \x01(\x03\x12\x12\n\x05\x65rror\x18\x05 \x01(\tH\x02\x88\x01\x01\x42\x10\n\x0e_storage_bytesB\x18\n\x16_snapshot_device_bytesB\x08\n\x06_error\"\x0f\n\rStatusRequest\"M\n\tJobStatus\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x30\n\x05state\x18\x02 \x01(\x0e\x32!.snapshot_agent.v1alpha1.JobState\"V\n\x11\x41\x63\x63\x65leratorStatus\x12\n\n\x02id\x18\x01 \x01(\t\x12\x19\n\x11memory_used_bytes\x18\x02 \x01(\x03\x12\x1a\n\x12memory_total_bytes\x18\x03 \x01(\x03\"\x94\x01\n\x0eStatusResponse\x12\x38\n\x0cjob_statuses\x18\x01 \x03(\x0b\x32\".snapshot_agent.v1alpha1.JobStatus\x12H\n\x14\x61\x63\x63\x65lerator_statuses\x18\x02 \x03(\x0b\x32*.snapshot_agent.v1alpha1.AcceleratorStatus*4\n\x07\x42\x61\x63kend\x12\x17\n\x13\x42\x41\x43KEND_UNSPECIFIED\x10\x00\x12\x10\n\x0c\x42\x41\x43KEND_CUDA\x10\x01*\x8d\x01\n\x0fOperationStatus\x12 \n\x1cOPERATION_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n\x18OPERATION_STATUS_PENDING\x10\x01\x12\x1d\n\x19OPERATION_STATUS_COMPLETE\x10\x02\x12\x1b\n\x17OPERATION_STATUS_FAILED\x10\x03*\x99\x01\n\x08JobState\x12\x19\n\x15JOB_STATE_UNSPECIFIED\x10\x00\x12\x12\n\x0eJOB_STATE_IDLE\x10\x01\x12\x15\n\x11JOB_STATE_RUNNING\x10\x02\x12\x1b\n\x17JOB_STATE_TRANSITIONING\x10\x03\x12\x13\n\x0fJOB_STATE_SAVED\x10\x04\x12\x15\n\x11JOB_STATE_FAULTED\x10\x05\x32\x9d\x03\n\x14SnapshotAgentService\x12_\n\x08Snapshot\x12(.snapshot_agent.v1alpha1.SnapshotRequest\x1a).snapshot_agent.v1alpha1.SnapshotResponse\x12\\\n\x07Restore\x12\'.snapshot_agent.v1alpha1.RestoreRequest\x1a(.snapshot_agent.v1alpha1.RestoreResponse\x12k\n\x0cGetOperation\x12,.snapshot_agent.v1alpha1.GetOperationRequest\x1a-.snapshot_agent.v1alpha1.GetOperationResponse\x12Y\n\x06Status\x12&.snapshot_agent.v1alpha1.StatusRequest\x1a\'.snapshot_agent.v1alpha1.StatusResponseB\\ZZgithub.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1;v1alpha1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n-timeslice/snapshot_agent/snapshot_agent.proto\x12\x17snapshot_agent.v1alpha1\"\x1d\n\rProcessTarget\x12\x0c\n\x04pids\x18\x01 \x03(\x05\"T\n\x11\x43udaBackendConfig\x12?\n\x0f\x65xplicit_target\x18\x01 \x01(\x0b\x32&.snapshot_agent.v1alpha1.ProcessTarget\"V\n\rBackendConfig\x12:\n\x04\x63uda\x18\x01 \x01(\x0b\x32*.snapshot_agent.v1alpha1.CudaBackendConfigH\x00\x42\t\n\x07\x62\x61\x63kend\"\xa7\x01\n\x0fSnapshotRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\r\n\x05group\x18\x02 \x01(\t\x12\x35\n\x07\x62\x61\x63kend\x18\x03 \x01(\x0e\x32 .snapshot_agent.v1alpha1.BackendB\x02\x18\x01\x12>\n\x0e\x62\x61\x63kend_config\x18\x04 \x01(\x0b\x32&.snapshot_agent.v1alpha1.BackendConfig\"(\n\x10SnapshotResponse\x12\x14\n\x0coperation_id\x18\x01 \x01(\t\"b\n\x0eRestoreRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\r\n\x05group\x18\x02 \x01(\t\x12\x31\n\x07\x62\x61\x63kend\x18\x03 \x01(\x0e\x32 .snapshot_agent.v1alpha1.Backend\"\'\n\x0fRestoreResponse\x12\x14\n\x0coperation_id\x18\x01 \x01(\t\"+\n\x13GetOperationRequest\x12\x14\n\x0coperation_id\x18\x01 \x01(\t\"\xee\x01\n\x14GetOperationResponse\x12\x38\n\x06status\x18\x01 \x01(\x0e\x32(.snapshot_agent.v1alpha1.OperationStatus\x12\x1a\n\rstorage_bytes\x18\x02 \x01(\x03H\x00\x88\x01\x01\x12\"\n\x15snapshot_device_bytes\x18\x03 \x01(\x03H\x01\x88\x01\x01\x12\x12\n\nelapsed_ms\x18\x04 \x01(\x03\x12\x12\n\x05\x65rror\x18\x05 \x01(\tH\x02\x88\x01\x01\x42\x10\n\x0e_storage_bytesB\x18\n\x16_snapshot_device_bytesB\x08\n\x06_error\"\x0f\n\rStatusRequest\"M\n\tJobStatus\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x30\n\x05state\x18\x02 \x01(\x0e\x32!.snapshot_agent.v1alpha1.JobState\"V\n\x11\x41\x63\x63\x65leratorStatus\x12\n\n\x02id\x18\x01 \x01(\t\x12\x19\n\x11memory_used_bytes\x18\x02 \x01(\x03\x12\x1a\n\x12memory_total_bytes\x18\x03 \x01(\x03\"\x94\x01\n\x0eStatusResponse\x12\x38\n\x0cjob_statuses\x18\x01 \x03(\x0b\x32\".snapshot_agent.v1alpha1.JobStatus\x12H\n\x14\x61\x63\x63\x65lerator_statuses\x18\x02 \x03(\x0b\x32*.snapshot_agent.v1alpha1.AcceleratorStatus*4\n\x07\x42\x61\x63kend\x12\x17\n\x13\x42\x41\x43KEND_UNSPECIFIED\x10\x00\x12\x10\n\x0c\x42\x41\x43KEND_CUDA\x10\x01*\x8d\x01\n\x0fOperationStatus\x12 \n\x1cOPERATION_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n\x18OPERATION_STATUS_PENDING\x10\x01\x12\x1d\n\x19OPERATION_STATUS_COMPLETE\x10\x02\x12\x1b\n\x17OPERATION_STATUS_FAILED\x10\x03*\x99\x01\n\x08JobState\x12\x19\n\x15JOB_STATE_UNSPECIFIED\x10\x00\x12\x12\n\x0eJOB_STATE_IDLE\x10\x01\x12\x15\n\x11JOB_STATE_RUNNING\x10\x02\x12\x1b\n\x17JOB_STATE_TRANSITIONING\x10\x03\x12\x13\n\x0fJOB_STATE_SAVED\x10\x04\x12\x15\n\x11JOB_STATE_FAULTED\x10\x05\x32\x9d\x03\n\x14SnapshotAgentService\x12_\n\x08Snapshot\x12(.snapshot_agent.v1alpha1.SnapshotRequest\x1a).snapshot_agent.v1alpha1.SnapshotResponse\x12\\\n\x07Restore\x12\'.snapshot_agent.v1alpha1.RestoreRequest\x1a(.snapshot_agent.v1alpha1.RestoreResponse\x12k\n\x0cGetOperation\x12,.snapshot_agent.v1alpha1.GetOperationRequest\x1a-.snapshot_agent.v1alpha1.GetOperationResponse\x12Y\n\x06Status\x12&.snapshot_agent.v1alpha1.StatusRequest\x1a\'.snapshot_agent.v1alpha1.StatusResponseB\\ZZgithub.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1;v1alpha1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,32 +32,40 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'timeslice.snapshot_agent.sn
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'ZZgithub.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1;v1alpha1'
-  _globals['_BACKEND']._serialized_start=979
-  _globals['_BACKEND']._serialized_end=1031
-  _globals['_OPERATIONSTATUS']._serialized_start=1034
-  _globals['_OPERATIONSTATUS']._serialized_end=1175
-  _globals['_JOBSTATE']._serialized_start=1178
-  _globals['_JOBSTATE']._serialized_end=1331
-  _globals['_SNAPSHOTREQUEST']._serialized_start=74
-  _globals['_SNAPSHOTREQUEST']._serialized_end=173
-  _globals['_SNAPSHOTRESPONSE']._serialized_start=175
-  _globals['_SNAPSHOTRESPONSE']._serialized_end=215
-  _globals['_RESTOREREQUEST']._serialized_start=217
-  _globals['_RESTOREREQUEST']._serialized_end=315
-  _globals['_RESTORERESPONSE']._serialized_start=317
-  _globals['_RESTORERESPONSE']._serialized_end=356
-  _globals['_GETOPERATIONREQUEST']._serialized_start=358
-  _globals['_GETOPERATIONREQUEST']._serialized_end=401
-  _globals['_GETOPERATIONRESPONSE']._serialized_start=404
-  _globals['_GETOPERATIONRESPONSE']._serialized_end=642
-  _globals['_STATUSREQUEST']._serialized_start=644
-  _globals['_STATUSREQUEST']._serialized_end=659
-  _globals['_JOBSTATUS']._serialized_start=661
-  _globals['_JOBSTATUS']._serialized_end=738
-  _globals['_ACCELERATORSTATUS']._serialized_start=740
-  _globals['_ACCELERATORSTATUS']._serialized_end=826
-  _globals['_STATUSRESPONSE']._serialized_start=829
-  _globals['_STATUSRESPONSE']._serialized_end=977
-  _globals['_SNAPSHOTAGENTSERVICE']._serialized_start=1334
-  _globals['_SNAPSHOTAGENTSERVICE']._serialized_end=1747
+  _globals['_SNAPSHOTREQUEST'].fields_by_name['backend']._loaded_options = None
+  _globals['_SNAPSHOTREQUEST'].fields_by_name['backend']._serialized_options = b'\030\001'
+  _globals['_BACKEND']._serialized_start=1253
+  _globals['_BACKEND']._serialized_end=1305
+  _globals['_OPERATIONSTATUS']._serialized_start=1308
+  _globals['_OPERATIONSTATUS']._serialized_end=1449
+  _globals['_JOBSTATE']._serialized_start=1452
+  _globals['_JOBSTATE']._serialized_end=1605
+  _globals['_PROCESSTARGET']._serialized_start=74
+  _globals['_PROCESSTARGET']._serialized_end=103
+  _globals['_CUDABACKENDCONFIG']._serialized_start=105
+  _globals['_CUDABACKENDCONFIG']._serialized_end=189
+  _globals['_BACKENDCONFIG']._serialized_start=191
+  _globals['_BACKENDCONFIG']._serialized_end=277
+  _globals['_SNAPSHOTREQUEST']._serialized_start=280
+  _globals['_SNAPSHOTREQUEST']._serialized_end=447
+  _globals['_SNAPSHOTRESPONSE']._serialized_start=449
+  _globals['_SNAPSHOTRESPONSE']._serialized_end=489
+  _globals['_RESTOREREQUEST']._serialized_start=491
+  _globals['_RESTOREREQUEST']._serialized_end=589
+  _globals['_RESTORERESPONSE']._serialized_start=591
+  _globals['_RESTORERESPONSE']._serialized_end=630
+  _globals['_GETOPERATIONREQUEST']._serialized_start=632
+  _globals['_GETOPERATIONREQUEST']._serialized_end=675
+  _globals['_GETOPERATIONRESPONSE']._serialized_start=678
+  _globals['_GETOPERATIONRESPONSE']._serialized_end=916
+  _globals['_STATUSREQUEST']._serialized_start=918
+  _globals['_STATUSREQUEST']._serialized_end=933
+  _globals['_JOBSTATUS']._serialized_start=935
+  _globals['_JOBSTATUS']._serialized_end=1012
+  _globals['_ACCELERATORSTATUS']._serialized_start=1014
+  _globals['_ACCELERATORSTATUS']._serialized_end=1100
+  _globals['_STATUSRESPONSE']._serialized_start=1103
+  _globals['_STATUSRESPONSE']._serialized_end=1251
+  _globals['_SNAPSHOTAGENTSERVICE']._serialized_start=1608
+  _globals['_SNAPSHOTAGENTSERVICE']._serialized_end=2021
 # @@protoc_insertion_point(module_scope)

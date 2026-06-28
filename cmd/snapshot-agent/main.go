@@ -32,8 +32,18 @@ func main() {
 	slog.SetDefault(slog.New(ctxHandler))
 
 	port := flag.Int("port", 9001, "The port to listen on")
+	deploymentMode := flag.String("deployment-mode", "standalone", "Deployment mode ('standalone' or 'k8s')")
 	flag.Parse()
 
+	depMode := *deploymentMode
+	if envDepMode := os.Getenv("DEPLOYMENT_MODE"); envDepMode != "" {
+		depMode = envDepMode
+	}
+
+	if depMode != "standalone" && depMode != "k8s" {
+		slog.Error("Invalid deployment mode, must be 'standalone' or 'k8s'", "mode", depMode)
+		os.Exit(1)
+	}
 	ctx := context.Background()
 
 	registeredBackends := map[backends.BackendType]backends.Backend{
@@ -41,8 +51,8 @@ func main() {
 		backends.BackendNoop: backends.NewNoopBackend(),
 	}
 
-	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", *port)
-	if err := server.StartServer(ctx, *port, registeredBackends, backends.BackendCuda); err != nil {
+	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", *port, "deploymentMode", depMode)
+	if err := server.StartServer(ctx, *port, registeredBackends, backends.BackendCuda, depMode); err != nil {
 		slog.ErrorContext(ctx, "Failed to start server", "error", err)
 		os.Exit(1)
 	}
