@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package server_test
 
 import (
 	"context"
@@ -24,6 +24,7 @@ import (
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/server"
 	podutils "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -41,7 +42,7 @@ const bufSize = 1024 * 1024
 
 var (
 	lis          *bufconn.Listener
-	testServer   *Server
+	testServer   *server.Server
 	fakeClient   *fakek8s.Clientset
 	mockedPIDs   map[string][]int
 )
@@ -70,9 +71,9 @@ func initGRPCServer() {
 		"failing":            failingBackend,
 	}
 
-	testServer = NewServer(backendsMap, backends.BackendNoop)
+	testServer = server.NewServer(backendsMap, backends.BackendNoop)
 	pb.RegisterSnapshotAgentServiceServer(s, testServer)
-	grpc_health_v1.RegisterHealthServer(s, NewHealthServer(backendsMap, backends.BackendNoop))
+	grpc_health_v1.RegisterHealthServer(s, server.NewHealthServer(backendsMap, backends.BackendNoop))
 	go func() {
 		if err := s.Serve(lis); err != nil {
 			slog.Error("Server exited with error", "error", err)
@@ -137,8 +138,8 @@ func TestServer_Snapshot(t *testing.T) {
 	createFakePod(t, jobID, podName)
 	mockedPIDs[podName] = []int{123}
 
-	testServer.state.RegisterJob(jobID, "test-group")
-	if err := testServer.state.TransitionToRunning(jobID, []int{123}); err != nil {
+	testServer.InternalState().RegisterJob(jobID, "test-group")
+	if err := testServer.InternalState().TransitionToRunning(jobID, []int{123}); err != nil {
 		t.Fatalf("Failed to transition job to RUNNING: %v", err)
 	}
 
@@ -157,8 +158,8 @@ func TestServer_Snapshot(t *testing.T) {
 	createFakePod(t, jobIDNoGroup, podNameNoGroup)
 	mockedPIDs[podNameNoGroup] = []int{456}
 
-	testServer.state.RegisterJob(jobIDNoGroup, "")
-	if err := testServer.state.TransitionToRunning(jobIDNoGroup, []int{456}); err != nil {
+	testServer.InternalState().RegisterJob(jobIDNoGroup, "")
+	if err := testServer.InternalState().TransitionToRunning(jobIDNoGroup, []int{456}); err != nil {
 		t.Fatalf("Failed to transition job to RUNNING: %v", err)
 	}
 
@@ -188,8 +189,8 @@ func TestServer_Restore(t *testing.T) {
 		createFakePod(t, jobID, podName)
 		mockedPIDs[podName] = pids
 
-		testServer.state.RegisterJob(jobID, group)
-		if err := testServer.state.TransitionToRunning(jobID, pids); err != nil {
+		testServer.InternalState().RegisterJob(jobID, group)
+		if err := testServer.InternalState().TransitionToRunning(jobID, pids); err != nil {
 			t.Fatalf("Failed to transition job to RUNNING: %v", err)
 		}
 
@@ -206,7 +207,7 @@ func TestServer_Restore(t *testing.T) {
 		deadline := time.Now().Add(2 * time.Second)
 		saved := false
 		for time.Now().Before(deadline) {
-			statuses := testServer.state.GetJobStatus()
+			statuses := testServer.InternalState().GetJobStatus()
 			for _, s := range statuses {
 				if s.JobId == jobID && s.State == pb.JobState_JOB_STATE_SAVED {
 					saved = true
@@ -292,8 +293,8 @@ func TestServer_Status(t *testing.T) {
 	createFakePod(t, jobID, podName)
 	mockedPIDs[podName] = []int{789}
 
-	testServer.state.RegisterJob(jobID, "test-group")
-	if err := testServer.state.TransitionToRunning(jobID, []int{789}); err != nil {
+	testServer.InternalState().RegisterJob(jobID, "test-group")
+	if err := testServer.InternalState().TransitionToRunning(jobID, []int{789}); err != nil {
 		t.Fatalf("Failed to transition job to RUNNING: %v", err)
 	}
 
