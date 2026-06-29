@@ -1,3 +1,17 @@
+// Copyright 2025 The llm-d Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package server_test
 
 import (
@@ -11,8 +25,8 @@ import (
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/server"
-	podutils "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
-	googlegrpc "google.golang.org/grpc"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -27,10 +41,10 @@ import (
 const bufSize = 1024 * 1024
 
 var (
-	lis        *bufconn.Listener
-	testServer *server.Server
-	fakeClient *fakek8s.Clientset
-	mockedPIDs map[string][]int
+	lis          *bufconn.Listener
+	testServer   *server.Server
+	fakeClient   *fakek8s.Clientset
+	mockedPIDs   map[string][]int
 )
 
 type FailingBackend struct {
@@ -48,7 +62,7 @@ func initGRPCServer() {
 	os.Setenv("NODE_NAME", "test-node")
 
 	lis = bufconn.Listen(bufSize)
-	s := googlegrpc.NewServer()
+	s := grpc.NewServer()
 
 	noopBackend := backends.NewNoopBackend()
 	failingBackend := &FailingBackend{}
@@ -69,12 +83,12 @@ func initGRPCServer() {
 
 	// Set up mocks
 	fakeClient = fakek8s.NewSimpleClientset()
-	podutils.GetK8sClient = func() (kubernetes.Interface, error) {
+	utils.GetK8sClient = func() (kubernetes.Interface, error) {
 		return fakeClient, nil
 	}
 
 	mockedPIDs = make(map[string][]int)
-	podutils.GetPodPIDs = func(ctx context.Context, podName, namespace string) ([]int, error) {
+	utils.GetPodPIDs = func(ctx context.Context, podName, namespace string) ([]int, error) {
 		if pids, ok := mockedPIDs[podName]; ok {
 			return pids, nil
 		}
@@ -93,7 +107,7 @@ func createFakePod(t *testing.T, jobID, podName string) {
 			Name:      podName,
 			Namespace: "default",
 			Labels: map[string]string{
-				podutils.JobIDLabel: jobID,
+				utils.JobIDLabel: jobID,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -151,9 +165,9 @@ func prepareSavedJob(t *testing.T, client pb.SnapshotAgentServiceClient, ctx con
 func TestServer_Snapshot(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
-	conn, err := googlegrpc.NewClient("passthrough://bufnet",
-		googlegrpc.WithContextDialer(bufDialer),
-		googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(bufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
@@ -208,9 +222,9 @@ func TestServer_Snapshot(t *testing.T) {
 func TestServer_Restore(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
-	conn, err := googlegrpc.NewClient("passthrough://bufnet",
-		googlegrpc.WithContextDialer(bufDialer),
-		googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(bufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
@@ -259,9 +273,9 @@ func TestServer_Restore(t *testing.T) {
 func TestServer_GetOperation(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
-	conn, err := googlegrpc.NewClient("passthrough://bufnet",
-		googlegrpc.WithContextDialer(bufDialer),
-		googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(bufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
@@ -279,9 +293,9 @@ func TestServer_GetOperation(t *testing.T) {
 func TestServer_Status(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
-	conn, err := googlegrpc.NewClient("passthrough://bufnet",
-		googlegrpc.WithContextDialer(bufDialer),
-		googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(bufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
@@ -352,9 +366,9 @@ func TestServer_Status(t *testing.T) {
 func TestServer_Health(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
-	conn, err := googlegrpc.NewClient("passthrough://bufnet",
-		googlegrpc.WithContextDialer(bufDialer),
-		googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(bufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
