@@ -1,17 +1,3 @@
-// Copyright 2025 The llm-d Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package server_test
 
 import (
@@ -41,10 +27,10 @@ import (
 const bufSize = 1024 * 1024
 
 var (
-	lis          *bufconn.Listener
-	testServer   *server.Server
-	fakeClient   *fakek8s.Clientset
-	mockedPIDs   map[string][]int
+	lis        *bufconn.Listener
+	testServer *server.Server
+	fakeClient *fakek8s.Clientset
+	mockedPIDs map[string][]int
 )
 
 type FailingBackend struct {
@@ -120,6 +106,48 @@ func createFakePod(t *testing.T, jobID, podName string) {
 	}
 }
 
+// prepareSavedJob is a helper that registers a job, transitions it to RUNNING,
+// triggers a snapshot, and waits until the job state becomes SAVED.
+func prepareSavedJob(t *testing.T, client pb.SnapshotAgentServiceClient, ctx context.Context, jobID, group string, podName string, pids []int) {
+	t.Helper()
+	createFakePod(t, jobID, podName)
+	mockedPIDs[podName] = pids
+
+	testServer.InternalState().RegisterJob(jobID, group)
+	if err := testServer.InternalState().TransitionToRunning(jobID, pids); err != nil {
+		t.Fatalf("Failed to transition job to RUNNING: %v", err)
+	}
+
+	_, err := client.Snapshot(ctx, &pb.SnapshotRequest{
+		JobId:   jobID,
+		Group:   group,
+		Backend: pb.Backend_BACKEND_UNSPECIFIED,
+	})
+	if err != nil {
+		t.Fatalf("Failed to snapshot: %v", err)
+	}
+
+	// Wait for job to become SAVED
+	deadline := time.Now().Add(2 * time.Second)
+	saved := false
+	for time.Now().Before(deadline) {
+		statuses := testServer.InternalState().GetJobStatus()
+		for _, s := range statuses {
+			if s.JobId == jobID && s.State == pb.JobState_JOB_STATE_SAVED {
+				saved = true
+				break
+			}
+		}
+		if saved {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !saved {
+		t.Fatalf("Timeout waiting for job %s to become SAVED", jobID)
+	}
+}
+
 func TestServer_Snapshot(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
@@ -132,43 +160,48 @@ func TestServer_Snapshot(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
-	// Test with group
-	jobID := "test-job"
-	podName := "test-pod"
-	createFakePod(t, jobID, podName)
-	mockedPIDs[podName] = []int{123}
-
-	testServer.InternalState().RegisterJob(jobID, "test-group")
-	if err := testServer.InternalState().TransitionToRunning(jobID, []int{123}); err != nil {
-		t.Fatalf("Failed to transition job to RUNNING: %v", err)
+	tests := []struct {
+		name    string
+		jobID   string
+		group   string
+		podName string
+		pids    []int
+	}{
+		{
+			name:    "With Group",
+			jobID:   "test-job-snapshot-group",
+			group:   "test-group",
+			podName: "pod-snapshot-group",
+			pids:    []int{123},
+		},
+		{
+			name:    "Without Group",
+			jobID:   "test-job-snapshot-nogroup",
+			group:   "",
+			podName: "pod-snapshot-nogroup",
+			pids:    []int{456},
+		},
 	}
 
-	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
-		JobId:   jobID,
-		Group:   "test-group",
-		Backend: pb.Backend_BACKEND_UNSPECIFIED,
-	})
-	if err != nil {
-		t.Errorf("Expected success (using default noop backend), got error: %v", err)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			createFakePod(t, tc.jobID, tc.podName)
+			mockedPIDs[tc.podName] = tc.pids
 
-	// Test without group
-	jobIDNoGroup := "test-job-no-group"
-	podNameNoGroup := "test-pod-no-group"
-	createFakePod(t, jobIDNoGroup, podNameNoGroup)
-	mockedPIDs[podNameNoGroup] = []int{456}
+			testServer.InternalState().RegisterJob(tc.jobID, tc.group)
+			if err := testServer.InternalState().TransitionToRunning(tc.jobID, tc.pids); err != nil {
+				t.Fatalf("Failed to transition job to RUNNING: %v", err)
+			}
 
-	testServer.InternalState().RegisterJob(jobIDNoGroup, "")
-	if err := testServer.InternalState().TransitionToRunning(jobIDNoGroup, []int{456}); err != nil {
-		t.Fatalf("Failed to transition job to RUNNING: %v", err)
-	}
-
-	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
-		JobId:   jobIDNoGroup,
-		Backend: pb.Backend_BACKEND_UNSPECIFIED,
-	})
-	if err != nil {
-		t.Errorf("Expected success with empty group, got error: %v", err)
+			_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
+				JobId:   tc.jobID,
+				Group:   tc.group,
+				Backend: pb.Backend_BACKEND_UNSPECIFIED,
+			})
+			if err != nil {
+				t.Errorf("Expected success (using default noop backend), got error: %v", err)
+			}
+		})
 	}
 }
 
@@ -184,69 +217,42 @@ func TestServer_Restore(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
-	// Helper to snapshot and wait until SAVED
-	prepareSavedJob := func(jobID, group string, podName string, pids []int) {
-		createFakePod(t, jobID, podName)
-		mockedPIDs[podName] = pids
+	tests := []struct {
+		name    string
+		jobID   string
+		group   string
+		podName string
+		pids    []int
+	}{
+		{
+			name:    "With Group",
+			jobID:   "test-job-restore-group",
+			group:   "test-group",
+			podName: "pod-restore-group",
+			pids:    []int{123},
+		},
+		{
+			name:    "Without Group",
+			jobID:   "test-job-restore-nogroup",
+			group:   "",
+			podName: "pod-restore-nogroup",
+			pids:    []int{456},
+		},
+	}
 
-		testServer.InternalState().RegisterJob(jobID, group)
-		if err := testServer.InternalState().TransitionToRunning(jobID, pids); err != nil {
-			t.Fatalf("Failed to transition job to RUNNING: %v", err)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prepareSavedJob(t, client, ctx, tc.jobID, tc.group, tc.podName, tc.pids)
 
-		_, err := client.Snapshot(ctx, &pb.SnapshotRequest{
-			JobId:   jobID,
-			Group:   group,
-			Backend: pb.Backend_BACKEND_UNSPECIFIED,
+			_, err = client.Restore(ctx, &pb.RestoreRequest{
+				JobId:   tc.jobID,
+				Group:   tc.group,
+				Backend: pb.Backend_BACKEND_UNSPECIFIED,
+			})
+			if err != nil {
+				t.Errorf("Expected success (using default noop backend), got error: %v", err)
+			}
 		})
-		if err != nil {
-			t.Fatalf("Failed to snapshot: %v", err)
-		}
-
-		// Wait for job to become SAVED
-		deadline := time.Now().Add(2 * time.Second)
-		saved := false
-		for time.Now().Before(deadline) {
-			statuses := testServer.InternalState().GetJobStatus()
-			for _, s := range statuses {
-				if s.JobId == jobID && s.State == pb.JobState_JOB_STATE_SAVED {
-					saved = true
-					break
-				}
-			}
-			if saved {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		if !saved {
-			t.Fatalf("Timeout waiting for job %s to become SAVED", jobID)
-		}
-	}
-
-	// Test with group
-	jobID := "test-job-restore"
-	prepareSavedJob(jobID, "test-group", "pod-restore", []int{123})
-
-	_, err = client.Restore(ctx, &pb.RestoreRequest{
-		JobId:   jobID,
-		Group:   "test-group",
-		Backend: pb.Backend_BACKEND_UNSPECIFIED,
-	})
-	if err != nil {
-		t.Errorf("Expected success (using default noop backend), got error: %v", err)
-	}
-
-	// Test without group
-	jobIDNoGroup := "test-job-no-group-restore"
-	prepareSavedJob(jobIDNoGroup, "", "pod-no-group-restore", []int{456})
-
-	_, err = client.Restore(ctx, &pb.RestoreRequest{
-		JobId:   jobIDNoGroup,
-		Backend: pb.Backend_BACKEND_UNSPECIFIED,
-	})
-	if err != nil {
-		t.Errorf("Expected success with empty group, got error: %v", err)
 	}
 }
 
@@ -282,52 +288,64 @@ func TestServer_Status(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
-	// Clean up state from previous tests if any, or just check what's there.
-	initialResp, err := client.Status(ctx, &pb.StatusRequest{})
-	if err != nil {
-		t.Errorf("Expected success, got error: %v", err)
+	tests := []struct {
+		name          string
+		jobID         string
+		setup         func(t *testing.T, jobID string)
+		expectedState pb.JobState
+	}{
+		{
+			name:  "Job is IDLE",
+			jobID: "job-idle",
+			setup: func(t *testing.T, jobID string) {
+				testServer.InternalState().RegisterJob(jobID, "test-group")
+			},
+			expectedState: pb.JobState_JOB_STATE_IDLE,
+		},
+		{
+			name:  "Job is RUNNING",
+			jobID: "job-running",
+			setup: func(t *testing.T, jobID string) {
+				testServer.InternalState().RegisterJob(jobID, "test-group")
+				if err := testServer.InternalState().TransitionToRunning(jobID, []int{123}); err != nil {
+					t.Fatalf("Failed to transition job to RUNNING: %v", err)
+				}
+			},
+			expectedState: pb.JobState_JOB_STATE_RUNNING,
+		},
+		{
+			name:  "Job is SAVED",
+			jobID: "job-saved",
+			setup: func(t *testing.T, jobID string) {
+				prepareSavedJob(t, client, ctx, jobID, "test-group", "pod-status-saved", []int{456})
+			},
+			expectedState: pb.JobState_JOB_STATE_SAVED,
+		},
 	}
 
-	jobID := "test-job-status"
-	podName := "pod-status"
-	createFakePod(t, jobID, podName)
-	mockedPIDs[podName] = []int{789}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup(t, tc.jobID)
 
-	testServer.InternalState().RegisterJob(jobID, "test-group")
-	if err := testServer.InternalState().TransitionToRunning(jobID, []int{789}); err != nil {
-		t.Fatalf("Failed to transition job to RUNNING: %v", err)
-	}
-
-	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
-		JobId:   jobID,
-		Group:   "test-group",
-		Backend: pb.Backend_BACKEND_UNSPECIFIED,
-	})
-	if err != nil {
-		t.Fatalf("Snapshot failed: %v", err)
-	}
-
-	resp, err := client.Status(ctx, &pb.StatusRequest{})
-	if err != nil {
-		t.Errorf("Expected success, got error: %v", err)
-	}
-
-	if len(resp.JobStatuses) <= len(initialResp.JobStatuses) {
-		t.Errorf("Expected more jobs than initial %d, got %d", len(initialResp.JobStatuses), len(resp.JobStatuses))
-	}
-
-	found := false
-	for _, js := range resp.JobStatuses {
-		if js.JobId == jobID {
-			found = true
-			if js.State != pb.JobState_JOB_STATE_FAULTED && js.State != pb.JobState_JOB_STATE_SAVED && js.State != pb.JobState_JOB_STATE_TRANSITIONING {
-				t.Errorf("Unexpected job state: %v", js.State)
+			resp, err := client.Status(ctx, &pb.StatusRequest{})
+			if err != nil {
+				t.Errorf("Expected success, got error: %v", err)
 			}
-			break
-		}
-	}
-	if !found {
-		t.Errorf("Job %s not found in status response", jobID)
+
+			found := false
+			for _, js := range resp.JobStatuses {
+				if js.JobId == tc.jobID {
+					found = true
+					if js.State != tc.expectedState {
+						t.Errorf("Expected job state %v, got %v", tc.expectedState, js.State)
+					}
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Job %s not found in status response", tc.jobID)
+			}
+		})
 	}
 }
 
