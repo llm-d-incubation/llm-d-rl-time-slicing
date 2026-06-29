@@ -245,8 +245,24 @@ func StartServer(
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
+	// 1. Initialize K8s Client
+	k8sClient, err := podutils.GetK8sClient()
+	if err != nil {
+		return fmt.Errorf("failed to get K8s client: %w", err)
+	}
+
+	// 2. Create Server (which creates StateManager internally)
+	srv := NewServer(backendMap, defaultBackend)
+
+	// 3. Start the Watcher internally
+	watcher, err := NewWatcher(k8sClient, srv.state)
+	if err != nil {
+		return fmt.Errorf("failed to create watcher: %w", err)
+	}
+	watcher.Start(ctx)
+
 	s := grpc.NewServer()
-	pb.RegisterSnapshotAgentServiceServer(s, NewServer(backendMap, defaultBackend))
+	pb.RegisterSnapshotAgentServiceServer(s, srv)
 	grpc_health_v1.RegisterHealthServer(s, NewHealthServer(backendMap, defaultBackend))
 
 	slog.InfoContext(ctx, "Starting gRPC server", "port", port)
@@ -255,6 +271,7 @@ func StartServer(
 	}
 	return nil
 }
+
 
 //nolint:gocritic // The project configuration bans named returns, conflicting with this rule
 func getPIDsFromPods(ctx context.Context, pods []v1.Pod) ([]int, []string, error) {

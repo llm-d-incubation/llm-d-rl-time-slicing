@@ -63,10 +63,15 @@ func TestStartSnapshot(t *testing.T) {
 		finalState    pb.JobState
 	}{
 		{
-			name:         "Success from IDLE",
-			initialState: pb.JobState_JOB_STATE_IDLE,
+			name:         "Success from RUNNING",
+			initialState: pb.JobState_JOB_STATE_RUNNING,
 			expectOp:     true,
 			finalState:   pb.JobState_JOB_STATE_SAVED,
+		},
+		{
+			name:          "Fails when IDLE",
+			initialState:  pb.JobState_JOB_STATE_IDLE,
+			expectErrCode: codes.FailedPrecondition,
 		},
 		{
 			name:          "Fails when TRANSITIONING",
@@ -80,11 +85,12 @@ func TestStartSnapshot(t *testing.T) {
 		},
 		{
 			name:         "Worker failure leads to FAULTED",
-			initialState: pb.JobState_JOB_STATE_IDLE,
+			initialState: pb.JobState_JOB_STATE_RUNNING,
 			workerErr:    errors.New("worker failed"),
 			expectOp:     true,
 			finalState:   pb.JobState_JOB_STATE_FAULTED,
 		},
+
 	}
 
 	for _, tc := range tests {
@@ -322,7 +328,13 @@ func TestConcurrencyControl(t *testing.T) {
 		return nil
 	}
 
+	sm.InternalMu().Lock()
+	job := sm.InternalGetOrCreateJob(jobID, group)
+	job.State = pb.JobState_JOB_STATE_RUNNING
+	sm.InternalMu().Unlock()
+
 	opID1, err := sm.StartSnapshot(jobID, group, slowWorker)
+
 	if err != nil {
 		t.Fatalf("Failed to start first operation: %v", err)
 	}

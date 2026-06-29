@@ -73,7 +73,12 @@ func GetLocalPods(ctx context.Context, jobID string) ([]corev1.Pod, error) {
 }
 
 // GetPodPIDs returns the host-namespace PIDs of all CUDA-context-holding processes belonging to the specified pod.
-func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
+var GetPodPIDs = func(ctx context.Context, podName, namespace string) ([]int, error) {
+	return getPodPIDsInternal(ctx, podName, namespace)
+}
+
+func getPodPIDsInternal(ctx context.Context, podName, namespace string) ([]int, error) {
+
 	// 1. Get the pod UID
 	podUID, err := getPodUID(ctx, podName, namespace)
 	if err != nil {

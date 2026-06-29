@@ -70,6 +70,14 @@ func (sm *StateManager) getOrCreateJob(jobID, group string) *Job {
 	return job
 }
 
+// RegisterJob registers a new job with IDLE state if it doesn't already exist.
+func (sm *StateManager) RegisterJob(jobID, group string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	_ = sm.getOrCreateJob(jobID, group)
+}
+
+
 // StartSnapshot initiates a snapshot operation if the job state allows it.
 func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) (string, error) {
 	sm.mu.Lock()
@@ -84,10 +92,11 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) 
 		return "", status.Errorf(codes.Aborted, "job %s is already transitioning", jobID)
 	}
 
-	// 2. Fault Protection
-	if job.State == pb.JobState_JOB_STATE_FAULTED {
-		return "", status.Errorf(codes.FailedPrecondition, "job %s is in FAULTED state", jobID)
+	// 2. State Validation: Only allow snapshotting of RUNNING jobs
+	if job.State != pb.JobState_JOB_STATE_RUNNING {
+		return "", status.Errorf(codes.FailedPrecondition, "cannot snapshot job %s in state %s (must be RUNNING)", jobID, job.State)
 	}
+
 
 	opID := uuid.New().String()
 	op := &Operation{
@@ -149,10 +158,11 @@ func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (
 		return "", status.Errorf(codes.Aborted, "job %s is already transitioning", jobID)
 	}
 
-	// 3. Fault Protection
-	if job.State == pb.JobState_JOB_STATE_FAULTED {
-		return "", status.Errorf(codes.FailedPrecondition, "job %s is in FAULTED state", jobID)
+	// 3. State Validation: Only allow restoring of SAVED jobs
+	if job.State != pb.JobState_JOB_STATE_SAVED {
+		return "", status.Errorf(codes.FailedPrecondition, "cannot restore job %s in state %s (must be SAVED)", jobID, job.State)
 	}
+
 
 	opID := uuid.New().String()
 	op := &Operation{
@@ -261,3 +271,26 @@ func (sm *StateManager) GetJobPIDs(jobID string) ([]int, error) {
 	copy(pids, job.PIDs)
 	return pids, nil
 }
+
+// TransitionToRunning transitions a job from IDLE to RUNNING and associates PIDs.
+func (sm *StateManager) TransitionToRunning(jobID string, pids []int) error {
+	sm.mu.Lock()
+	job, ok := sm.jobs[jobID]
+	sm.mu.Unlock()
+
+	if !ok {
+		return status.Errorf(codes.NotFound, "job %s not found", jobID)
+	}
+
+	job.mu.Lock()
+	defer job.mu.Unlock()
+
+	if job.State != pb.JobState_JOB_STATE_IDLE {
+		return status.Errorf(codes.FailedPrecondition, "job %s is not in IDLE state (current: %s)", jobID, job.State)
+	}
+
+	job.State = pb.JobState_JOB_STATE_RUNNING
+	job.PIDs = pids
+	return nil
+}
+
