@@ -63,7 +63,7 @@ func NewWatcher(clientset kubernetes.Interface, state *sm.StateManager) (*Watche
 	}
 
 	_, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: w.handlePodAdd,
+		AddFunc:    w.handlePodAdd,
 		UpdateFunc: w.handlePodUpdate,
 	})
 	if err != nil {

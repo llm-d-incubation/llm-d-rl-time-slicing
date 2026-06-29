@@ -272,7 +272,6 @@ func StartServer(
 	return nil
 }
 
-
 //nolint:gocritic // The project configuration bans named returns, conflicting with this rule
 func getPIDsFromPods(ctx context.Context, pods []v1.Pod) ([]int, []string, error) {
 	var allPIDs []int

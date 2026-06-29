@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package server
+package server_test
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/server"
 	sm "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/state-machine"
 	podutils "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 	corev1 "k8s.io/api/core/v1"
@@ -154,7 +155,7 @@ func TestWatcher(t *testing.T) {
 			}
 
 			state := sm.NewStateManager()
-			watcher, err := NewWatcher(fakeClient, state)
+			watcher, err := server.NewWatcher(fakeClient, state)
 			if err != nil {
 				t.Fatalf("Failed to create watcher: %v", err)
 			}

@@ -77,7 +77,6 @@ func (sm *StateManager) RegisterJob(jobID, group string) {
 	_ = sm.getOrCreateJob(jobID, group)
 }
 
-
 // StartSnapshot initiates a snapshot operation if the job state allows it.
 func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) (string, error) {
 	sm.mu.Lock()
@@ -96,7 +95,6 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) 
 	if job.State != pb.JobState_JOB_STATE_RUNNING {
 		return "", status.Errorf(codes.FailedPrecondition, "cannot snapshot job %s in state %s (must be RUNNING)", jobID, job.State)
 	}
-
 
 	opID := uuid.New().String()
 	op := &Operation{
@@ -162,7 +160,6 @@ func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (
 	if job.State != pb.JobState_JOB_STATE_SAVED {
 		return "", status.Errorf(codes.FailedPrecondition, "cannot restore job %s in state %s (must be SAVED)", jobID, job.State)
 	}
-
 
 	opID := uuid.New().String()
 	op := &Operation{
@@ -293,4 +290,3 @@ func (sm *StateManager) TransitionToRunning(jobID string, pids []int) error {
 	job.PIDs = pids
 	return nil
 }
-

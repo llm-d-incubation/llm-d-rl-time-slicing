@@ -90,7 +90,6 @@ func TestStartSnapshot(t *testing.T) {
 			expectOp:     true,
 			finalState:   pb.JobState_JOB_STATE_FAULTED,
 		},
-
 	}
 
 	for _, tc := range tests {

@@ -41,10 +41,10 @@ import (
 const bufSize = 1024 * 1024
 
 var (
-	lis          *bufconn.Listener
-	testServer   *server.Server
-	fakeClient   *fakek8s.Clientset
-	mockedPIDs   map[string][]int
+	lis        *bufconn.Listener
+	testServer *server.Server
+	fakeClient *fakek8s.Clientset
+	mockedPIDs map[string][]int
 )
 
 type FailingBackend struct {
@@ -100,7 +100,7 @@ func bufDialer(context.Context, string) (net.Conn, error) {
 	return lis.Dial()
 }
 
-func createFakePod(t *testing.T, jobID, podName string) {
+func createFakePod(ctx context.Context, t *testing.T, jobID, podName string) {
 	t.Helper()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -114,7 +114,7 @@ func createFakePod(t *testing.T, jobID, podName string) {
 			NodeName: "test-node",
 		},
 	}
-	_, err := fakeClient.CoreV1().Pods("default").Create(context.Background(), pod, metav1.CreateOptions{})
+	_, err := fakeClient.CoreV1().Pods("default").Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create fake pod: %v", err)
 	}
@@ -122,9 +122,15 @@ func createFakePod(t *testing.T, jobID, podName string) {
 
 // prepareSavedJob is a helper that registers a job, transitions it to RUNNING,
 // triggers a snapshot, and waits until the job state becomes SAVED.
-func prepareSavedJob(t *testing.T, client pb.SnapshotAgentServiceClient, ctx context.Context, jobID, group string, podName string, pids []int) {
+func prepareSavedJob(
+	t *testing.T,
+	client pb.SnapshotAgentServiceClient,
+	ctx context.Context,
+	jobID, group, podName string,
+	pids []int,
+) {
 	t.Helper()
-	createFakePod(t, jobID, podName)
+	createFakePod(ctx, t, jobID, podName)
 	mockedPIDs[podName] = pids
 
 	testServer.InternalState().RegisterJob(jobID, group)
@@ -199,7 +205,7 @@ func TestServer_Snapshot(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			createFakePod(t, tc.jobID, tc.podName)
+			createFakePod(ctx, t, tc.jobID, tc.podName)
 			mockedPIDs[tc.podName] = tc.pids
 
 			testServer.InternalState().RegisterJob(tc.jobID, tc.group)
@@ -312,6 +318,7 @@ func TestServer_Status(t *testing.T) {
 			name:  "Job is IDLE",
 			jobID: "job-idle",
 			setup: func(t *testing.T, jobID string) {
+				t.Helper()
 				testServer.InternalState().RegisterJob(jobID, "test-group")
 			},
 			expectedState: pb.JobState_JOB_STATE_IDLE,
@@ -320,6 +327,7 @@ func TestServer_Status(t *testing.T) {
 			name:  "Job is RUNNING",
 			jobID: "job-running",
 			setup: func(t *testing.T, jobID string) {
+				t.Helper()
 				testServer.InternalState().RegisterJob(jobID, "test-group")
 				if err := testServer.InternalState().TransitionToRunning(jobID, []int{123}); err != nil {
 					t.Fatalf("Failed to transition job to RUNNING: %v", err)
@@ -331,6 +339,7 @@ func TestServer_Status(t *testing.T) {
 			name:  "Job is SAVED",
 			jobID: "job-saved",
 			setup: func(t *testing.T, jobID string) {
+				t.Helper()
 				prepareSavedJob(t, client, ctx, jobID, "test-group", "pod-status-saved", []int{456})
 			},
 			expectedState: pb.JobState_JOB_STATE_SAVED,
