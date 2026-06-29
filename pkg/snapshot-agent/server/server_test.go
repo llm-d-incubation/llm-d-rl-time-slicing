@@ -100,13 +100,13 @@ func initGRPCServer() {
 	}
 }
 
-
 func bufDialer(context.Context, string) (net.Conn, error) {
 	return lis.Dial()
 }
 
 func createFakePod(ctx context.Context, t *testing.T, jobID, podName string) {
 	t.Helper()
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
