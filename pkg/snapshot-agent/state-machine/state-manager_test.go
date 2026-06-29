@@ -333,7 +333,6 @@ func TestConcurrencyControl(t *testing.T) {
 	sm.InternalMu().Unlock()
 
 	opID1, err := sm.StartSnapshot(jobID, group, slowWorker)
-
 	if err != nil {
 		t.Fatalf("Failed to start first operation: %v", err)
 	}
