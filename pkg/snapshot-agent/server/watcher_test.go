@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -29,146 +30,198 @@ import (
 	fakek8s "k8s.io/client-go/kubernetes/fake"
 )
 
-func TestWatcher_RegisterJobOnAdd(t *testing.T) {
+func TestWatcher(t *testing.T) {
+	// Save original functions and restore after tests
+	origGetK8sClient := podutils.GetK8sClient
+	origGetPodPIDs := podutils.GetPodPIDs
+	defer func() {
+		podutils.GetK8sClient = origGetK8sClient
+		podutils.GetPodPIDs = origGetPodPIDs
+	}()
+
 	os.Setenv("NODE_NAME", "test-node")
 	defer os.Unsetenv("NODE_NAME")
 
-	fakeClient := fakek8s.NewSimpleClientset()
-	podutils.GetK8sClient = func() (kubernetes.Interface, error) {
-		return fakeClient, nil
-	}
-
-	state := sm.NewStateManager()
-	watcher, err := NewWatcher(fakeClient, state)
-	if err != nil {
-		t.Fatalf("Failed to create watcher: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	watcher.Start(ctx)
-
-	// Create a pod with the job label
-	jobID := "test-job-watcher"
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-pod",
-			Namespace: "default",
-			Labels: map[string]string{
-				podutils.JobIDLabel: jobID,
-				"timeslice.io/group": "test-group",
+	tests := []struct {
+		name          string
+		pods          []*corev1.Pod
+		mockPIDs      func(ctx context.Context, podName, namespace string) ([]int, error)
+		expectedState map[string]pb.JobState // jobID -> expected state
+		expectedPIDs  map[string][]int       // jobID -> expected PIDs
+		timeout       time.Duration
+	}{
+		{
+			name: "Register Job on Pod Add (IDLE)",
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "pod-1",
+						Namespace: "default",
+						Labels: map[string]string{
+							podutils.JobIDLabel: "job-1",
+						},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+					},
+				},
 			},
+			mockPIDs: func(ctx context.Context, podName, namespace string) ([]int, error) {
+				return nil, nil // No PIDs yet
+			},
+			expectedState: map[string]pb.JobState{
+				"job-1": pb.JobState_JOB_STATE_IDLE,
+			},
+			timeout: 2 * time.Second,
 		},
-		Spec: corev1.PodSpec{
-			NodeName: "test-node",
+		{
+			name: "Transition to RUNNING on GPU Activity",
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "pod-2",
+						Namespace: "default",
+						Labels: map[string]string{
+							podutils.JobIDLabel: "job-2",
+						},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+					},
+				},
+			},
+			mockPIDs: func(ctx context.Context, podName, namespace string) ([]int, error) {
+				return []int{123, 456}, nil
+			},
+			expectedState: map[string]pb.JobState{
+				"job-2": pb.JobState_JOB_STATE_RUNNING,
+			},
+			expectedPIDs: map[string][]int{
+				"job-2": {123, 456},
+			},
+			timeout: 3 * time.Second,
+		},
+		{
+			name: "Ignore Pod on Different Node",
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "pod-3",
+						Namespace: "default",
+						Labels: map[string]string{
+							podutils.JobIDLabel: "job-3",
+						},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "other-node",
+					},
+				},
+			},
+			expectedState: map[string]pb.JobState{}, // No jobs expected
+			timeout:       1 * time.Second,
+		},
+		{
+			name: "Ignore Pod without Job Label",
+			pods: []*corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "pod-4",
+						Namespace: "default",
+					},
+					Spec: corev1.PodSpec{
+						NodeName: "test-node",
+					},
+				},
+			},
+			expectedState: map[string]pb.JobState{}, // No jobs expected
+			timeout:       1 * time.Second,
 		},
 	}
 
-	_, err = fakeClient.CoreV1().Pods("default").Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
-		t.Fatalf("Failed to create pod: %v", err)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeClient := fakek8s.NewSimpleClientset()
+			podutils.GetK8sClient = func() (kubernetes.Interface, error) {
+				return fakeClient, nil
+			}
 
-	// Verify job is registered as IDLE
-	deadline := time.Now().Add(2 * time.Second)
-	registered := false
-	for time.Now().Before(deadline) {
-		statuses := state.GetJobStatus()
-		for _, s := range statuses {
-			if s.JobId == jobID {
-				if s.State != pb.JobState_JOB_STATE_IDLE {
-					t.Errorf("Expected job state IDLE, got %v", s.State)
+			if tc.mockPIDs != nil {
+				podutils.GetPodPIDs = tc.mockPIDs
+			} else {
+				podutils.GetPodPIDs = func(ctx context.Context, podName, namespace string) ([]int, error) {
+					return nil, nil
 				}
-				registered = true
-				break
 			}
-		}
-		if registered {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 
-	if !registered {
-		t.Error("Timeout waiting for job to be registered")
-	}
-}
-
-func TestWatcher_DetectionLoop(t *testing.T) {
-	os.Setenv("NODE_NAME", "test-node")
-	defer os.Unsetenv("NODE_NAME")
-
-	fakeClient := fakek8s.NewSimpleClientset()
-	podutils.GetK8sClient = func() (kubernetes.Interface, error) {
-		return fakeClient, nil
-	}
-
-	// Mock GetPodPIDs
-	mockedPIDs := []int{123, 456}
-	podutils.GetPodPIDs = func(ctx context.Context, podName, namespace string) ([]int, error) {
-		return mockedPIDs, nil
-	}
-
-	state := sm.NewStateManager()
-	watcher, err := NewWatcher(fakeClient, state)
-	if err != nil {
-		t.Fatalf("Failed to create watcher: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	watcher.Start(ctx)
-
-	// Create a pod with the job label
-	jobID := "test-job-detect"
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-pod-detect",
-			Namespace: "default",
-			Labels: map[string]string{
-				podutils.JobIDLabel: jobID,
-			},
-		},
-		Spec: corev1.PodSpec{
-			NodeName: "test-node",
-		},
-	}
-
-	_, err = fakeClient.CoreV1().Pods("default").Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
-		t.Fatalf("Failed to create pod: %v", err)
-	}
-
-	// Wait for job to transition to RUNNING
-	deadline := time.Now().Add(3 * time.Second)
-	running := false
-	for time.Now().Before(deadline) {
-		statuses := state.GetJobStatus()
-		for _, s := range statuses {
-			if s.JobId == jobID && s.State == pb.JobState_JOB_STATE_RUNNING {
-				running = true
-				break
+			state := sm.NewStateManager()
+			watcher, err := NewWatcher(fakeClient, state)
+			if err != nil {
+				t.Fatalf("Failed to create watcher: %v", err)
 			}
-		}
-		if running {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
 
-	if !running {
-		t.Error("Timeout waiting for job to transition to RUNNING")
-	}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
-	// Verify PIDs are associated
-	pids, err := state.GetJobPIDs(jobID)
-	if err != nil {
-		t.Fatalf("Failed to get job PIDs: %v", err)
-	}
+			watcher.Start(ctx)
 
-	if len(pids) != 2 || pids[0] != 123 || pids[1] != 456 {
-		t.Errorf("Unexpected PIDs: %v", pids)
+			// Create pods
+			for _, pod := range tc.pods {
+				_, err = fakeClient.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+				if err != nil {
+					t.Fatalf("Failed to create pod %s: %v", pod.Name, err)
+				}
+			}
+
+			// Wait and verify states
+			deadline := time.Now().Add(tc.timeout)
+			success := false
+			for time.Now().Before(deadline) {
+				success = true
+				statuses := state.GetJobStatus()
+
+				// Check if all expected jobs are in the expected state
+				for expectedJobID, expectedState := range tc.expectedState {
+					found := false
+					for _, s := range statuses {
+						if s.JobId == expectedJobID {
+							found = true
+							if s.State != expectedState {
+								success = false
+							}
+							break
+						}
+					}
+					if !found {
+						success = false
+					}
+				}
+
+				// If we expected no jobs, check that len is 0
+				if len(tc.expectedState) == 0 && len(statuses) != 0 {
+					success = false
+				}
+
+				if success {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+
+			if !success {
+				t.Errorf("Timeout waiting for expected states. Current: %+v", state.GetJobStatus())
+			}
+
+			// Verify PIDs if expected
+			for jobID, expectedPIDs := range tc.expectedPIDs {
+				pids, err := state.GetJobPIDs(jobID)
+				if err != nil {
+					t.Errorf("Failed to get PIDs for job %s: %v", jobID, err)
+					continue
+				}
+				if !reflect.DeepEqual(pids, expectedPIDs) {
+					t.Errorf("Job %s PIDs: expected %v, got %v", jobID, expectedPIDs, pids)
+				}
+			}
+		})
 	}
 }
