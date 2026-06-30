@@ -1,18 +1,4 @@
-// Copyright 2025 The llm-d Authors.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-package server_test
+package server
 
 import (
 	"context"
@@ -25,7 +11,6 @@ import (
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
-	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -43,7 +28,7 @@ const bufSize = 1024 * 1024
 
 var (
 	lis          *bufconn.Listener
-	testServer   *server.Server
+	testServer   *Server
 	fakeClient   *fakek8s.Clientset
 	mockedPIDs   map[string][]int
 	mockedPIDsMu sync.RWMutex
@@ -73,9 +58,9 @@ func initGRPCServer() {
 		"failing":            failingBackend,
 	}
 
-	testServer = server.NewServer(backendsMap, backends.BackendNoop)
+	testServer = NewServer(backendsMap, backends.BackendNoop)
 	pb.RegisterSnapshotAgentServiceServer(s, testServer)
-	grpc_health_v1.RegisterHealthServer(s, server.NewHealthServer(backendsMap, backends.BackendNoop))
+	grpc_health_v1.RegisterHealthServer(s, NewHealthServer(backendsMap, backends.BackendNoop))
 	go func() {
 		if err := s.Serve(lis); err != nil {
 			slog.Error("Server exited with error", "error", err)
@@ -140,9 +125,9 @@ func prepareSavedJob(
 	mockedPIDs[podName] = pids
 	mockedPIDsMu.Unlock()
 
-	testServer.InternalState().RegisterJob(jobID, group)
+	testServer.state.RegisterJob(jobID, group)
 
-	if err := testServer.InternalState().TransitionToRunning(jobID, pids); err != nil {
+	if err := testServer.state.TransitionToRunning(jobID, pids); err != nil {
 		t.Fatalf("Failed to transition job to RUNNING: %v", err)
 	}
 
@@ -159,7 +144,7 @@ func prepareSavedJob(
 	deadline := time.Now().Add(2 * time.Second)
 	saved := false
 	for time.Now().Before(deadline) {
-		statuses := testServer.InternalState().GetJobStatus()
+		statuses := testServer.state.GetJobStatus()
 		for _, s := range statuses {
 			if s.JobId == jobID && s.State == pb.JobState_JOB_STATE_SAVED {
 				saved = true
@@ -218,9 +203,9 @@ func TestServer_Snapshot(t *testing.T) {
 			mockedPIDs[tc.podName] = tc.pids
 			mockedPIDsMu.Unlock()
 
-			testServer.InternalState().RegisterJob(tc.jobID, tc.group)
+			testServer.state.RegisterJob(tc.jobID, tc.group)
 
-			if err := testServer.InternalState().TransitionToRunning(tc.jobID, tc.pids); err != nil {
+			if err := testServer.state.TransitionToRunning(tc.jobID, tc.pids); err != nil {
 				t.Fatalf("Failed to transition job to RUNNING: %v", err)
 			}
 
@@ -330,7 +315,7 @@ func TestServer_Status(t *testing.T) {
 			jobID: "job-idle",
 			setup: func(t *testing.T, jobID string) {
 				t.Helper()
-				testServer.InternalState().RegisterJob(jobID, "test-group")
+				testServer.state.RegisterJob(jobID, "test-group")
 			},
 			expectedState: pb.JobState_JOB_STATE_IDLE,
 		},
@@ -339,8 +324,8 @@ func TestServer_Status(t *testing.T) {
 			jobID: "job-running",
 			setup: func(t *testing.T, jobID string) {
 				t.Helper()
-				testServer.InternalState().RegisterJob(jobID, "test-group")
-				if err := testServer.InternalState().TransitionToRunning(jobID, []int{123}); err != nil {
+				testServer.state.RegisterJob(jobID, "test-group")
+				if err := testServer.state.TransitionToRunning(jobID, []int{123}); err != nil {
 					t.Fatalf("Failed to transition job to RUNNING: %v", err)
 				}
 			},
