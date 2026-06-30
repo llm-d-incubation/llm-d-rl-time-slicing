@@ -27,6 +27,7 @@ type Backend int32
 const (
 	Backend_BACKEND_UNSPECIFIED Backend = 0
 	Backend_BACKEND_CUDA        Backend = 1
+	Backend_BACKEND_GPU_GCR     Backend = 2
 )
 
 // Enum value maps for Backend.
@@ -34,10 +35,12 @@ var (
 	Backend_name = map[int32]string{
 		0: "BACKEND_UNSPECIFIED",
 		1: "BACKEND_CUDA",
+		2: "BACKEND_GPU_GCR",
 	}
 	Backend_value = map[string]int32{
 		"BACKEND_UNSPECIFIED": 0,
 		"BACKEND_CUDA":        1,
+		"BACKEND_GPU_GCR":     2,
 	}
 )
 
@@ -179,10 +182,13 @@ func (JobState) EnumDescriptor() ([]byte, []int) {
 }
 
 type SnapshotRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Group         string                 `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
-	Backend       Backend                `protobuf:"varint,3,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// job_id is the unique identifier for the job. If group is specified,
+	// job_id should be unique within that group.
+	JobId string `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// group is an optional identifier for a set of related jobs.
+	Group         string  `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
+	Backend       Backend `protobuf:"varint,3,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -283,10 +289,13 @@ func (x *SnapshotResponse) GetOperationId() string {
 }
 
 type RestoreRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Group         string                 `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
-	Backend       Backend                `protobuf:"varint,3,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// job_id is the unique identifier for the job. If group is specified,
+	// job_id should be unique within that group.
+	JobId string `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// group is an optional identifier for a set of related jobs.
+	Group         string  `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
+	Backend       Backend `protobuf:"varint,3,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -748,10 +757,11 @@ const file_snapshot_agent_proto_rawDesc = "" +
 	"\x12memory_total_bytes\x18\x03 \x01(\x03R\x10memoryTotalBytes\"\xb6\x01\n" +
 	"\x0eStatusResponse\x12E\n" +
 	"\fjob_statuses\x18\x01 \x03(\v2\".snapshot_agent.v1alpha1.JobStatusR\vjobStatuses\x12]\n" +
-	"\x14accelerator_statuses\x18\x02 \x03(\v2*.snapshot_agent.v1alpha1.AcceleratorStatusR\x13acceleratorStatuses*4\n" +
+	"\x14accelerator_statuses\x18\x02 \x03(\v2*.snapshot_agent.v1alpha1.AcceleratorStatusR\x13acceleratorStatuses*I\n" +
 	"\aBackend\x12\x17\n" +
 	"\x13BACKEND_UNSPECIFIED\x10\x00\x12\x10\n" +
-	"\fBACKEND_CUDA\x10\x01*\x8d\x01\n" +
+	"\fBACKEND_CUDA\x10\x01\x12\x13\n" +
+	"\x0fBACKEND_GPU_GCR\x10\x02*\x8d\x01\n" +
 	"\x0fOperationStatus\x12 \n" +
 	"\x1cOPERATION_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18OPERATION_STATUS_PENDING\x10\x01\x12\x1d\n" +

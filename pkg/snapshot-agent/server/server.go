@@ -41,6 +41,8 @@ func (s *Server) getBackendType(backend pb.Backend) backends.BackendType {
 	switch backend {
 	case pb.Backend_BACKEND_CUDA:
 		return backends.BackendCuda
+	case pb.Backend_BACKEND_GPU_GCR:
+		return backends.BackendGpuGcr
 	default:
 		return s.defaultBackend
 	}
@@ -62,8 +64,16 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	}
 
 	bgCtx := context.WithoutCancel(ctx)
-	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() error {
+	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() (err error) {
 		slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
+		defer func() {
+			if err != nil {
+				slog.ErrorContext(bgCtx, "Background: Snapshot failed", "error", err)
+			} else {
+				slog.InfoContext(bgCtx, "Background: Snapshot complete")
+			}
+		}()
+
 		pods, err := podutils.GetLocalPods(bgCtx, req.GetJobId())
 		if err != nil {
 			return fmt.Errorf("failed to get local pods: %w", err)
@@ -115,8 +125,15 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 	}
 
 	bgCtx := context.WithoutCancel(ctx)
-	opID, err := s.state.StartRestore(req.GetJobId(), req.GetGroup(), func() error {
+	opID, err := s.state.StartRestore(req.GetJobId(), req.GetGroup(), func() (err error) {
 		slog.InfoContext(bgCtx, "Background: Starting restore", "backend", backendType)
+		defer func() {
+			if err != nil {
+				slog.ErrorContext(bgCtx, "Background: Restore failed", "error", err)
+			} else {
+				slog.InfoContext(bgCtx, "Background: Restore complete")
+			}
+		}()
 
 		pids, err := s.state.GetJobPIDs(req.GetJobId())
 		if err != nil {

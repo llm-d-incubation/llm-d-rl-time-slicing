@@ -5,7 +5,7 @@ import warnings
 
 from timeslice.snapshot_agent import snapshot_agent_pb2 as timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2
 
-GRPC_GENERATED_VERSION = '1.81.1'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

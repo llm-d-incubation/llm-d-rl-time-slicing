@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sampler-deployment
+  labels:
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sampler
+  template:
+    metadata:
+      labels:
+        app: sampler
+        snapshot-agent: "true"
+        timeslice.io/job-id: "test-job"
+    spec:
+      hostIPC: true
+      hostPID: true
+      containers:
+      - name: sampler
+        image: <image-built-with-docker> # Replace with your actual image tag
+        command: ["python3"]
+        args: ["timeslice_sampler.py"]
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: AGENT_ENDPOINT
+          value: "$(NODE_IP):9001"
+        - name: JOB_ID
+          value: "test-job"
+        - name: GROUP
+          value: "default"
+        - name: INTERVAL
+          value: "30"
+        - name: VLLM_MODEL
+          value: "Qwen/Qwen3-0.6B"
+        - name: HF_TOKEN
+          value: <YOUR_HF_TOKEN>
+        - name: TENSOR_PARALLEL_SIZE
+          value: "1"
+        - name: GPU_VENDOR
+          value: "NVIDIA"
+        - name: GPUCR_NUM_THREADS
+          value: "16"
+        - name: GPUCR_SHM_GB
+          value: "60"
+        - name: GPUCR_STAGING_MB
+          value: "1024"
+        - name: LD_PRELOAD
+          value: "/usr/local/lib/vGPU-NVIDIA.so"
+        - name: LD_LIBRARY_PATH
+          value: "/usr/local/cuda/lib64"
+        - name: BACKEND
+          value: "GPU_GCR"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        volumeMounts:
+        - name: huge-ckpt
+          mountPath: /mnt/huge-ckpt
+        resources:
+          claims:
+            - name: gpus-for-pod
+      volumes:
+      - name: huge-ckpt
+        hostPath:
+          path: /var/tmp/huge-ckpt
+          type: DirectoryOrCreate
+      resourceClaims:
+      - name: gpus-for-pod # This is the internal name used by the container
+        resourceClaimName: shared-two-gpus-claim # References the standalone claim
+      tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"

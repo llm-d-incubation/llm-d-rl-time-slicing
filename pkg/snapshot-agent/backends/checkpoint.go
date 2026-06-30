@@ -10,6 +10,8 @@ const (
 	BackendCuda BackendType = "cuda"
 	// BackendNoop is a dummy backend for testing.
 	BackendNoop BackendType = "noop"
+	// BackendGpuGcr is the GPU-GCR-based checkpointing backend.
+	BackendGpuGcr BackendType = "gpu_gcr"
 )
 
 // Backend defines the interface for checkpoint and restore operations.
