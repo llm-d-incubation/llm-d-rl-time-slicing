@@ -109,7 +109,7 @@ func (w *Watcher) registerPodJob(pod *corev1.Pod) {
 	}
 
 	// Group can be optional, check if there is a group label
-	group := pod.Labels["timeslice.io/group"]
+	group := pod.Labels[podutils.GroupLabel]
 
 	slog.Info("Detected pod for job", "pod", pod.Name, "jobID", jobID, "group", group)
 	w.state.RegisterJob(jobID, group)
