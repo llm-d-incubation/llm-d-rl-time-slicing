@@ -1497,3 +1497,280 @@ func TestController_Reconcile_DeduceLoadedJob_NonExistentButOtherRunning(t *test
 		t.Errorf("Expected state to be STATE_IDLE_YIELDED, got %v", state)
 	}
 }
+
+func TestController_PeriodicResync(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+
+	// 1. Setup group in store
+	_, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, &controller.MockSnapshotAgentStore{})
+	c.ResyncPeriod = 100 * time.Millisecond
+
+	// Start the controller
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	// Verify that it was processed (Done called)
+	err = waitWithTimeout(func() bool {
+		return testQueue.getDoneCount() > 0
+	}, 1*time.Second)
+	if err != nil {
+		t.Fatal("Timed out waiting for periodic resync to trigger reconciliation")
+	}
+
+	if testQueue.getDoneCount() < 1 {
+		t.Errorf("Expected Done to be called at least once, got %d", testQueue.getDoneCount())
+	}
+}
+
+func TestController_Reconcile_DeduceLoadedJob_IdleNotLoaded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeName := "node-1"
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes([]string{nodeName})
+	group.Spec().SetActiveJob("job-1")
+
+	// job-1 is IDLE on node-1
+	job1 := store.NewJob(groupID, "job-1")
+	job1.UpdateContextState(nodeName, pb.SnapshotAgentJobState_STATE_IDLE)
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, &controller.MockSnapshotAgentStore{})
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	testQueue.Add(groupID)
+
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Timed out waiting for reconcile: %v", err)
+	}
+
+	// job-1 should NOT be considered loaded because it is IDLE.
+	if group.Status().LoadedJob() != "" {
+		t.Errorf("Expected loadedJob to be empty, got %q", group.Status().LoadedJob())
+	}
+	state, _ := group.Status().State()
+	if state != pb.GroupStatus_STATE_IDLE_YIELDED {
+		t.Errorf("Expected state to be STATE_IDLE_YIELDED, got %v", state)
+	}
+}
+
+func TestController_Reconcile_PreemptionSafetyGates_IdleJob(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeName := "node-1"
+
+	// 1. Setup group and nodes
+	testGroup, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	testGroup.Status().SetNodes([]string{nodeName})
+	testGroup.Spec().SetActiveJob("job-1")
+
+	// 2. Setup jobs in store
+	job1 := store.NewJob(groupID, "job-1")
+	job1.UpdateContextState(nodeName, pb.SnapshotAgentJobState_STATE_SAVED) // Needs restore
+
+	job2 := store.NewJob(groupID, "job-2")
+	job2.UpdateContextState(nodeName, pb.SnapshotAgentJobState_STATE_IDLE) // Other job is IDLE
+
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+	if err := jobStore.Put(ctx, job2); err != nil {
+		t.Fatalf("failed to put job2: %v", err)
+	}
+
+	// 3. Mock SnapshotAgentStore to fail if Snapshot/Restore is called
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
+			t.Errorf("Unexpected call to Snapshot")
+			return nil, fmt.Errorf("unexpected call")
+		},
+		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+			t.Errorf("Unexpected call to Restore")
+			return nil, fmt.Errorf("unexpected call")
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
+
+	// Start the controller
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	// Trigger reconcile
+	testQueue.Add(groupID)
+
+	// Verify that it failed and was re-queued (AddRateLimited called)
+	err = waitWithTimeout(func() bool {
+		return testQueue.getAddRateLimitedCount() > 0
+	}, 2*time.Second)
+	if err != nil {
+		t.Fatal("Timed out waiting for item to be re-queued (reconciliation should have failed)")
+	}
+
+	if testQueue.getAddRateLimitedCount() < 1 {
+		t.Errorf("Expected AddRateLimited to be called at least once, got %d", testQueue.getAddRateLimitedCount())
+	}
+}
+
+func TestController_Reconcile_PreemptionSafetyGates_TransitioningJob(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeName := "node-1"
+
+	// 1. Setup group and nodes
+	testGroup, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	testGroup.Status().SetNodes([]string{nodeName})
+	testGroup.Spec().SetActiveJob("job-1")
+
+	// 2. Setup jobs in store
+	job1 := store.NewJob(groupID, "job-1")
+	job1.UpdateContextState(nodeName, pb.SnapshotAgentJobState_STATE_SAVED) // Needs restore
+
+	job2 := store.NewJob(groupID, "job-2")
+	job2.UpdateContextState(nodeName, pb.SnapshotAgentJobState_STATE_TRANSITIONING) // Other job is TRANSITIONING
+
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+	if err := jobStore.Put(ctx, job2); err != nil {
+		t.Fatalf("failed to put job2: %v", err)
+	}
+
+	// 3. Mock SnapshotAgentStore to fail if Snapshot/Restore is called
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
+			t.Errorf("Unexpected call to Snapshot")
+			return nil, fmt.Errorf("unexpected call")
+		},
+		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+			t.Errorf("Unexpected call to Restore")
+			return nil, fmt.Errorf("unexpected call")
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
+
+	// Start the controller
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	// Trigger reconcile
+	testQueue.Add(groupID)
+
+	// Verify that it failed and was re-queued (AddRateLimited called)
+	err = waitWithTimeout(func() bool {
+		return testQueue.getAddRateLimitedCount() > 0
+	}, 2*time.Second)
+	if err != nil {
+		t.Fatal("Timed out waiting for item to be re-queued (reconciliation should have failed)")
+	}
+
+	if testQueue.getAddRateLimitedCount() < 1 {
+		t.Errorf("Expected AddRateLimited to be called at least once, got %d", testQueue.getAddRateLimitedCount())
+	}
+}

@@ -93,6 +93,7 @@ type Controller struct {
 	jobStore          *store.JobStore
 	infraOrchestrator InfrastructureOrchestrator
 	agentStore        store.SnapshotAgentStore
+	ResyncPeriod      time.Duration
 }
 
 // NewController creates a new Controller with the provided stores, queue, and infrastructure orchestrator.
@@ -109,6 +110,7 @@ func NewController(
 		jobStore:          jobStore,
 		infraOrchestrator: infraOrchestrator,
 		agentStore:        agentStore,
+		ResyncPeriod:      30 * time.Second,
 	}
 }
 
@@ -138,6 +140,25 @@ func (c *Controller) Run(ctx context.Context, workers int) error {
 			c.runWorker(ctx, workerID)
 		}, time.Second)
 	}
+
+	// Periodic resync loop to poll agent states and trigger reconciliation
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(c.ResyncPeriod):
+		}
+		until(ctx, func(ctx context.Context) {
+			groups, err := c.groupStore.List(ctx)
+			if err != nil {
+				slog.ErrorContext(ctx, "Failed to list groups for periodic resync", "error", err)
+				return
+			}
+			for _, g := range groups {
+				c.EnqueueWork(g.ID())
+			}
+		}, c.ResyncPeriod)
+	}()
 
 	slog.InfoContext(ctx, "Started workers")
 	<-ctx.Done()
@@ -268,21 +289,30 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 
 	// 3. Ensure no other jobs have their context loaded
 	for jobID, state := range agentJobStates {
-		if jobID == activeJobID || state != pb.SnapshotAgentJobState_STATE_RUNNING {
+		if jobID == activeJobID {
 			continue
 		}
 
-		slog.InfoContext(ctx, "Triggering snapshot for job", "jobID", jobID, "state", state)
-		resp, err := c.agentStore.Snapshot(ctx, nodeName, jobID, groupID)
-		if err != nil {
-			return fmt.Errorf("failed to trigger snapshot for job %s on node %s: %w", jobID, nodeName, err)
-		}
-		if err := c.waitForOperation(ctx, nodeName, resp.OperationId); err != nil {
-			return fmt.Errorf("failed while waiting for snapshot operation %s for job %s on node %s: %w",
-				resp.OperationId, jobID, nodeName, err)
-		}
-		if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
-			return fmt.Errorf("failed to refresh agent state after snapshot: %w", err)
+		switch state {
+		case pb.SnapshotAgentJobState_STATE_RUNNING:
+			slog.InfoContext(ctx, "Triggering snapshot for job", "jobID", jobID, "state", state)
+			resp, err := c.agentStore.Snapshot(ctx, nodeName, jobID, groupID)
+			if err != nil {
+				return fmt.Errorf("failed to trigger snapshot for job %s on node %s: %w", jobID, nodeName, err)
+			}
+			if err := c.waitForOperation(ctx, nodeName, resp.OperationId); err != nil {
+				return fmt.Errorf("failed while waiting for snapshot operation %s for job %s on node %s: %w",
+					resp.OperationId, jobID, nodeName, err)
+			}
+			if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
+				return fmt.Errorf("failed to refresh agent state after snapshot: %w", err)
+			}
+		case pb.SnapshotAgentJobState_STATE_IDLE:
+			slog.InfoContext(ctx, "Other job is IDLE, waiting for it to become ACTIVE before preemption", "jobID", jobID)
+			return fmt.Errorf("preemption pending: waiting for job %s to transition from IDLE to RUNNING", jobID)
+		case pb.SnapshotAgentJobState_STATE_TRANSITIONING:
+			slog.InfoContext(ctx, "Other job is TRANSITIONING, waiting for it to finish", "jobID", jobID)
+			return fmt.Errorf("preemption pending: job %s is currently transitioning", jobID)
 		}
 	}
 

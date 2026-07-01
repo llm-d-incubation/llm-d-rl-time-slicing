@@ -40,6 +40,7 @@ func run() error {
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	controllerWorkers := flag.Int("controller-workers", 1, "The number of workers for the controller")
 	snapshotAgentPort := flag.Int("snapshot-agent-port", 9001, "The default port for snapshot agents")
+	resyncPeriod := flag.Duration("resync-period", 30*time.Second, "The period for periodic resync of agent states")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -91,6 +92,7 @@ func run() error {
 		infraOrch,
 		snapshotAgentStore,
 	)
+	ctrl.ResyncPeriod = *resyncPeriod
 
 	// Start informers
 	nodeInformerFactory.Start(ctx.Done())
