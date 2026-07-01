@@ -208,6 +208,7 @@ func (s *Server) GetGroupStatus(ctx context.Context, req *pb.GetGroupStatusReque
 		LockingJob:       snap.LockingJob,
 		ActiveJob:        snap.ActiveJob,
 		WaiterQueueDepth: int64(snap.WaiterQueueDepth),
+		LoadedJob:        snap.LoadedJob,
 	}
 
 	jobs, err := s.jobStore.ListByGroup(ctx, group.ID())

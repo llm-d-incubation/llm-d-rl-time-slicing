@@ -1,0 +1,13 @@
+# GKE-specific overrides for the timeslice Helm chart.
+# Use this file when deploying to a GKE cluster with GPU nodes.
+
+snapshot-agent:
+  # Target GKE GPU nodes
+  nodeSelector:
+    cloud.google.com/gke-gpu: "true"
+  
+  # Default driver host path for GKE COS nodes is already configured in the subchart.
+  # If your GKE nodes use Ubuntu, uncomment the line below:
+  # nvidia:
+  #   driver:
+  #     hostPath: /usr/lib/nvidia

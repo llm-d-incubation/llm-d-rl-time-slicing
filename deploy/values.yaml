@@ -11,7 +11,17 @@ acceleratororchestrator:
 # Override values for the snapshot-agent subchart
 snapshot-agent:
   enabled: true
-  # You can add specific overrides here
+  image:
+    tag: latest
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Equal"
+      value: "present"
+      effect: "NoSchedule"
+    - key: "timeslice.io/shared"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
 
 # Override values for the nvidia-dra-driver-gpu subchart
 nvidia-dra-driver-gpu:
@@ -28,6 +38,10 @@ nvidia-dra-driver-gpu:
     tolerations:
       - key: "nvidia.com/gpu"
         operator: "Exists"
+        effect: "NoSchedule"
+      - key: "timeslice.io/shared"
+        operator: "Equal"
+        value: "true"
         effect: "NoSchedule"
     affinity:
       nodeAffinity:

@@ -56,10 +56,10 @@ nvidia-dra-driver-gpu:
 
 The chart automatically creates the `timeslice-system` namespace, and **all** deployed resources (orchestrator, agent, RBAC, etc.) are forced into this namespace regardless of where the Helm release is installed.
 
-To install the chart:
+To install or upgrade the chart:
 
 ```bash
-helm install timeslice .
+helm upgrade --install timeslice .
 ```
 
 This will install the Helm release metadata in your current default namespace, but all Kubernetes resources will be deployed to `timeslice-system`.
@@ -67,16 +67,77 @@ This will install the Helm release metadata in your current default namespace, b
 If you prefer to have the Helm release metadata also reside in the `timeslice-system` namespace, you must use the `--create-namespace` flag (or ensure the namespace exists beforehand):
 
 ```bash
-helm install timeslice . -n timeslice-system --create-namespace
+helm upgrade --install timeslice . -n timeslice-system --create-namespace
 ```
 
-To install with custom values:
+### 4. Deploying on GKE GPU Clusters
+
+To deploy the system on a GKE cluster with GPU nodes, you should use the GKE-specific configuration file `values-gke.yaml` to apply GKE-specific defaults (such as node selectors).
+
+The `values-gke.yaml` file contains:
+*   **Target GKE GPU Nodes**: Targets nodes labeled with `cloud.google.com/gke-gpu=true`.
+
+#### DRA (Dynamic Resource Allocation) Requirement
+The `timeslice` system **requires DRA** to function. 
+*   **Enabled by Default**: By default, this Helm chart will attempt to install the Nvidia DRA driver (`nvidia-dra-driver-gpu`) as a dependency.
+*   **Disabling the Driver**: If you have **already installed the DRA driver via other means** (e.g., a cluster-wide operator), or if you are validating in an environment where you want to bypass the chart's driver installation, you can disable it by setting `nvidia-dra-driver-gpu.enabled=false`.
+
+#### Example A: Deploying on GKE (Default Public Images, Installing DRA)
+To deploy using the default public images and install the DRA driver:
+```bash
+helm upgrade --install timeslice . -f values-gke.yaml
+```
+
+#### Example B: Deploying on GKE (DRA Driver Already Installed / Disabled)
+If you have already installed the DRA driver via other means, disable the chart's driver installation:
+```bash
+helm upgrade --install timeslice . -f values-gke.yaml --set nvidia-dra-driver-gpu.enabled=false
+```
+
+#### Example C: Deploying on GKE with a Custom Registry (Development & Validation)
+If you are developing and validating using a custom registry, you can combine the GKE infrastructure file with your custom registry settings.
+
+##### Option 1: Chaining Multiple Values Files (Canonical)
+Create a development-specific values file (e.g., `values-dev.yaml`) containing your registry overrides:
+```yaml
+# values-dev.yaml
+acceleratororchestrator:
+  image:
+    repository: your-custom-registry.com/your-project/acceleratororchestrator
+snapshot-agent:
+  image:
+    repository: your-custom-registry.com/your-project/snapshot-agent
+```
+
+Then deploy by chaining the values files in order (later files override earlier ones):
+```bash
+helm upgrade --install timeslice . -f values-gke.yaml -f values-dev.yaml
+```
+
+##### Option 2: Chaining Values File with Command-Line Overrides
+Alternatively, you can pass the registry overrides via `--set` flags alongside the GKE values file:
+```bash
+helm upgrade --install timeslice . \
+  -f values-gke.yaml \
+  --set acceleratororchestrator.image.repository=your-custom-registry.com/your-project/acceleratororchestrator \
+  --set snapshot-agent.image.repository=your-custom-registry.com/your-project/snapshot-agent
+```
+
+*Note: If you also need to disable the DRA driver (e.g., if already installed), just append `--set nvidia-dra-driver-gpu.enabled=false` to the commands above.*
+
+### 5. Deploying on Non-GKE GPU Clusters
+
+If you are deploying to a non-GKE cluster (e.g., EKS or bare-metal), you do not need the GKE-specific `values-gke.yaml` file. Instead, you can customize the node selector and driver paths for your specific environment. See the [Snapshot Agent README](./snapshot-agent/README.md) for detailed instructions.
+
+### 6. Installation with custom values
+
+If you have a custom values file:
 
 ```bash
-helm install timeslice . -f my-values.yaml
+helm upgrade --install timeslice . -f my-values.yaml
 ```
 
-### 4. Uninstallation
+### 7. Uninstallation
 
 To uninstall/delete the `timeslice` deployment:
 
