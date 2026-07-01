@@ -32,12 +32,32 @@ func NewPodFactory() *PodFactory {
 	factory := &PodFactory{
 		templates: make(map[string]*corev1.Pod),
 	}
+	gracePeriodSec := int64(2)
 	factory.Register("default", &corev1.Pod{
 		Spec: corev1.PodSpec{
+			TerminationGracePeriodSeconds: &gracePeriodSec,
 			Containers: []corev1.Container{
 				{
 					Name:  "dummy",
-					Image: "registry.k8s.io/pause:3.9",
+					Image: "pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime",
+					Command: []string{
+						"python3",
+						"-c",
+						"import torch, time, sys\n" +
+							"try:\n" +
+							"    if not torch.cuda.is_available():\n" +
+							"        print('CUDA not available', file=sys.stderr, flush=True)\n" +
+							"        sys.exit(1)\n" +
+							"    x = torch.randn(1000, 1000, device='cuda')\n" +
+							"    print('CUDA context created and tensor allocated', flush=True)\n" +
+							"    while True:\n" +
+							"        x = x + 0.0001\n" +
+							"        time.sleep(1)\n" +
+							"except Exception as e:\n" +
+							"    print('Error:', e, file=sys.stderr, flush=True)\n" +
+							"    sys.exit(1)",
+					},
+					ImagePullPolicy: corev1.PullIfNotPresent,
 				},
 			},
 		},
@@ -118,20 +138,7 @@ func (p *PodFactory) GetPod(key string) *corev1.Pod {
 		return template.DeepCopy()
 	}
 
-	// Fallback to default template if the key is not found
-	if template, ok := p.templates["default"]; ok {
-		return template.DeepCopy()
-	}
-
-	// Ultimate fallback (should not be reached as "default" is registered in NewPodFactory)
-	return &corev1.Pod{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  "dummy",
-					Image: "registry.k8s.io/pause:3.9",
-				},
-			},
-		},
-	}
+	// Fallback to default template if the key is not found.
+	// "default" is guaranteed to be registered in NewPodFactory.
+	return p.templates["default"].DeepCopy()
 }
