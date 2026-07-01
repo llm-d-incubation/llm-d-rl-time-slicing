@@ -2,7 +2,9 @@
 
 The Accelerator Orchestrator is the central coordination brain of the Time-Slicing platform. It manages cooperative lock queues across multi-tenant RL workloads and orchestrates accelerator memory snapshot and restore operations across distributed nodes.
 
-By coordinating access to shared accelerator pools, it enables RL workloads to eliminate the "stop-and-wait" inefficiency in Reinforcement Learning (RL) loops, greatly improving accelerator duty cycles.
+By coordinating access to shared accelerator pools, it enables RL workloads to eliminate the "stop-and-wait" inefficiency in Reinforcement Learning (RL) loops (where trainers sit idle during sampling, and samplers sit idle during training), greatly improving accelerator duty cycles. 
+
+For a detailed architectural breakdown of this inefficiency and the co-operative time-slicing solution, refer to the [RL Post-Training: Co-Operative Time-Slicing](https://docs.google.com/document/d/1eMYb2TZWpIOVWV-aTwep_j88VTpMJFtqbwtgzxnnZFc/edit?tab=t.0#heading=h.kgc071b8gk25) design document.
 
 ## Concepts & Architecture
 
@@ -104,7 +106,7 @@ spec:
   devices:
     requests:
     - name: double-gpus
-      deviceClassName: gpu.nvidia.com # TODO: update this with our deployed device class
+      deviceClassName: gpu.nvidia.com
       allocationMode: ExactCount
       count: 2 # Number of GPUs needed
 ```
@@ -182,6 +184,8 @@ spec:
 
 ### Job Logic & Orchestration (Code)
 
+For a complete reference of the Python SDK (including explicit acquire/release, inline context managers, and dynamic overrides), see the [Orchestrator Python Client README](../../pkg/client/python/timeslice/orchestrator/README.md).
+
 #### Pattern A: Accelerator Work Pod Deployment (Startup)
 When running time-sliced jobs, work pods must only be deployed and scheduled onto the accelerator nodes while their job holds the lock for their respective Group. 
 
@@ -192,7 +196,37 @@ Typically, you configure a central coordinator (such as the RL loop actor in ini
 
 This ordering prevents resource conflicts during the initial startup and initialization phases.
 
-* Note: The Python client library for the Accelerator Orchestrator is currently under development (TBD). Example code will appear after implementation.
+The following Python example demonstrates how to use the `OrchestratorClient` to safely orchestrate the startup and deployment of work pods:
+
+```python
+from timeslice import OrchestratorClient
+
+orchestrator = OrchestratorClient(
+    target="accelerator-orchestrator.timeslice-system.svc.cluster.local:50051",
+    job_id="job-a",
+    group_id="group-ab-sampler"
+)
+
+def deploy_job_startup():
+    # Acquire lock (blocks until granted)
+    print("Requesting accelerator lock...")
+    with orchestrator.on_accelerators() as result:
+        print(f"Lock acquired! Waited {result.waited_ms} ms.")
+        
+        # Deploy pods while holding the lock to guarantee exclusive GPU access
+        print("Deploying sampler pods...")
+        pods = k8s_deploy_sampler_pods(job_id="job-a", group_id="group-ab-sampler")
+        
+        # Wait for pods to warm up before yielding
+        k8s_wait_for_pods_ready(pods)
+        print("Pods ready on accelerators.")
+        
+    # Lock is automatically released (yielded) on exit
+    print("Startup complete. Lock yielded.")
+
+# Note: k8s_deploy_sampler_pods and k8s_wait_for_pods_ready are placeholders
+# for your actual Kubernetes client pod creation and polling logic.
+```
 
 #### Pattern B: Job Logic Execution (Run-time)
 A job's logic covers triggering work to be done on deployed work pods.
@@ -202,7 +236,41 @@ Typically, you configure the job logic (such as the RL loop actor in the loop) t
 2.  Send work to the work pods.
 3.  Once work is done and the accelerator is not needed, yield the lock.
 
-* Note: The Python client library for the Accelerator Orchestrator is currently under development (TBD). Example code will appear after implementation.
+The cleanest developer experience is to wrap your GPU-bound phases in functions decorated with `@on_accelerators`. This automatically acquires the lock when the function starts and yields it when the function returns, allowing other jobs to interleave during CPU-bound phases (like reward computation).
+
+```python
+from timeslice import OrchestratorClient
+import time
+
+# Initialize the client. The job_id identifies this workload (e.g., 'job-a')
+orchestrator = OrchestratorClient(target="accelerator-orchestrator.timeslice-system.svc.cluster.local:50051", job_id="job-a")
+
+# Decorate GPU tasks to automatically yield/acquire hardware via the Orchestrator
+@orchestrator.on_accelerators(group_id="group-ab-trainer")
+def train_phase(model, trajectories):
+    print("Training phase active on GPUs...")
+    # Execute backprop / weight updates
+    return model.update(trajectories)
+
+@orchestrator.on_accelerators(group_id="group-ab-sampler")
+def generate_phase(model, dataset):
+    print("Sampling phase active on GPUs...")
+    # Generate rollouts
+    return model.generate(dataset)
+
+def compute_rewards(trajectories):
+    # Executed off-accelerator (e.g., on CPU or external service)
+    print("Computing rewards on CPU...")
+    time.sleep(5) 
+    return [1.0] * len(trajectories)
+
+# Standard sequential RL loop — interleaved with other jobs under the hood
+for epoch in range(10):
+    print(f"\n--- Epoch {epoch} ---")
+    trajectories = generate_phase(policy, dataset)
+    rewards = compute_rewards(trajectories)
+    train_phase(policy, rewards)
+```
 
 ---
 
