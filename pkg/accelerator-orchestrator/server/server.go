@@ -30,23 +30,29 @@ type JobStore interface {
 	ListByGroup(ctx context.Context, groupID string) ([]*store.Job, error)
 }
 
-const acquirePollInterval = 1 * time.Second
+// checkAcquireFunc defines the signature for the Acquire check hook.
+type checkAcquireFunc func(ctx context.Context, groupID, jobID string, startTime time.Time) (*pb.AcquireResponse, error, bool)
 
 // Server implements the AcceleratorOrchestratorService gRPC server.
 type Server struct {
 	pb.UnimplementedAcceleratorOrchestratorServiceServer
-	ctrl       *controller.Controller
-	groupStore GroupStore
-	jobStore   JobStore
+	ctrl                *controller.Controller
+	groupStore          GroupStore
+	jobStore            JobStore
+	acquirePollInterval time.Duration
+	checkAcquire        checkAcquireFunc
 }
 
 // NewServer creates a new Server instance.
 func NewServer(ctrl *controller.Controller, groupStore GroupStore, jobStore JobStore) *Server {
-	return &Server{
-		ctrl:       ctrl,
-		groupStore: groupStore,
-		jobStore:   jobStore,
+	s := &Server{
+		ctrl:                ctrl,
+		groupStore:          groupStore,
+		jobStore:            jobStore,
+		acquirePollInterval: 1 * time.Second,
 	}
+	s.checkAcquire = s.defaultCheckAcquire
+	return s
 }
 
 // Acquire implements AcceleratorOrchestratorService.Acquire.
@@ -76,7 +82,7 @@ func (s *Server) Acquire(ctx context.Context, req *pb.AcquireRequest) (*pb.Acqui
 	}
 
 	// 3. Wait Loop
-	ticker := time.NewTicker(acquirePollInterval)
+	ticker := time.NewTicker(s.acquirePollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -85,26 +91,46 @@ func (s *Server) Acquire(ctx context.Context, req *pb.AcquireRequest) (*pb.Acqui
 			slog.InfoContext(ctx, "Acquire context cancelled", "error", ctx.Err())
 			return nil, status.FromContextError(ctx.Err()).Err()
 		case <-ticker.C:
-			// Check if group is faulted
-			faulted, err := s.isGroupFaulted(ctx, groupID)
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "failed to check if group is faulted: %v", err)
-			}
-			if faulted {
-				return nil, status.Errorf(codes.Unavailable, "group %s is faulted", groupID)
-			}
-
-			// Check if loaded job is ours
-			if group.Status().LoadedJob() == jobID {
-				slog.InfoContext(ctx, "Acquire succeeded, job loaded")
-				return &pb.AcquireResponse{
-					Success:         true,
-					ContextRestored: true, // Default to true, as we don't have enough info to determine if it was zero-overhead
-					WaitedMs:        time.Since(startTime).Milliseconds(),
-				}, nil
+			resp, err, done := s.checkAcquire(ctx, groupID, jobID, startTime)
+			if done {
+				return resp, err
 			}
 		}
 	}
+}
+
+func (s *Server) defaultCheckAcquire(
+	ctx context.Context,
+	groupID, jobID string,
+	startTime time.Time,
+) (*pb.AcquireResponse, error, bool) {
+	// Re-read group to get the latest status and spec from the store (fixes stale group bug)
+	group, err := s.groupStore.Get(ctx, groupID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get group: %v", err), true
+	}
+
+	// Check if group is faulted
+	faulted, err := s.isGroupFaulted(ctx, groupID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check if group is faulted: %v", err), true
+	}
+	if faulted {
+		return nil, status.Errorf(codes.Unavailable, "group %s is faulted", groupID), true
+	}
+
+	// Check if we are the lock holder AND the context is loaded
+	// (fixes premature success bug)
+	if group.Spec().LockingJob() == jobID && group.Status().LoadedJob() == jobID {
+		slog.InfoContext(ctx, "Acquire succeeded, job loaded and lock held")
+		return &pb.AcquireResponse{
+			Success:         true,
+			ContextRestored: true, // Default to true, as we don't have enough info to determine if it was zero-overhead
+			WaitedMs:        time.Since(startTime).Milliseconds(),
+		}, nil, true
+	}
+
+	return nil, nil, false //nolint:nilnil // returning nil, nil is intended when done is false
 }
 
 func (s *Server) isGroupFaulted(ctx context.Context, groupID string) (bool, error) {

@@ -3,87 +3,17 @@ package server_test
 import (
 	"context"
 	"errors"
-	"log/slog"
-	"net"
-	"sync"
 	"testing"
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
-	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
 )
-
-const bufSize = 1024 * 1024
-
-var lis *bufconn.Listener
-
-//nolint:gocritic // Conflict with nonamedreturns linter
-func initGRPCServer(groupStore server.GroupStore, jobStore server.JobStore) (*mockWorkQueue, func()) {
-	lis = bufconn.Listen(bufSize)
-	s := grpc.NewServer()
-	mq := &mockWorkQueue{}
-	ctrl := controller.NewController(nil, nil, mq, nil, nil)
-	pb.RegisterAcceleratorOrchestratorServiceServer(s, server.NewServer(ctrl, groupStore, jobStore))
-	go func() {
-		if err := s.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			slog.Error("Server exited with error", "error", err)
-			panic(err)
-		}
-	}()
-	return mq, func() {
-		s.GracefulStop()
-		lis.Close()
-	}
-}
-
-type mockGroupStore struct {
-	getFunc  func(ctx context.Context, id string) (*store.Group, error)
-	listFunc func(ctx context.Context) ([]*store.Group, error)
-}
-
-func (m *mockGroupStore) Get(ctx context.Context, id string) (*store.Group, error) {
-	if m.getFunc != nil {
-		return m.getFunc(ctx, id)
-	}
-	return nil, store.ErrNotFound
-}
-
-func (m *mockGroupStore) List(ctx context.Context) ([]*store.Group, error) {
-	if m.listFunc != nil {
-		return m.listFunc(ctx)
-	}
-	return nil, nil
-}
-
-type mockJobStore struct {
-	getFunc         func(ctx context.Context, groupID, jobID string) (*store.Job, error)
-	listByGroupFunc func(ctx context.Context, groupID string) ([]*store.Job, error)
-}
-
-func (m *mockJobStore) Get(ctx context.Context, groupID, jobID string) (*store.Job, error) {
-	if m.getFunc != nil {
-		return m.getFunc(ctx, groupID, jobID)
-	}
-	return nil, store.ErrNotFound
-}
-
-func (m *mockJobStore) ListByGroup(ctx context.Context, groupID string) ([]*store.Job, error) {
-	if m.listByGroupFunc != nil {
-		return m.listByGroupFunc(ctx, groupID)
-	}
-	return nil, nil
-}
-
-func bufDialer(context.Context, string) (net.Conn, error) {
-	return lis.Dial()
-}
 
 func TestServer_Acquire(t *testing.T) {
 	tests := []struct {
@@ -93,7 +23,6 @@ func TestServer_Acquire(t *testing.T) {
 		jobID         string
 		timeout       time.Duration
 		expectedCode  codes.Code
-		verify        func(t *testing.T, resp *pb.AcquireResponse, err error)
 		expectEnqueue bool
 	}{
 		{
@@ -145,41 +74,6 @@ func TestServer_Acquire(t *testing.T) {
 			expectedCode:  codes.DeadlineExceeded,
 			expectEnqueue: true,
 		},
-		{
-			name: "success after wait",
-			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
-				t.Helper()
-				gs := store.NewGroupStore(store.NewMemLockStore())
-				g, _, err := gs.GetOrCreate(ctx, "group-1")
-				if err != nil {
-					t.Fatalf("failed to create group: %v", err)
-				}
-
-				// Simulate controller loading the job after a short delay
-				go func() {
-					time.Sleep(50 * time.Millisecond)
-					g.Status().SetLoadedJob("job-1")
-				}()
-
-				return gs, store.NewJobStore()
-			},
-			groupID:       "group-1",
-			jobID:         "job-1",
-			expectedCode:  codes.OK,
-			expectEnqueue: true,
-			verify: func(t *testing.T, resp *pb.AcquireResponse, err error) {
-				t.Helper()
-				if err != nil {
-					t.Fatalf("Unexpected error: %v", err)
-				}
-				if !resp.Success {
-					t.Errorf("Expected success to be true")
-				}
-				if resp.WaitedMs < 50 {
-					t.Errorf("Expected WaitedMs to be at least 50ms, got %d", resp.WaitedMs)
-				}
-			},
-		},
 	}
 
 	for _, tc := range tests {
@@ -193,11 +87,11 @@ func TestServer_Acquire(t *testing.T) {
 			}
 			gs, js := tc.setupStores(t, serverCtx)
 
-			mq, cleanup := initGRPCServer(gs, js)
+			_, mq, cleanup := server.InitGRPCServer(gs, js)
 			defer cleanup()
 			conn, err := grpc.NewClient(
 				"passthrough:///bufnet",
-				grpc.WithContextDialer(bufDialer),
+				grpc.WithContextDialer(server.BufDialer),
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			)
 			if err != nil {
@@ -206,7 +100,7 @@ func TestServer_Acquire(t *testing.T) {
 			defer conn.Close()
 			client := pb.NewAcceleratorOrchestratorServiceClient(conn)
 
-			resp, err := client.Acquire(clientCtx, &pb.AcquireRequest{
+			_, err = client.Acquire(clientCtx, &pb.AcquireRequest{
 				GroupId: tc.groupID,
 				JobId:   tc.jobID,
 			})
@@ -234,10 +128,6 @@ func TestServer_Acquire(t *testing.T) {
 					t.Errorf("Expected code %v, got %v", tc.expectedCode, st.Code())
 				}
 				return
-			}
-
-			if tc.verify != nil {
-				tc.verify(t, resp, err)
 			}
 		})
 	}
@@ -362,11 +252,11 @@ func TestServer_Yield(t *testing.T) {
 			ctx := context.Background()
 			gs, js := tc.setupStores(t, ctx)
 
-			mq, cleanup := initGRPCServer(gs, js)
+			_, mq, cleanup := server.InitGRPCServer(gs, js)
 			defer cleanup()
 			conn, err := grpc.NewClient(
 				"passthrough:///bufnet",
-				grpc.WithContextDialer(bufDialer),
+				grpc.WithContextDialer(server.BufDialer),
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			)
 			if err != nil {
@@ -450,8 +340,8 @@ func TestServer_ListGroups(t *testing.T) {
 			name: "error path",
 			setupStore: func(t *testing.T, ctx context.Context) server.GroupStore {
 				t.Helper()
-				return &mockGroupStore{
-					listFunc: func(ctx context.Context) ([]*store.Group, error) {
+				return &server.MockGroupStore{
+					ListFunc: func(ctx context.Context) ([]*store.Group, error) {
 						return nil, errors.New("database error")
 					},
 				}
@@ -466,11 +356,11 @@ func TestServer_ListGroups(t *testing.T) {
 			ctx := context.Background()
 			gs := tc.setupStore(t, ctx)
 
-			_, cleanup := initGRPCServer(gs, nil)
+			_, _, cleanup := server.InitGRPCServer(gs, nil)
 			defer cleanup()
 			conn, err := grpc.NewClient(
 				"passthrough:///bufnet",
-				grpc.WithContextDialer(bufDialer),
+				grpc.WithContextDialer(server.BufDialer),
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			)
 			if err != nil {
@@ -538,8 +428,8 @@ func TestServer_GetGroupStatus(t *testing.T) {
 			name: "failed to get group (internal)",
 			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
 				t.Helper()
-				gs := &mockGroupStore{
-					getFunc: func(ctx context.Context, id string) (*store.Group, error) {
+				gs := &server.MockGroupStore{
+					GetFunc: func(ctx context.Context, id string) (*store.Group, error) {
 						return nil, errors.New("database error")
 					},
 				}
@@ -572,8 +462,8 @@ func TestServer_GetGroupStatus(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to create group: %v", err)
 				}
-				js := &mockJobStore{
-					listByGroupFunc: func(ctx context.Context, groupID string) ([]*store.Job, error) {
+				js := &server.MockJobStore{
+					ListByGroupFunc: func(ctx context.Context, groupID string) ([]*store.Job, error) {
 						return nil, errors.New("database error")
 					},
 				}
@@ -702,11 +592,11 @@ func TestServer_GetGroupStatus(t *testing.T) {
 			ctx := context.Background()
 			gs, js := tc.setupStores(t, ctx)
 
-			_, cleanup := initGRPCServer(gs, js)
+			_, _, cleanup := server.InitGRPCServer(gs, js)
 			defer cleanup()
 			conn, err := grpc.NewClient(
 				"passthrough:///bufnet",
-				grpc.WithContextDialer(bufDialer),
+				grpc.WithContextDialer(server.BufDialer),
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			)
 			if err != nil {
@@ -741,29 +631,3 @@ func TestServer_GetGroupStatus(t *testing.T) {
 		})
 	}
 }
-
-type mockWorkQueue struct {
-	controller.WorkQueue
-	mu    sync.Mutex
-	added []string
-}
-
-func (m *mockWorkQueue) Add(groupID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.added = append(m.added, groupID)
-}
-
-func (m *mockWorkQueue) GetAdded() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cp := make([]string, len(m.added))
-	copy(cp, m.added)
-	return cp
-}
-
-func (m *mockWorkQueue) AddRateLimited(groupID string) {}
-func (m *mockWorkQueue) Forget(groupID string)         {}
-func (m *mockWorkQueue) Done(groupID string)           {}
-func (m *mockWorkQueue) Get() (string, bool)           { return "", false }
-func (m *mockWorkQueue) ShutDown()                     {}
