@@ -95,13 +95,13 @@ Pods opt-in to time-slicing via pod labels.
 To share physical accelerators, workloads must request accelerators via Kubernetes **Dynamic Resource Allocation (DRA)** `ResourceClaim`s instead of traditional exclusive `resources.limits`. Define a `ResourceClaim` matching the accelerator count your pods need, and reference it in your pod spec.
 
 ##### Define the ResourceClaim
-Create a `ResourceClaim` manifest specifying the required GPU count (e.g., 2 GPUs):
+Create a `ResourceClaim` manifest per group specifying the required GPU count (e.g., 2 GPUs):
 
 ```yaml
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
-  name: shared-two-gpus-claim
+  name: group-ab-sampler-claim
 spec:
   devices:
     requests:
@@ -123,7 +123,7 @@ spec:
       - name: accelerator # Must match the name in resourceClaims below
   resourceClaims:
   - name: accelerator
-    resourceClaimName: shared-two-gpus-claim # References the ResourceClaim above
+    resourceClaimName: group-ab-sampler-claim # References the ResourceClaim above
 ```
 
 #### Required Node Selectors & Tolerations
@@ -172,7 +172,7 @@ spec:
       - name: accelerator
   resourceClaims:
   - name: accelerator
-    resourceClaimName: shared-two-gpus-claim # References an external ResourceClaim
+    resourceClaimName: group-ab-sampler-claim # References an external ResourceClaim
   nodeSelector:
     group.timeslice.io/group-ab-sampler: "true" # Matches the node Group label
   tolerations:
