@@ -19,7 +19,7 @@ spec:
       hostPID: true
       containers:
       - name: sampler
-        image: <image-built-with-docker> # Replace with your actual image tag
+        image: <image-name> # Replace with your actual image tag
         command: ["python3"]
         args: ["timeslice_sampler.py"]
         imagePullPolicy: IfNotPresent

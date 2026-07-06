@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sampler-deployment
+  labels:
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sampler
+  template:
+    metadata:
+      labels:
+        app: sampler
+        snapshot-agent: "true"
+        timeslice.io/job-id: "test-job"
+    spec:
+      hostIPC: true
+      hostPID: true
+      initContainers:
+      - name: install-cuda-checkpoint
+        image: alpine:latest
+        command: ["sh", "-c", "apk add --no-cache ca-certificates curl && curl -sSL -o /opt/bin/cuda-checkpoint https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/main/bin/x86_64_Linux/cuda-checkpoint && chmod +x /opt/bin/cuda-checkpoint && chmod 777 /mnt/huge-ckpt && echo 'cuda-checkpoint installed'"]
+        volumeMounts:
+        - name: bin-dir
+          mountPath: /opt/bin
+        - name: huge-ckpt
+          mountPath: /mnt/huge-ckpt
+      - name: install-gpu-cr
+        image: nvidia/cuda:13.0.0-devel-ubuntu22.04
+        command:
+        - "sh"
+        - "-c"
+        - |
+          if [ -f /opt/bin/cr_client ]; then
+            echo "cr_client already installed, skipping build"
+            exit 0
+          fi
+          apt-get update && apt-get install -y git cmake build-essential python3
+          git clone https://github.com/gpu-os/GPU-CR.git /tmp/GPU-CR
+          cd /tmp/GPU-CR
+          sed -i 's/#define CR_CKPT_SIGNAL     SIGUSR1/#define CR_CKPT_SIGNAL     (SIGRTMAX - 8)/' src/common.h
+          sed -i 's/#define CR_RESTORE_SIGNAL  SIGUSR2/#define CR_RESTORE_SIGNAL  (SIGRTMAX - 7)/' src/common.h
+          sed -i 's/int fd_control = open(control_name, O_CREAT | O_RDWR, 0755);/int fd_control = open(control_name, O_CREAT | O_RDWR, 0777); fchmod(fd_control, 0777);/' src/comm/share_mem.cpp
+          python3 -c '
+          with open("coordinator/cr_client.cpp", "r") as f:
+              content = f.read()
+          old_block = """        std::string bin_path = get_cuda_checkpoint_path();
+                  std::string cmd = bin_path + " --toggle --pid " + std::to_string(pid);
+                  auto t0 = std::chrono::high_resolution_clock::now();
+                  if (!buffer_only)
+                      ret = system(cmd.c_str());
+                  if (ret < 0) {
+                      perror("system()");
+                      exit(EXIT_FAILURE);
+                  }
+                  auto t1 = std::chrono::high_resolution_clock::now();
+                  printf("cuda-checkpoint restore time: %.3f s\\n", std::chrono::duration<double>(t1 - t0).count());
+                  fflush(stdout);
+                  comm->send_msg(RESTORE_MSG);
+                  kill(pid, CR_RESTORE_SIGNAL);
+                  while(!comm->is_finished()) {
+                      usleep(1000);
+                  }"""
+          new_block = """        comm->send_msg(RESTORE_MSG);
+                  kill(pid, CR_RESTORE_SIGNAL);
+                  while(!comm->is_finished()) {
+                      usleep(1000);
+                  }
+                  std::string bin_path = get_cuda_checkpoint_path();
+                  std::string cmd = bin_path + " --toggle --pid " + std::to_string(pid);
+                  auto t0 = std::chrono::high_resolution_clock::now();
+                  if (!buffer_only)
+                      ret = system(cmd.c_str());
+                  if (ret < 0) {
+                      perror("system()");
+                      exit(EXIT_FAILURE);
+                  }
+                  auto t1 = std::chrono::high_resolution_clock::now();
+                  printf("cuda-checkpoint restore time: %.3f s\\n", std::chrono::duration<double>(t1 - t0).count());"""
+          if old_block in content:
+              content = content.replace(old_block, new_block)
+              with open("coordinator/cr_client.cpp", "w") as f:
+                  f.write(content)
+              print("Patched cr_client.cpp successfully")
+          '
+          mkdir build && cd build
+          cmake -DGPU_VENDOR=NVIDIA ..
+          make -j$(nproc)
+          cp cr_client /opt/bin/
+          echo "gpu-cr installed"
+        volumeMounts:
+        - name: bin-dir
+          mountPath: /opt/bin
+      containers:
+      - name: sampler
+        image: <image> # Replace with your actual image tag
+        command: ["/bin/sh", "-c"]
+        args: ["cd /vllm-workspace && vllm serve Qwen/Qwen3-0.6B --tensor-parallel-size 1 --host 0.0.0.0 --enforce-eager --port 8000"]
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PATH
+          value: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: AGENT_ENDPOINT
+          value: "$(NODE_IP):9001"
+        - name: JOB_ID
+          value: "test-job"
+        - name: GROUP
+          value: "default"
+        - name: INTERVAL
+          value: "30"
+        - name: VLLM_MODEL
+          value: "Qwen/Qwen3-0.6B"
+        - name: TENSOR_PARALLEL_SIZE
+          value: "1"
+        - name: GPU_VENDOR
+          value: "NVIDIA"
+        - name: GPUCR_NUM_THREADS
+          value: "16"
+        - name: GPUCR_SHM_GB
+          value: "60"
+        - name: GPUCR_STAGING_MB
+          value: "1024"
+        - name: LD_PRELOAD
+          value: "/usr/local/lib/vGPU-NVIDIA.so"
+        - name: LD_LIBRARY_PATH
+          value: "/usr/local/cuda/lib64"
+        - name: BACKEND
+          value: "GPU_GCR"
+        - name: CUDA_VISIBLE_DEVICES
+          value: "0"
+        volumeMounts:
+        - name: bin-dir
+          mountPath: /opt/bin
+        - name: huge-ckpt
+          mountPath: /mnt/huge-ckpt
+        resources:
+          claims:
+            - name: gpus-for-pod
+      volumes:
+      - name: bin-dir
+        emptyDir: {}
+      - name: huge-ckpt
+        hostPath:
+          path: /var/tmp/huge-ckpt
+          type: DirectoryOrCreate
+      resourceClaims:
+      - name: gpus-for-pod # This is the internal name used by the container
+        resourceClaimName: shared-two-gpus-claim # References the standalone claim
+      tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"

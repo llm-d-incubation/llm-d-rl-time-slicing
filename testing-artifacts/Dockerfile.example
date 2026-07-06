@@ -1,7 +1,7 @@
 # --- Build stage for GPU-CR ---
 FROM nvidia/cuda:13.0.0-devel-ubuntu22.04 AS gpu-cr-builder
 RUN apt-get update && apt-get install -y git cmake build-essential
-RUN git clone https://github.com/gpu-os/GPU-CR.git /tmp/GPU-CR && \
+RUN git clone -b vllm-k8s-fix https://github.com/Edwinhr716/GPU-CR.git /tmp/GPU-CR && \
     cd /tmp/GPU-CR && \
     sed -i 's/#define CR_CKPT_SIGNAL     SIGUSR1/#define CR_CKPT_SIGNAL     (SIGRTMAX - 8)/' src/common.h && \
     sed -i 's/#define CR_RESTORE_SIGNAL  SIGUSR2/#define CR_RESTORE_SIGNAL  (SIGRTMAX - 7)/' src/common.h && \
