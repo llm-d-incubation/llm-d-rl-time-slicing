@@ -164,9 +164,8 @@ func (s *GRPCSnapshotAgentStore) Restore(
 	}
 
 	resp, err := client.Restore(ctx, &agentpb.RestoreRequest{
-		JobId:   jobID,
-		Group:   groupID,
-		Backend: agentpb.Backend_BACKEND_CUDA, // Default to CUDA
+		JobId: jobID,
+		Group: groupID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to trigger restore for job %s on agent at %s: %w", jobID, address, err)

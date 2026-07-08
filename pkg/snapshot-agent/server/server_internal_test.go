@@ -55,6 +55,7 @@ func initGRPCServer() {
 	failingBackend := &FailingBackend{}
 	backendsMap := map[backends.BackendType]backends.Backend{
 		backends.BackendNoop: noopBackend,
+		backends.BackendCuda: noopBackend,
 		"failing":            failingBackend,
 	}
 
@@ -132,9 +133,8 @@ func prepareSavedJob(
 	}
 
 	_, err := client.Snapshot(ctx, &pb.SnapshotRequest{
-		JobId:   jobID,
-		Group:   group,
-		Backend: pb.Backend_BACKEND_UNSPECIFIED,
+		JobId: jobID,
+		Group: group,
 	})
 	if err != nil {
 		t.Fatalf("Failed to snapshot: %v", err)
@@ -174,11 +174,12 @@ func TestServer_Snapshot(t *testing.T) {
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
 	tests := []struct {
-		name    string
-		jobID   string
-		group   string
-		podName string
-		pids    []int
+		name          string
+		jobID         string
+		group         string
+		podName       string
+		pids          []int
+		backendConfig *pb.BackendConfig
 	}{
 		{
 			name:    "With Group",
@@ -193,6 +194,18 @@ func TestServer_Snapshot(t *testing.T) {
 			group:   "",
 			podName: "pod-snapshot-nogroup",
 			pids:    []int{456},
+		},
+		{
+			name:    "With BackendConfig",
+			jobID:   "test-job-snapshot-backendconfig",
+			group:   "",
+			podName: "pod-snapshot-backendconfig",
+			pids:    []int{789},
+			backendConfig: &pb.BackendConfig{
+				Backend: &pb.BackendConfig_Cuda{
+					Cuda: &pb.CudaBackendConfig{},
+				},
+			},
 		},
 	}
 
@@ -210,9 +223,9 @@ func TestServer_Snapshot(t *testing.T) {
 			}
 
 			_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
-				JobId:   tc.jobID,
-				Group:   tc.group,
-				Backend: pb.Backend_BACKEND_UNSPECIFIED,
+				JobId:         tc.jobID,
+				Group:         tc.group,
+				BackendConfig: tc.backendConfig,
 			})
 			if err != nil {
 				t.Errorf("Expected success (using default noop backend), got error: %v", err)
@@ -234,11 +247,12 @@ func TestServer_Restore(t *testing.T) {
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
 	tests := []struct {
-		name    string
-		jobID   string
-		group   string
-		podName string
-		pids    []int
+		name          string
+		jobID         string
+		group         string
+		podName       string
+		pids          []int
+		backendConfig *pb.BackendConfig
 	}{
 		{
 			name:    "With Group",
@@ -254,6 +268,18 @@ func TestServer_Restore(t *testing.T) {
 			podName: "pod-restore-nogroup",
 			pids:    []int{456},
 		},
+		{
+			name:    "With BackendConfig",
+			jobID:   "test-job-restore-backendconfig",
+			group:   "",
+			podName: "pod-restore-backendconfig",
+			pids:    []int{789},
+			backendConfig: &pb.BackendConfig{
+				Backend: &pb.BackendConfig_Cuda{
+					Cuda: &pb.CudaBackendConfig{},
+				},
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -261,9 +287,9 @@ func TestServer_Restore(t *testing.T) {
 			prepareSavedJob(t, client, ctx, tc.jobID, tc.group, tc.podName, tc.pids)
 
 			_, err = client.Restore(ctx, &pb.RestoreRequest{
-				JobId:   tc.jobID,
-				Group:   tc.group,
-				Backend: pb.Backend_BACKEND_UNSPECIFIED,
+				JobId:         tc.jobID,
+				Group:         tc.group,
+				BackendConfig: tc.backendConfig,
 			})
 			if err != nil {
 				t.Errorf("Expected success (using default noop backend), got error: %v", err)
@@ -405,10 +431,10 @@ func TestServer_Health(t *testing.T) {
 		t.Errorf("Expected status=SERVING for noop backend, got %v", resp.Status)
 	}
 
-	// Test missing backend (Cuda is not in backendsMap in initGRPCServer)
-	_, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: string(backends.BackendCuda)})
+	// Test missing backend (Cuda is now in backendsMap in initGRPCServer, use a non-existent one)
+	_, err = client.Check(ctx, &grpc_health_v1.HealthCheckRequest{Service: "missing-backend"})
 	if status.Code(err) != codes.NotFound {
-		t.Errorf("Expected NotFound error for missing CUDA backend, got: %v", err)
+		t.Errorf("Expected NotFound error for missing backend, got: %v", err)
 	}
 
 	// Test failing backend

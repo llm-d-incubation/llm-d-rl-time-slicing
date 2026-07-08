@@ -1,7 +1,7 @@
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, Union
+from typing import Optional
 
 import grpc
 
@@ -41,8 +41,6 @@ class SnapshotAgentInterface(ABC):
         self,
         job_id: str,
         group: str = "",
-        backend: Union[str, int] = 0,
-        pids: Optional[list[int]] = None,
         backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> SnapshotResponse:
         """Triggers an asynchronous snapshot."""
@@ -50,7 +48,10 @@ class SnapshotAgentInterface(ABC):
 
     @abstractmethod
     def restore(
-        self, job_id: str, group: str = "", backend: Union[str, int] = 0
+        self,
+        job_id: str,
+        group: str = "",
+        backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> RestoreResponse:
         """Triggers an asynchronous restoration."""
         pass
@@ -117,28 +118,10 @@ class SnapshotAgentClient(SnapshotAgentInterface):
         logger.error(message)
         raise SnapshotAgentError(message, code=e.code(), details=e.details()) from e
 
-    def _get_backend_enum(self, backend: Union[str, int]) -> int:
-        """Maps backend string or int to the Backend enum value."""
-        if isinstance(backend, int):
-            return backend
-        try:
-            # Try exact match first
-            return snapshot_agent_pb2.Backend.Value(backend)
-        except ValueError:
-            # Try with prefix
-            try:
-                return snapshot_agent_pb2.Backend.Value(f"BACKEND_{backend.upper()}")
-            except ValueError:
-                logger.warning(
-                    f"Unknown backend '{backend}', using BACKEND_UNSPECIFIED"
-                )
-                return snapshot_agent_pb2.BACKEND_UNSPECIFIED
-
     def snapshot(
         self,
         job_id: str,
         group: str = "",
-        backend: Union[str, int] = 0,
         backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> SnapshotResponse:
         """
@@ -146,32 +129,20 @@ class SnapshotAgentClient(SnapshotAgentInterface):
         Args:
             job_id: ID of the job to snapshot.
             group: Group for the snapshot.
-            backend: Backend to use (e.g., 'CUDA' or snapshot_agent_pb2.BACKEND_CUDA).
-            backend_config: Optional BackendConfig proto. If provided, 'backend' is ignored.
+            backend_config: Optional BackendConfig proto.
         Returns:
             SnapshotResponse containing the operation_id.
         Raises:
             SnapshotAgentError on gRPC or unexpected errors.
         """
         try:
-            if backend_config is not None:
-                # Extract backend_enum from backend_config for backward compatibility with old servers
-                if backend_config.HasField("cuda"):
-                    backend_enum = snapshot_agent_pb2.BACKEND_CUDA
-                else:
-                    backend_enum = snapshot_agent_pb2.BACKEND_UNSPECIFIED
-            else:
-                backend_enum = self._get_backend_enum(backend)
-
-            # Send both backend and backend_config for backward compatibility
             request = snapshot_agent_pb2.SnapshotRequest(
                 job_id=job_id,
                 group=group,
-                backend=backend_enum,
                 backend_config=backend_config,
             )
             logger.info(
-                f"Calling Snapshot with job_id={job_id}, group={group}, backend={backend_enum}, backend_config={backend_config}..."
+                f"Calling Snapshot with job_id={job_id}, group={group}, backend_config={backend_config}..."
             )
             response = self.stub.Snapshot(request)
             return SnapshotResponse(operation_id=response.operation_id)
@@ -182,26 +153,30 @@ class SnapshotAgentClient(SnapshotAgentInterface):
             raise SnapshotAgentError(f"Unexpected error: {e}") from e
 
     def restore(
-        self, job_id: str, group: str = "", backend: Union[str, int] = 0
+        self,
+        job_id: str,
+        group: str = "",
+        backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> RestoreResponse:
         """
         Triggers an asynchronous restoration.
         Args:
             job_id: ID of the job to restore.
             group: Group for the restoration.
-            backend: Backend to use.
+            backend_config: Optional BackendConfig proto.
         Returns:
             RestoreResponse containing the operation_id.
         Raises:
             SnapshotAgentError on gRPC or unexpected errors.
         """
         try:
-            backend_enum = self._get_backend_enum(backend)
             request = snapshot_agent_pb2.RestoreRequest(
-                job_id=job_id, group=group, backend=backend_enum
+                job_id=job_id,
+                group=group,
+                backend_config=backend_config,
             )
             logger.info(
-                f"Calling Restore with job_id={job_id}, group={group}, backend={backend_enum}..."
+                f"Calling Restore with job_id={job_id}, group={group}, backend_config={backend_config}..."
             )
             response = self.stub.Restore(request)
             return RestoreResponse(operation_id=response.operation_id)
@@ -324,21 +299,20 @@ class SnapshotAgentClient(SnapshotAgentInterface):
         self,
         job_id: str,
         group: str = "",
-        backend: Union[str, int] = 0,
         poll_interval_sec: float = 1.0,
         backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> GetOperationResponse:
         """Calls snapshot and waits for completion."""
-        response = self.snapshot(job_id, group, backend, backend_config=backend_config)
+        response = self.snapshot(job_id, group, backend_config=backend_config)
         return self.wait_for_operation(response.operation_id, poll_interval_sec)
 
     def restore_and_wait(
         self,
         job_id: str,
         group: str = "",
-        backend: Union[str, int] = 0,
         poll_interval_sec: float = 1.0,
+        backend_config: Optional[snapshot_agent_pb2.BackendConfig] = None,
     ) -> GetOperationResponse:
         """Calls restore and waits for completion."""
-        response = self.restore(job_id, group, backend)
+        response = self.restore(job_id, group, backend_config=backend_config)
         return self.wait_for_operation(response.operation_id, poll_interval_sec)

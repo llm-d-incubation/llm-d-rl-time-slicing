@@ -29,10 +29,13 @@ from timeslice.snapshot_agent import SnapshotAgentClient
 
 with SnapshotAgentClient(endpoint="localhost:9001") as client:
     # Trigger a snapshot and wait for it to complete
+    from timeslice.snapshot_agent import snapshot_agent_pb2
     result = client.snapshot_and_wait(
         job_id="my-job", 
         group="default", 
-        backend="CUDA"
+        backend_config=snapshot_agent_pb2.BackendConfig(
+            cuda=snapshot_agent_pb2.CudaBackendConfig()
+        )
     )
     print(f"Snapshot finished with status: {result.status}")
 ```

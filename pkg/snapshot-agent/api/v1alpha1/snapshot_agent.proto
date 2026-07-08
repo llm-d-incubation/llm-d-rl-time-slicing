@@ -20,6 +20,7 @@ service SnapshotAgentService {
 }
 
 enum Backend {
+  option deprecated = true;
   BACKEND_UNSPECIFIED = 0;
   BACKEND_CUDA = 1;
 }
@@ -67,7 +68,10 @@ message RestoreRequest {
   string job_id = 1;
   // group is an optional identifier for a set of related jobs.
   string group = 2;
-  Backend backend = 3;
+  // Deprecated: Use backend_config instead.
+  Backend backend = 3 [deprecated = true];
+  // backend_config specifies the backend-specific configuration for the restoration.
+  BackendConfig backend_config = 4;
 }
 
 message RestoreResponse {

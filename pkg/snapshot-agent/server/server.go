@@ -43,28 +43,13 @@ func NewServer(
 	}
 }
 
-func (s *Server) getBackendType(backend pb.Backend) backends.BackendType {
-	switch backend {
-	case pb.Backend_BACKEND_CUDA:
-		return backends.BackendCuda
-	default:
-		return s.defaultBackend
-	}
-}
-
 // Snapshot triggers an asynchronous snapshot of the accelerator context for a job.
 func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.SnapshotResponse, error) {
 	ctx = logging.WithServerMethod(ctx, "Snapshot")
 	ctx = logging.WithJobID(ctx, req.GetJobId())
 	ctx = logging.WithGroupID(ctx, req.GetGroup())
 
-	var backendType backends.BackendType
-	if req.GetBackendConfig() != nil {
-		backendType = s.getSnapshotBackendType(req.GetBackendConfig())
-	} else {
-		//nolint:staticcheck // SA1019: Keep supporting deprecated backend field for backward compatibility
-		backendType = s.getBackendType(req.GetBackend())
-	}
+	backendType := s.getSnapshotBackendType(req.GetBackendConfig())
 	slog.InfoContext(ctx, "Snapshot called", "backend", backendType)
 
 	var explicitPIDs []int32
@@ -126,9 +111,8 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 	ctx = logging.WithJobID(ctx, req.GetJobId())
 	ctx = logging.WithGroupID(ctx, req.GetGroup())
 
-	slog.InfoContext(ctx, "Restore called", "backend", req.GetBackend())
-
-	backendType := s.getBackendType(req.GetBackend())
+	backendType := s.getSnapshotBackendType(req.GetBackendConfig())
+	slog.InfoContext(ctx, "Restore called", "backend", backendType)
 
 	backend, ok := s.backendMap[backendType]
 	if !ok {
