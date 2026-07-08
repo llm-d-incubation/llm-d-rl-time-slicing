@@ -105,6 +105,7 @@ enum JobState {
     JOB_STATE_TRANSITIONING = 3;
     JOB_STATE_SAVED = 4;
     JOB_STATE_FAULTED = 5;
+    JOB_STATE_NOT_FOUND = 6;
 }
 
 message JobStatus {
