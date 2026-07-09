@@ -220,30 +220,32 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 		return fmt.Errorf("failed to observe job context: %w", err)
 	}
 
-	// TODO: deduce activejob for restart case when group is in STATE_IDLE_YIELDED
-
 	// 2. Determine Desired State
-	g, err := c.groupStore.Get(ctx, groupID)
+	group, err := c.groupStore.Get(ctx, groupID)
 	if err != nil {
 		return fmt.Errorf("failed to get group %s from store: %w", groupID, err)
 	}
 
-	if _, err := g.Spec().TryPromote(ctx); err != nil {
+	if err := c.tryDeduceActiveJob(ctx, group); err != nil {
+		return fmt.Errorf("failed to try deducing active job: %w", err)
+	}
+
+	if _, err := group.Spec().TryPromote(ctx); err != nil {
 		return fmt.Errorf("failed to promote next job: %w", err)
 	}
 
-	activeJob := g.Spec().ActiveJob()
+	activeJob := group.Spec().ActiveJob()
 
 	// 3. Act
 	// TODO: add optional fan out parallelism for node reconciliation
-	for _, node := range g.Status().Nodes() {
-		if err := c.reconcileNode(ctx, g.ID(), node, activeJob); err != nil {
+	for _, node := range group.Status().Nodes() {
+		if err := c.reconcileNode(ctx, group.ID(), node, activeJob); err != nil {
 			return fmt.Errorf("failed to reconcile node %s: %w", node, err)
 		}
 	}
 
 	// 4. Update Status
-	if err := c.updateGroupStatus(ctx, g); err != nil {
+	if err := c.updateGroupStatus(ctx, group); err != nil {
 		return fmt.Errorf("failed to update group status: %w", err)
 	}
 
@@ -338,6 +340,44 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 	}
 	if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
 		return fmt.Errorf("failed to refresh agent state after restore: %w", err)
+	}
+
+	return nil
+}
+
+// tryDeduceActiveJob is a best-effort helper that deduces and sets the active job after a controller
+// restart when no job is currently locking the group and exactly one job is loaded on all nodes.
+// If multiple jobs appear loaded or none are loaded, it cannot deduce what was going on and leaves activeJob unchanged.
+func (c *Controller) tryDeduceActiveJob(ctx context.Context, group *store.Group) error {
+	if group.Spec().LockingJob() != "" || group.Spec().ActiveJob() != "" {
+		return nil
+	}
+
+	jobs, err := c.jobStore.ListByGroup(ctx, group.ID())
+	if err != nil {
+		return fmt.Errorf("failed to list jobs for group %s: %w", group.ID(), err)
+	}
+
+	var loadedJob string
+	for _, job := range jobs {
+		loaded, err := c.isJobLoaded(ctx, group, job.JobID())
+		if err != nil {
+			return fmt.Errorf("failed to check if job %s is loaded: %w", job.JobID(), err)
+		}
+		if loaded {
+			if loadedJob != "" {
+				// Multiple jobs appear loaded; cannot unambiguously deduce the active job
+				slog.WarnContext(ctx, "Cannot deduce active job during restart: at least two jobs appear loaded",
+					"candidate1", loadedJob, "candidate2", job.JobID())
+				return nil
+			}
+			loadedJob = job.JobID()
+		}
+	}
+
+	if loadedJob != "" {
+		slog.InfoContext(ctx, "Deduced active job for restart case", "activeJobID", loadedJob)
+		group.Spec().SetActiveJob(loadedJob)
 	}
 
 	return nil
