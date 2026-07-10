@@ -83,6 +83,9 @@ func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.Backe
 	if config.GetCuda() != nil {
 		return backends.BackendCuda
 	}
+	if config.GetAppEndpoint() != nil {
+		return backends.BackendAppEndpoint
+	}
 	return s.defaultBackend
 }
 
