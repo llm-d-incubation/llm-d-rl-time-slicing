@@ -70,6 +70,8 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
 	}
 
+	s.ensureJobRunningIfGPUOccupied(ctx, req.GetJobId(), req.GetGroup())
+
 	bgCtx := context.WithoutCancel(ctx)
 	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() error {
 		slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
@@ -103,6 +105,37 @@ func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.Backe
 		return backends.BackendCuda
 	}
 	return s.defaultBackend
+}
+
+// ensureJobRunningIfGPUOccupied registers the job and, if it is IDLE while
+// the GPU has running compute processes, transitions it to RUNNING.
+//
+// Standalone mode only: in k8s mode the watcher is the single source of
+// state-machine transitions (and additionally binds jobs to their targets,
+// e.g. PIDs for the CUDA backend — a backend-specific concern that a future
+// discovery interface will own per backend).
+func (s *Server) ensureJobRunningIfGPUOccupied(ctx context.Context, jobID, group string) {
+	if s.deploymentMode != "standalone" {
+		return
+	}
+	s.state.RegisterJob(jobID, group)
+	statuses := s.state.GetJobStatus()
+	for _, js := range statuses {
+		if js.JobId == jobID && js.State == pb.JobState_JOB_STATE_IDLE {
+			occupied, err := podutils.HasGPUProcesses(ctx)
+			if err != nil {
+				slog.WarnContext(ctx, "NVML check failed, skipping auto-transition", "error", err)
+				return
+			}
+			if occupied {
+				slog.InfoContext(ctx, "GPU occupied, transitioning job to RUNNING", "jobID", jobID)
+				if err := s.state.TransitionToRunning(jobID, nil); err != nil {
+					slog.WarnContext(ctx, "Failed to auto-transition job", "jobID", jobID, "error", err)
+				}
+			}
+			break
+		}
+	}
 }
 
 // Restore triggers an asynchronous restoration of the accelerator context for a job.
