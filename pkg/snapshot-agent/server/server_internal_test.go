@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -59,7 +60,10 @@ func initGRPCServer() {
 		"failing":            failingBackend,
 	}
 
-	testServer = NewServer(backendsMap, backends.BackendNoop, "k8s")
+	// Default to BackendCuda (matching production) so that requests without a
+	// BackendConfig take the k8s CUDA discovery path; the registered
+	// implementation is still the noop backend.
+	testServer = NewServer(backendsMap, backends.BackendCuda, "k8s")
 	pb.RegisterSnapshotAgentServiceServer(s, testServer)
 	grpc_health_v1.RegisterHealthServer(s, NewHealthServer(backendsMap, backends.BackendNoop))
 	go func() {
@@ -593,23 +597,13 @@ func TestServer_Snapshot_StandaloneMode(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewSnapshotAgentServiceClient(conn)
 
-	// Test without PIDs in standalone mode (should fail)
-	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
-		JobId: "test-job-standalone",
-	})
-	if err == nil {
-		t.Errorf("Expected failure when PIDs are not provided in standalone mode")
-	} else if status.Code(err) != codes.InvalidArgument {
-		t.Errorf("Expected InvalidArgument error, got: %v", err)
-	}
-
 	// Register the job and transition it to RUNNING in the state machine
 	standaloneServer.state.RegisterJob("test-job-standalone", "")
 	if err := standaloneServer.state.TransitionToRunning("test-job-standalone", []int{123}); err != nil {
 		t.Fatalf("Failed to transition job to RUNNING: %v", err)
 	}
 
-	// Test with PIDs in standalone mode (should succeed)
+	// Test with PIDs in standalone mode (should succeed — backend validates)
 	_, err = client.Snapshot(ctx, &pb.SnapshotRequest{
 		JobId: "test-job-standalone",
 		BackendConfig: &pb.BackendConfig{
@@ -624,5 +618,75 @@ func TestServer_Snapshot_StandaloneMode(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("Expected success, got error: %v", err)
+	}
+}
+
+// TestServer_Snapshot_StandaloneMode_BackendValidation verifies that in
+// standalone mode the server passes the config through untouched and backend
+// validation failures (here: a CUDA config with no PIDs) surface as a FAILED
+// operation rather than a synchronous RPC error.
+func TestServer_Snapshot_StandaloneMode_BackendValidation(t *testing.T) {
+	lisDev := bufconn.Listen(bufSize)
+	s := grpc.NewServer()
+	backendsMap := map[backends.BackendType]backends.Backend{
+		backends.BackendCuda: backends.NewCudaCheckpoint(),
+	}
+	standaloneServer := NewServer(backendsMap, backends.BackendCuda, "standalone")
+	pb.RegisterSnapshotAgentServiceServer(s, standaloneServer)
+	go func() {
+		if err := s.Serve(lisDev); err != nil {
+			return
+		}
+	}()
+	defer s.GracefulStop()
+
+	ctx := context.Background()
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lisDev.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial bufnet: %v", err)
+	}
+	defer conn.Close()
+	client := pb.NewSnapshotAgentServiceClient(conn)
+
+	standaloneServer.state.RegisterJob("test-job-standalone-nopids", "")
+	if err := standaloneServer.state.TransitionToRunning("test-job-standalone-nopids", []int{123}); err != nil {
+		t.Fatalf("Failed to transition job to RUNNING: %v", err)
+	}
+
+	// CUDA config with no PIDs: the RPC is accepted (validation is the
+	// backend's job and runs in the background operation).
+	resp, err := client.Snapshot(ctx, &pb.SnapshotRequest{
+		JobId: "test-job-standalone-nopids",
+		BackendConfig: &pb.BackendConfig{
+			Backend: &pb.BackendConfig_Cuda{
+				Cuda: &pb.CudaBackendConfig{},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Expected RPC to be accepted, got error: %v", err)
+	}
+
+	// The operation must end FAILED with the backend's validation error.
+	var opResp *pb.GetOperationResponse
+	for range 50 {
+		opResp, err = client.GetOperation(ctx, &pb.GetOperationRequest{OperationId: resp.GetOperationId()})
+		if err != nil {
+			t.Fatalf("GetOperation failed: %v", err)
+		}
+		if opResp.GetStatus() != pb.OperationStatus_OPERATION_STATUS_PENDING {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if opResp.GetStatus() != pb.OperationStatus_OPERATION_STATUS_FAILED {
+		t.Fatalf("Expected operation status FAILED, got %v", opResp.GetStatus())
+	}
+	if !strings.Contains(opResp.GetError(), "PID") {
+		t.Errorf("Expected backend PID validation error, got: %q", opResp.GetError())
 	}
 }
