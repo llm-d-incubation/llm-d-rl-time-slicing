@@ -47,8 +47,9 @@ func main() {
 	ctx := context.Background()
 
 	registeredBackends := map[backends.BackendType]backends.Backend{
-		backends.BackendCuda: backends.NewCudaCheckpoint(),
-		backends.BackendNoop: backends.NewNoopBackend(),
+		backends.BackendCuda:        backends.NewCudaCheckpoint(),
+		backends.BackendNoop:        backends.NewNoopBackend(),
+		backends.BackendAppEndpoint: backends.NewAppEndpointBackend(),
 	}
 
 	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", *port, "deploymentMode", depMode)

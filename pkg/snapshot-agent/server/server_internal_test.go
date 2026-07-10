@@ -55,9 +55,10 @@ func initGRPCServer() {
 	noopBackend := backends.NewNoopBackend()
 	failingBackend := &FailingBackend{}
 	backendsMap := map[backends.BackendType]backends.Backend{
-		backends.BackendNoop: noopBackend,
-		backends.BackendCuda: noopBackend,
-		"failing":            failingBackend,
+		backends.BackendNoop:        noopBackend,
+		backends.BackendCuda:        noopBackend,
+		backends.BackendAppEndpoint: noopBackend,
+		"failing":                   failingBackend,
 	}
 
 	// Default to BackendCuda (matching production) so that requests without a
@@ -618,6 +619,63 @@ func TestServer_Snapshot_StandaloneMode(t *testing.T) {
 	})
 	if err != nil {
 		t.Errorf("Expected success, got error: %v", err)
+	}
+}
+
+// TestServer_Snapshot_K8sMode_InferenceEngine verifies that in k8s mode
+// inference engine configs are passed through to the backend without PID
+// discovery: no pods or PIDs are mocked for this job, so the snapshot only
+// succeeds if the server skipped the CUDA discovery path.
+func TestServer_Snapshot_K8sMode_InferenceEngine(t *testing.T) {
+	initGRPCServer()
+	ctx := context.Background()
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(bufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial bufnet: %v", err)
+	}
+	defer conn.Close()
+	client := pb.NewSnapshotAgentServiceClient(conn)
+
+	jobID := "test-job-k8s-vllm"
+	testServer.state.RegisterJob(jobID, "")
+	if err := testServer.state.TransitionToRunning(jobID, nil); err != nil {
+		t.Fatalf("Failed to transition job to RUNNING: %v", err)
+	}
+
+	resp, err := client.Snapshot(ctx, &pb.SnapshotRequest{
+		JobId: jobID,
+		BackendConfig: &pb.BackendConfig{
+			Backend: &pb.BackendConfig_AppEndpoint{
+				AppEndpoint: &pb.AppEndpointConfig{
+					App:       pb.App_APP_VLLM,
+					Endpoints: []string{"http://localhost:8000"},
+					Mode:      pb.SuspendMode_SUSPEND_MODE_OFFLOAD,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Expected vLLM snapshot to be accepted in k8s mode, got error: %v", err)
+	}
+
+	// The noop backend registered under BackendAppEndpoint succeeds immediately; the
+	// operation completing proves the config was passed through without PID
+	// discovery (which would have failed — no pods exist for this job).
+	var opResp *pb.GetOperationResponse
+	for range 50 {
+		opResp, err = client.GetOperation(ctx, &pb.GetOperationRequest{OperationId: resp.GetOperationId()})
+		if err != nil {
+			t.Fatalf("GetOperation failed: %v", err)
+		}
+		if opResp.GetStatus() != pb.OperationStatus_OPERATION_STATUS_PENDING {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if opResp.GetStatus() != pb.OperationStatus_OPERATION_STATUS_COMPLETE {
+		t.Fatalf("Expected operation status COMPLETE, got %v (error: %q)", opResp.GetStatus(), opResp.GetError())
 	}
 }
 

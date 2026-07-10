@@ -122,9 +122,10 @@ func (s *Server) ensureJobRunningIfGPUOccupied(ctx context.Context, jobID, group
 
 // buildSnapshotFn returns the background snapshot function for the given
 // deployment mode and backend. In standalone mode the caller-provided
-// BackendConfig is passed through to the backend as-is. In k8s mode, only the
-// CUDA backend is supported: it needs PID discovery (resolve PIDs from pods
-// via the watcher's job labels, then cache them for restore).
+// BackendConfig is passed through to the backend as-is. In k8s mode, the CUDA
+// backend needs PID discovery (resolve PIDs from pods via the watcher's job
+// labels, then cache them for restore); inference engine backends carry their
+// targets (HTTP endpoints) in the config itself, so it is passed through.
 func (s *Server) buildSnapshotFn(
 	bgCtx context.Context,
 	jobID string,
@@ -139,7 +140,8 @@ func (s *Server) buildSnapshotFn(
 			return backend.Snapshot(bgCtx, backends.Request{JobID: jobID, Config: config})
 		}, nil
 	case "k8s":
-		if backendType == backends.BackendCuda {
+		switch backendType {
+		case backends.BackendCuda:
 			explicitPIDs := extractExplicitPIDs(config)
 			return func() error {
 				slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
@@ -154,8 +156,14 @@ func (s *Server) buildSnapshotFn(
 				s.state.UpdateJobPIDs(jobID, allPIDs)
 				return nil
 			}, nil
+		case backends.BackendAppEndpoint:
+			return func() error {
+				slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
+				return backend.Snapshot(bgCtx, backends.Request{JobID: jobID, Config: config})
+			}, nil
+		default:
+			return nil, status.Errorf(codes.InvalidArgument, "backend %q is not supported in k8s mode", backendType)
 		}
-		return nil, status.Errorf(codes.InvalidArgument, "backend %q is not supported in k8s mode", backendType)
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown deployment mode %q", s.deploymentMode)
 	}
@@ -177,9 +185,11 @@ func extractExplicitPIDs(config *pb.BackendConfig) []int32 {
 
 // buildRestoreFn returns the background restore function for the given
 // deployment mode and backend. In standalone mode the caller-provided
-// BackendConfig is passed through as-is. In k8s mode, only the CUDA backend
-// is supported: it restores from the PIDs cached at snapshot time (NVML
-// cannot re-discover them after checkpoint frees the GPU).
+// BackendConfig is passed through as-is. In k8s mode, the CUDA backend
+// restores from the PIDs cached at snapshot time (NVML cannot re-discover
+// them after checkpoint frees the GPU); inference engine backends carry
+// their targets (HTTP endpoints) in the config itself, so it is passed
+// through.
 func (s *Server) buildRestoreFn(
 	bgCtx context.Context,
 	jobID string,
@@ -194,7 +204,8 @@ func (s *Server) buildRestoreFn(
 			return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: config})
 		}, nil
 	case "k8s":
-		if backendType == backends.BackendCuda {
+		switch backendType {
+		case backends.BackendCuda:
 			return func() error {
 				slog.InfoContext(bgCtx, "Background: Starting restore", "backend", backendType)
 				pids, pidErr := s.state.GetJobPIDs(jobID)
@@ -208,8 +219,14 @@ func (s *Server) buildRestoreFn(
 				slog.InfoContext(bgCtx, "Restoring PIDs", "pids", pidStrings, "backend", backendType)
 				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: backends.BuildCudaConfig(pidStrings)})
 			}, nil
+		case backends.BackendAppEndpoint:
+			return func() error {
+				slog.InfoContext(bgCtx, "Background: Starting restore", "backend", backendType)
+				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: config})
+			}, nil
+		default:
+			return nil, status.Errorf(codes.InvalidArgument, "backend %q is not supported in k8s mode", backendType)
 		}
-		return nil, status.Errorf(codes.InvalidArgument, "backend %q is not supported in k8s mode", backendType)
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown deployment mode %q", s.deploymentMode)
 	}
