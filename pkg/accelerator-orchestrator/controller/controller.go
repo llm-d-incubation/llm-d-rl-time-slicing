@@ -283,11 +283,9 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 		if state, ok := agentJobStates[activeJobID]; ok && state == pb.SnapshotAgentJobState_STATE_FAULTED {
 			return fmt.Errorf("active job %s is in FAULTED state on node %s, requires human intervention", activeJobID, nodeName)
 		}
-	}
 
-	// Wait out any existing transitioning. We lack the operation ID to track so wait via error
-	// to retry later via rate-limited requeue.
-	if activeJobID != "" {
+		// Wait out any existing transitioning. We lack the operation ID to track so wait via error
+		// to retry later via rate-limited requeue.
 		if state, ok := agentJobStates[activeJobID]; ok && state == pb.SnapshotAgentJobState_STATE_TRANSITIONING {
 			slog.InfoContext(ctx, "Active job is TRANSITIONING, waiting for it to finish", "activeJobID", activeJobID)
 			return fmt.Errorf("reconciliation pending: active job %s is currently transitioning", activeJobID)
