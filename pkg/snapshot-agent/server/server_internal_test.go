@@ -515,6 +515,127 @@ func TestServer_Snapshot_StandaloneAutoTransition(t *testing.T) {
 	})
 }
 
+// mockAppAwareBackend implements AppAwareBackend for testing the server dispatch.
+type mockAppAwareBackend struct {
+	backends.NoopBackend
+}
+
+func (m *mockAppAwareBackend) SnapshotApp(_ context.Context, _ backends.AppConfig) error {
+	return nil
+}
+
+func (m *mockAppAwareBackend) RestoreApp(_ context.Context, _ backends.AppConfig) error {
+	return nil
+}
+
+func TestServer_Snapshot_AppAwareBackend(t *testing.T) {
+	appBackend := &mockAppAwareBackend{}
+	noopBackend := backends.NewNoopBackend()
+	backendsMap := map[backends.BackendType]backends.Backend{
+		backends.BackendNoop: noopBackend,
+		backends.BackendVLLM: appBackend,
+	}
+
+	t.Run("App-aware skips PID requirement in standalone", func(t *testing.T) {
+		client, cleanup := newStandaloneTestServer(
+			t, backendsMap, backends.BackendNoop, true)
+		defer cleanup()
+
+		resp, err := client.Snapshot(context.Background(), &pb.SnapshotRequest{
+			JobId: "app-test",
+			BackendConfig: &pb.BackendConfig{
+				Backend: &pb.BackendConfig_Vllm{
+					Vllm: &pb.VLLMBackendConfig{
+						Endpoints:  []string{"http://localhost:8000"},
+						SleepLevel: 1,
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Expected success, got: %v", err)
+		}
+		if resp.OperationId == "" {
+			t.Error("Expected operation ID")
+		}
+	})
+
+	t.Run("App-aware rejects when GPU not occupied", func(t *testing.T) {
+		client, cleanup := newStandaloneTestServer(
+			t, backendsMap, backends.BackendNoop, false)
+		defer cleanup()
+
+		_, err := client.Snapshot(context.Background(), &pb.SnapshotRequest{
+			JobId: "app-no-gpu",
+			BackendConfig: &pb.BackendConfig{
+				Backend: &pb.BackendConfig_Vllm{
+					Vllm: &pb.VLLMBackendConfig{
+						Endpoints:  []string{"http://localhost:8000"},
+						SleepLevel: 1,
+					},
+				},
+			},
+		})
+		if err == nil {
+			t.Fatal("Expected failure when GPU not occupied")
+		}
+	})
+
+	t.Run("App-aware restore after snapshot", func(t *testing.T) {
+		client, cleanup := newStandaloneTestServer(
+			t, backendsMap, backends.BackendNoop, true)
+		defer cleanup()
+
+		resp, err := client.Snapshot(context.Background(), &pb.SnapshotRequest{
+			JobId: "app-roundtrip",
+			BackendConfig: &pb.BackendConfig{
+				Backend: &pb.BackendConfig_Vllm{
+					Vllm: &pb.VLLMBackendConfig{
+						Endpoints:  []string{"http://localhost:8000"},
+						SleepLevel: 1,
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Snapshot failed: %v", err)
+		}
+
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			op, opErr := client.GetOperation(context.Background(),
+				&pb.GetOperationRequest{OperationId: resp.OperationId})
+			if opErr != nil {
+				t.Fatalf("GetOperation failed: %v", opErr)
+			}
+			if op.Status == pb.OperationStatus_OPERATION_STATUS_COMPLETE {
+				break
+			}
+			if op.Status == pb.OperationStatus_OPERATION_STATUS_FAILED {
+				t.Fatalf("Snapshot operation failed: %s", op.GetError())
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		resp2, err := client.Restore(context.Background(), &pb.RestoreRequest{
+			JobId: "app-roundtrip",
+			BackendConfig: &pb.BackendConfig{
+				Backend: &pb.BackendConfig_Vllm{
+					Vllm: &pb.VLLMBackendConfig{
+						Endpoints: []string{"http://localhost:8000"},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Restore failed: %v", err)
+		}
+		if resp2.OperationId == "" {
+			t.Error("Expected operation ID for restore")
+		}
+	})
+}
+
 func TestServer_Snapshot_StandaloneMode(t *testing.T) {
 	lisDev := bufconn.Listen(bufSize)
 	s := grpc.NewServer()

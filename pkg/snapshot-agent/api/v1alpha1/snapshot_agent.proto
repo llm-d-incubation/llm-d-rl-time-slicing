@@ -37,9 +37,36 @@ message CudaBackendConfig {
   ProcessTarget explicit_target = 1;
 }
 
+// VLLMBackendConfig configures application-aware offloading for vLLM inference servers.
+// Uses vLLM's dev-mode HTTP endpoints: POST /sleep?level=N and POST /wake_up.
+// Requires VLLM_SERVER_DEV_MODE=1 and --enable-sleep-mode on the vLLM server.
+message VLLMBackendConfig {
+  // HTTP endpoint(s) of the vLLM server(s), e.g. "http://localhost:8000".
+  repeated string endpoints = 1;
+  // Sleep level: 1 = offload weights to CPU (keep buffers), 2 = discard weights and KV cache.
+  // Default: 1.
+  int32 sleep_level = 2;
+  // Tags for partial wake-up, e.g. ["weights"], ["kv_cache"], or both.
+  // If empty, wakes up all resources at once.
+  repeated string wake_tags = 3;
+}
+
+// SGLangBackendConfig configures application-aware offloading for SGLang inference servers.
+// Uses SGLang's memory management endpoints: POST /release_memory_occupation and
+// POST /resume_memory_occupation. Requires --enable-memory-saver on the SGLang server.
+message SGLangBackendConfig {
+  // HTTP endpoint(s) of the SGLang server(s), e.g. "http://localhost:30000".
+  repeated string endpoints = 1;
+  // Tags for granular control: "weights", "kv_cache", or both.
+  // If empty, releases/resumes all memory regions.
+  repeated string tags = 2;
+}
+
 message BackendConfig {
   oneof backend {
     CudaBackendConfig cuda = 1;
+    VLLMBackendConfig vllm = 2;
+    SGLangBackendConfig sglang = 3;
   }
 }
 
@@ -67,7 +94,10 @@ message RestoreRequest {
   string job_id = 1;
   // group is an optional identifier for a set of related jobs.
   string group = 2;
-  Backend backend = 3;
+  // Deprecated: Use backend_config instead.
+  Backend backend = 3 [deprecated = true];
+  // backend_config specifies the backend-specific configuration for the restore.
+  BackendConfig backend_config = 4;
 }
 
 message RestoreResponse {

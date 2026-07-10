@@ -7,12 +7,11 @@
 package v1alpha1
 
 import (
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
-
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -271,11 +270,139 @@ func (x *CudaBackendConfig) GetExplicitTarget() *ProcessTarget {
 	return nil
 }
 
+// VLLMBackendConfig configures application-aware offloading for vLLM inference servers.
+// Uses vLLM's dev-mode HTTP endpoints: POST /sleep?level=N and POST /wake_up.
+// Requires VLLM_SERVER_DEV_MODE=1 and --enable-sleep-mode on the vLLM server.
+type VLLMBackendConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// HTTP endpoint(s) of the vLLM server(s), e.g. "http://localhost:8000".
+	Endpoints []string `protobuf:"bytes,1,rep,name=endpoints,proto3" json:"endpoints,omitempty"`
+	// Sleep level: 1 = offload weights to CPU (keep buffers), 2 = discard weights and KV cache.
+	// Default: 1.
+	SleepLevel int32 `protobuf:"varint,2,opt,name=sleep_level,json=sleepLevel,proto3" json:"sleep_level,omitempty"`
+	// Tags for partial wake-up, e.g. ["weights"], ["kv_cache"], or both.
+	// If empty, wakes up all resources at once.
+	WakeTags      []string `protobuf:"bytes,3,rep,name=wake_tags,json=wakeTags,proto3" json:"wake_tags,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VLLMBackendConfig) Reset() {
+	*x = VLLMBackendConfig{}
+	mi := &file_snapshot_agent_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VLLMBackendConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VLLMBackendConfig) ProtoMessage() {}
+
+func (x *VLLMBackendConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_snapshot_agent_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VLLMBackendConfig.ProtoReflect.Descriptor instead.
+func (*VLLMBackendConfig) Descriptor() ([]byte, []int) {
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *VLLMBackendConfig) GetEndpoints() []string {
+	if x != nil {
+		return x.Endpoints
+	}
+	return nil
+}
+
+func (x *VLLMBackendConfig) GetSleepLevel() int32 {
+	if x != nil {
+		return x.SleepLevel
+	}
+	return 0
+}
+
+func (x *VLLMBackendConfig) GetWakeTags() []string {
+	if x != nil {
+		return x.WakeTags
+	}
+	return nil
+}
+
+// SGLangBackendConfig configures application-aware offloading for SGLang inference servers.
+// Uses SGLang's memory management endpoints: POST /release_memory_occupation and
+// POST /resume_memory_occupation. Requires --enable-memory-saver on the SGLang server.
+type SGLangBackendConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// HTTP endpoint(s) of the SGLang server(s), e.g. "http://localhost:30000".
+	Endpoints []string `protobuf:"bytes,1,rep,name=endpoints,proto3" json:"endpoints,omitempty"`
+	// Tags for granular control: "weights", "kv_cache", or both.
+	// If empty, releases/resumes all memory regions.
+	Tags          []string `protobuf:"bytes,2,rep,name=tags,proto3" json:"tags,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SGLangBackendConfig) Reset() {
+	*x = SGLangBackendConfig{}
+	mi := &file_snapshot_agent_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SGLangBackendConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SGLangBackendConfig) ProtoMessage() {}
+
+func (x *SGLangBackendConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_snapshot_agent_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SGLangBackendConfig.ProtoReflect.Descriptor instead.
+func (*SGLangBackendConfig) Descriptor() ([]byte, []int) {
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *SGLangBackendConfig) GetEndpoints() []string {
+	if x != nil {
+		return x.Endpoints
+	}
+	return nil
+}
+
+func (x *SGLangBackendConfig) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
 type BackendConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Backend:
 	//
 	//	*BackendConfig_Cuda
+	//	*BackendConfig_Vllm
+	//	*BackendConfig_Sglang
 	Backend       isBackendConfig_Backend `protobuf_oneof:"backend"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -283,7 +410,7 @@ type BackendConfig struct {
 
 func (x *BackendConfig) Reset() {
 	*x = BackendConfig{}
-	mi := &file_snapshot_agent_proto_msgTypes[2]
+	mi := &file_snapshot_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -295,7 +422,7 @@ func (x *BackendConfig) String() string {
 func (*BackendConfig) ProtoMessage() {}
 
 func (x *BackendConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[2]
+	mi := &file_snapshot_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -308,7 +435,7 @@ func (x *BackendConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackendConfig.ProtoReflect.Descriptor instead.
 func (*BackendConfig) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{2}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *BackendConfig) GetBackend() isBackendConfig_Backend {
@@ -327,6 +454,24 @@ func (x *BackendConfig) GetCuda() *CudaBackendConfig {
 	return nil
 }
 
+func (x *BackendConfig) GetVllm() *VLLMBackendConfig {
+	if x != nil {
+		if x, ok := x.Backend.(*BackendConfig_Vllm); ok {
+			return x.Vllm
+		}
+	}
+	return nil
+}
+
+func (x *BackendConfig) GetSglang() *SGLangBackendConfig {
+	if x != nil {
+		if x, ok := x.Backend.(*BackendConfig_Sglang); ok {
+			return x.Sglang
+		}
+	}
+	return nil
+}
+
 type isBackendConfig_Backend interface {
 	isBackendConfig_Backend()
 }
@@ -335,7 +480,19 @@ type BackendConfig_Cuda struct {
 	Cuda *CudaBackendConfig `protobuf:"bytes,1,opt,name=cuda,proto3,oneof"`
 }
 
+type BackendConfig_Vllm struct {
+	Vllm *VLLMBackendConfig `protobuf:"bytes,2,opt,name=vllm,proto3,oneof"`
+}
+
+type BackendConfig_Sglang struct {
+	Sglang *SGLangBackendConfig `protobuf:"bytes,3,opt,name=sglang,proto3,oneof"`
+}
+
 func (*BackendConfig_Cuda) isBackendConfig_Backend() {}
+
+func (*BackendConfig_Vllm) isBackendConfig_Backend() {}
+
+func (*BackendConfig_Sglang) isBackendConfig_Backend() {}
 
 type SnapshotRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -358,7 +515,7 @@ type SnapshotRequest struct {
 
 func (x *SnapshotRequest) Reset() {
 	*x = SnapshotRequest{}
-	mi := &file_snapshot_agent_proto_msgTypes[3]
+	mi := &file_snapshot_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -370,7 +527,7 @@ func (x *SnapshotRequest) String() string {
 func (*SnapshotRequest) ProtoMessage() {}
 
 func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[3]
+	mi := &file_snapshot_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -383,7 +540,7 @@ func (x *SnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotRequest.ProtoReflect.Descriptor instead.
 func (*SnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{3}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SnapshotRequest) GetJobId() string {
@@ -424,7 +581,7 @@ type SnapshotResponse struct {
 
 func (x *SnapshotResponse) Reset() {
 	*x = SnapshotResponse{}
-	mi := &file_snapshot_agent_proto_msgTypes[4]
+	mi := &file_snapshot_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -436,7 +593,7 @@ func (x *SnapshotResponse) String() string {
 func (*SnapshotResponse) ProtoMessage() {}
 
 func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[4]
+	mi := &file_snapshot_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -449,7 +606,7 @@ func (x *SnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotResponse.ProtoReflect.Descriptor instead.
 func (*SnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{4}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *SnapshotResponse) GetOperationId() string {
@@ -465,15 +622,20 @@ type RestoreRequest struct {
 	// job_id should be unique within that group.
 	JobId string `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	// group is an optional identifier for a set of related jobs.
-	Group         string  `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
-	Backend       Backend `protobuf:"varint,3,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
+	Group string `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
+	// Deprecated: Use backend_config instead.
+	//
+	// Deprecated: Marked as deprecated in snapshot_agent.proto.
+	Backend Backend `protobuf:"varint,3,opt,name=backend,proto3,enum=snapshot_agent.v1alpha1.Backend" json:"backend,omitempty"`
+	// backend_config specifies the backend-specific configuration for the restore.
+	BackendConfig *BackendConfig `protobuf:"bytes,4,opt,name=backend_config,json=backendConfig,proto3" json:"backend_config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RestoreRequest) Reset() {
 	*x = RestoreRequest{}
-	mi := &file_snapshot_agent_proto_msgTypes[5]
+	mi := &file_snapshot_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -485,7 +647,7 @@ func (x *RestoreRequest) String() string {
 func (*RestoreRequest) ProtoMessage() {}
 
 func (x *RestoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[5]
+	mi := &file_snapshot_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -498,7 +660,7 @@ func (x *RestoreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreRequest.ProtoReflect.Descriptor instead.
 func (*RestoreRequest) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{5}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RestoreRequest) GetJobId() string {
@@ -515,11 +677,19 @@ func (x *RestoreRequest) GetGroup() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in snapshot_agent.proto.
 func (x *RestoreRequest) GetBackend() Backend {
 	if x != nil {
 		return x.Backend
 	}
 	return Backend_BACKEND_UNSPECIFIED
+}
+
+func (x *RestoreRequest) GetBackendConfig() *BackendConfig {
+	if x != nil {
+		return x.BackendConfig
+	}
+	return nil
 }
 
 type RestoreResponse struct {
@@ -531,7 +701,7 @@ type RestoreResponse struct {
 
 func (x *RestoreResponse) Reset() {
 	*x = RestoreResponse{}
-	mi := &file_snapshot_agent_proto_msgTypes[6]
+	mi := &file_snapshot_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -543,7 +713,7 @@ func (x *RestoreResponse) String() string {
 func (*RestoreResponse) ProtoMessage() {}
 
 func (x *RestoreResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[6]
+	mi := &file_snapshot_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -556,7 +726,7 @@ func (x *RestoreResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreResponse.ProtoReflect.Descriptor instead.
 func (*RestoreResponse) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{6}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RestoreResponse) GetOperationId() string {
@@ -575,7 +745,7 @@ type GetOperationRequest struct {
 
 func (x *GetOperationRequest) Reset() {
 	*x = GetOperationRequest{}
-	mi := &file_snapshot_agent_proto_msgTypes[7]
+	mi := &file_snapshot_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -587,7 +757,7 @@ func (x *GetOperationRequest) String() string {
 func (*GetOperationRequest) ProtoMessage() {}
 
 func (x *GetOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[7]
+	mi := &file_snapshot_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -600,7 +770,7 @@ func (x *GetOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOperationRequest.ProtoReflect.Descriptor instead.
 func (*GetOperationRequest) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{7}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *GetOperationRequest) GetOperationId() string {
@@ -626,7 +796,7 @@ type GetOperationResponse struct {
 
 func (x *GetOperationResponse) Reset() {
 	*x = GetOperationResponse{}
-	mi := &file_snapshot_agent_proto_msgTypes[8]
+	mi := &file_snapshot_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -638,7 +808,7 @@ func (x *GetOperationResponse) String() string {
 func (*GetOperationResponse) ProtoMessage() {}
 
 func (x *GetOperationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[8]
+	mi := &file_snapshot_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -651,7 +821,7 @@ func (x *GetOperationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOperationResponse.ProtoReflect.Descriptor instead.
 func (*GetOperationResponse) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{8}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *GetOperationResponse) GetStatus() OperationStatus {
@@ -697,7 +867,7 @@ type StatusRequest struct {
 
 func (x *StatusRequest) Reset() {
 	*x = StatusRequest{}
-	mi := &file_snapshot_agent_proto_msgTypes[9]
+	mi := &file_snapshot_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -709,7 +879,7 @@ func (x *StatusRequest) String() string {
 func (*StatusRequest) ProtoMessage() {}
 
 func (x *StatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[9]
+	mi := &file_snapshot_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -722,7 +892,7 @@ func (x *StatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusRequest.ProtoReflect.Descriptor instead.
 func (*StatusRequest) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{9}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{11}
 }
 
 type JobStatus struct {
@@ -735,7 +905,7 @@ type JobStatus struct {
 
 func (x *JobStatus) Reset() {
 	*x = JobStatus{}
-	mi := &file_snapshot_agent_proto_msgTypes[10]
+	mi := &file_snapshot_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -747,7 +917,7 @@ func (x *JobStatus) String() string {
 func (*JobStatus) ProtoMessage() {}
 
 func (x *JobStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[10]
+	mi := &file_snapshot_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -760,7 +930,7 @@ func (x *JobStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobStatus.ProtoReflect.Descriptor instead.
 func (*JobStatus) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{10}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *JobStatus) GetJobId() string {
@@ -788,7 +958,7 @@ type AcceleratorStatus struct {
 
 func (x *AcceleratorStatus) Reset() {
 	*x = AcceleratorStatus{}
-	mi := &file_snapshot_agent_proto_msgTypes[11]
+	mi := &file_snapshot_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -800,7 +970,7 @@ func (x *AcceleratorStatus) String() string {
 func (*AcceleratorStatus) ProtoMessage() {}
 
 func (x *AcceleratorStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[11]
+	mi := &file_snapshot_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -813,7 +983,7 @@ func (x *AcceleratorStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcceleratorStatus.ProtoReflect.Descriptor instead.
 func (*AcceleratorStatus) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{11}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *AcceleratorStatus) GetId() string {
@@ -847,7 +1017,7 @@ type StatusResponse struct {
 
 func (x *StatusResponse) Reset() {
 	*x = StatusResponse{}
-	mi := &file_snapshot_agent_proto_msgTypes[12]
+	mi := &file_snapshot_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -859,7 +1029,7 @@ func (x *StatusResponse) String() string {
 func (*StatusResponse) ProtoMessage() {}
 
 func (x *StatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_snapshot_agent_proto_msgTypes[12]
+	mi := &file_snapshot_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -872,7 +1042,7 @@ func (x *StatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusResponse.ProtoReflect.Descriptor instead.
 func (*StatusResponse) Descriptor() ([]byte, []int) {
-	return file_snapshot_agent_proto_rawDescGZIP(), []int{12}
+	return file_snapshot_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *StatusResponse) GetJobStatuses() []*JobStatus {
@@ -897,9 +1067,19 @@ const file_snapshot_agent_proto_rawDesc = "" +
 	"\rProcessTarget\x12\x12\n" +
 	"\x04pids\x18\x01 \x03(\x05R\x04pids\"d\n" +
 	"\x11CudaBackendConfig\x12O\n" +
-	"\x0fexplicit_target\x18\x01 \x01(\v2&.snapshot_agent.v1alpha1.ProcessTargetR\x0eexplicitTarget\"\\\n" +
+	"\x0fexplicit_target\x18\x01 \x01(\v2&.snapshot_agent.v1alpha1.ProcessTargetR\x0eexplicitTarget\"o\n" +
+	"\x11VLLMBackendConfig\x12\x1c\n" +
+	"\tendpoints\x18\x01 \x03(\tR\tendpoints\x12\x1f\n" +
+	"\vsleep_level\x18\x02 \x01(\x05R\n" +
+	"sleepLevel\x12\x1b\n" +
+	"\twake_tags\x18\x03 \x03(\tR\bwakeTags\"G\n" +
+	"\x13SGLangBackendConfig\x12\x1c\n" +
+	"\tendpoints\x18\x01 \x03(\tR\tendpoints\x12\x12\n" +
+	"\x04tags\x18\x02 \x03(\tR\x04tags\"\xe6\x01\n" +
 	"\rBackendConfig\x12@\n" +
-	"\x04cuda\x18\x01 \x01(\v2*.snapshot_agent.v1alpha1.CudaBackendConfigH\x00R\x04cudaB\t\n" +
+	"\x04cuda\x18\x01 \x01(\v2*.snapshot_agent.v1alpha1.CudaBackendConfigH\x00R\x04cuda\x12@\n" +
+	"\x04vllm\x18\x02 \x01(\v2*.snapshot_agent.v1alpha1.VLLMBackendConfigH\x00R\x04vllm\x12F\n" +
+	"\x06sglang\x18\x03 \x01(\v2,.snapshot_agent.v1alpha1.SGLangBackendConfigH\x00R\x06sglangB\t\n" +
 	"\abackend\"\xcd\x01\n" +
 	"\x0fSnapshotRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
@@ -907,11 +1087,12 @@ const file_snapshot_agent_proto_rawDesc = "" +
 	"\abackend\x18\x03 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendB\x02\x18\x01R\abackend\x12M\n" +
 	"\x0ebackend_config\x18\x04 \x01(\v2&.snapshot_agent.v1alpha1.BackendConfigR\rbackendConfig\"5\n" +
 	"\x10SnapshotResponse\x12!\n" +
-	"\foperation_id\x18\x01 \x01(\tR\voperationId\"y\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\"\xcc\x01\n" +
 	"\x0eRestoreRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
-	"\x05group\x18\x02 \x01(\tR\x05group\x12:\n" +
-	"\abackend\x18\x03 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendR\abackend\"4\n" +
+	"\x05group\x18\x02 \x01(\tR\x05group\x12>\n" +
+	"\abackend\x18\x03 \x01(\x0e2 .snapshot_agent.v1alpha1.BackendB\x02\x18\x01R\abackend\x12M\n" +
+	"\x0ebackend_config\x18\x04 \x01(\v2&.snapshot_agent.v1alpha1.BackendConfigR\rbackendConfig\"4\n" +
 	"\x0fRestoreResponse\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\"8\n" +
 	"\x13GetOperationRequest\x12!\n" +
@@ -971,48 +1152,53 @@ func file_snapshot_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_snapshot_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_snapshot_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_snapshot_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_snapshot_agent_proto_goTypes = []any{
 	(Backend)(0),                 // 0: snapshot_agent.v1alpha1.Backend
 	(OperationStatus)(0),         // 1: snapshot_agent.v1alpha1.OperationStatus
 	(JobState)(0),                // 2: snapshot_agent.v1alpha1.JobState
 	(*ProcessTarget)(nil),        // 3: snapshot_agent.v1alpha1.ProcessTarget
 	(*CudaBackendConfig)(nil),    // 4: snapshot_agent.v1alpha1.CudaBackendConfig
-	(*BackendConfig)(nil),        // 5: snapshot_agent.v1alpha1.BackendConfig
-	(*SnapshotRequest)(nil),      // 6: snapshot_agent.v1alpha1.SnapshotRequest
-	(*SnapshotResponse)(nil),     // 7: snapshot_agent.v1alpha1.SnapshotResponse
-	(*RestoreRequest)(nil),       // 8: snapshot_agent.v1alpha1.RestoreRequest
-	(*RestoreResponse)(nil),      // 9: snapshot_agent.v1alpha1.RestoreResponse
-	(*GetOperationRequest)(nil),  // 10: snapshot_agent.v1alpha1.GetOperationRequest
-	(*GetOperationResponse)(nil), // 11: snapshot_agent.v1alpha1.GetOperationResponse
-	(*StatusRequest)(nil),        // 12: snapshot_agent.v1alpha1.StatusRequest
-	(*JobStatus)(nil),            // 13: snapshot_agent.v1alpha1.JobStatus
-	(*AcceleratorStatus)(nil),    // 14: snapshot_agent.v1alpha1.AcceleratorStatus
-	(*StatusResponse)(nil),       // 15: snapshot_agent.v1alpha1.StatusResponse
+	(*VLLMBackendConfig)(nil),    // 5: snapshot_agent.v1alpha1.VLLMBackendConfig
+	(*SGLangBackendConfig)(nil),  // 6: snapshot_agent.v1alpha1.SGLangBackendConfig
+	(*BackendConfig)(nil),        // 7: snapshot_agent.v1alpha1.BackendConfig
+	(*SnapshotRequest)(nil),      // 8: snapshot_agent.v1alpha1.SnapshotRequest
+	(*SnapshotResponse)(nil),     // 9: snapshot_agent.v1alpha1.SnapshotResponse
+	(*RestoreRequest)(nil),       // 10: snapshot_agent.v1alpha1.RestoreRequest
+	(*RestoreResponse)(nil),      // 11: snapshot_agent.v1alpha1.RestoreResponse
+	(*GetOperationRequest)(nil),  // 12: snapshot_agent.v1alpha1.GetOperationRequest
+	(*GetOperationResponse)(nil), // 13: snapshot_agent.v1alpha1.GetOperationResponse
+	(*StatusRequest)(nil),        // 14: snapshot_agent.v1alpha1.StatusRequest
+	(*JobStatus)(nil),            // 15: snapshot_agent.v1alpha1.JobStatus
+	(*AcceleratorStatus)(nil),    // 16: snapshot_agent.v1alpha1.AcceleratorStatus
+	(*StatusResponse)(nil),       // 17: snapshot_agent.v1alpha1.StatusResponse
 }
 var file_snapshot_agent_proto_depIdxs = []int32{
 	3,  // 0: snapshot_agent.v1alpha1.CudaBackendConfig.explicit_target:type_name -> snapshot_agent.v1alpha1.ProcessTarget
 	4,  // 1: snapshot_agent.v1alpha1.BackendConfig.cuda:type_name -> snapshot_agent.v1alpha1.CudaBackendConfig
-	0,  // 2: snapshot_agent.v1alpha1.SnapshotRequest.backend:type_name -> snapshot_agent.v1alpha1.Backend
-	5,  // 3: snapshot_agent.v1alpha1.SnapshotRequest.backend_config:type_name -> snapshot_agent.v1alpha1.BackendConfig
-	0,  // 4: snapshot_agent.v1alpha1.RestoreRequest.backend:type_name -> snapshot_agent.v1alpha1.Backend
-	1,  // 5: snapshot_agent.v1alpha1.GetOperationResponse.status:type_name -> snapshot_agent.v1alpha1.OperationStatus
-	2,  // 6: snapshot_agent.v1alpha1.JobStatus.state:type_name -> snapshot_agent.v1alpha1.JobState
-	13, // 7: snapshot_agent.v1alpha1.StatusResponse.job_statuses:type_name -> snapshot_agent.v1alpha1.JobStatus
-	14, // 8: snapshot_agent.v1alpha1.StatusResponse.accelerator_statuses:type_name -> snapshot_agent.v1alpha1.AcceleratorStatus
-	6,  // 9: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:input_type -> snapshot_agent.v1alpha1.SnapshotRequest
-	8,  // 10: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:input_type -> snapshot_agent.v1alpha1.RestoreRequest
-	10, // 11: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:input_type -> snapshot_agent.v1alpha1.GetOperationRequest
-	12, // 12: snapshot_agent.v1alpha1.SnapshotAgentService.Status:input_type -> snapshot_agent.v1alpha1.StatusRequest
-	7,  // 13: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:output_type -> snapshot_agent.v1alpha1.SnapshotResponse
-	9,  // 14: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:output_type -> snapshot_agent.v1alpha1.RestoreResponse
-	11, // 15: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:output_type -> snapshot_agent.v1alpha1.GetOperationResponse
-	15, // 16: snapshot_agent.v1alpha1.SnapshotAgentService.Status:output_type -> snapshot_agent.v1alpha1.StatusResponse
-	13, // [13:17] is the sub-list for method output_type
-	9,  // [9:13] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	5,  // 2: snapshot_agent.v1alpha1.BackendConfig.vllm:type_name -> snapshot_agent.v1alpha1.VLLMBackendConfig
+	6,  // 3: snapshot_agent.v1alpha1.BackendConfig.sglang:type_name -> snapshot_agent.v1alpha1.SGLangBackendConfig
+	0,  // 4: snapshot_agent.v1alpha1.SnapshotRequest.backend:type_name -> snapshot_agent.v1alpha1.Backend
+	7,  // 5: snapshot_agent.v1alpha1.SnapshotRequest.backend_config:type_name -> snapshot_agent.v1alpha1.BackendConfig
+	0,  // 6: snapshot_agent.v1alpha1.RestoreRequest.backend:type_name -> snapshot_agent.v1alpha1.Backend
+	7,  // 7: snapshot_agent.v1alpha1.RestoreRequest.backend_config:type_name -> snapshot_agent.v1alpha1.BackendConfig
+	1,  // 8: snapshot_agent.v1alpha1.GetOperationResponse.status:type_name -> snapshot_agent.v1alpha1.OperationStatus
+	2,  // 9: snapshot_agent.v1alpha1.JobStatus.state:type_name -> snapshot_agent.v1alpha1.JobState
+	15, // 10: snapshot_agent.v1alpha1.StatusResponse.job_statuses:type_name -> snapshot_agent.v1alpha1.JobStatus
+	16, // 11: snapshot_agent.v1alpha1.StatusResponse.accelerator_statuses:type_name -> snapshot_agent.v1alpha1.AcceleratorStatus
+	8,  // 12: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:input_type -> snapshot_agent.v1alpha1.SnapshotRequest
+	10, // 13: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:input_type -> snapshot_agent.v1alpha1.RestoreRequest
+	12, // 14: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:input_type -> snapshot_agent.v1alpha1.GetOperationRequest
+	14, // 15: snapshot_agent.v1alpha1.SnapshotAgentService.Status:input_type -> snapshot_agent.v1alpha1.StatusRequest
+	9,  // 16: snapshot_agent.v1alpha1.SnapshotAgentService.Snapshot:output_type -> snapshot_agent.v1alpha1.SnapshotResponse
+	11, // 17: snapshot_agent.v1alpha1.SnapshotAgentService.Restore:output_type -> snapshot_agent.v1alpha1.RestoreResponse
+	13, // 18: snapshot_agent.v1alpha1.SnapshotAgentService.GetOperation:output_type -> snapshot_agent.v1alpha1.GetOperationResponse
+	17, // 19: snapshot_agent.v1alpha1.SnapshotAgentService.Status:output_type -> snapshot_agent.v1alpha1.StatusResponse
+	16, // [16:20] is the sub-list for method output_type
+	12, // [12:16] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_snapshot_agent_proto_init() }
@@ -1020,17 +1206,19 @@ func file_snapshot_agent_proto_init() {
 	if File_snapshot_agent_proto != nil {
 		return
 	}
-	file_snapshot_agent_proto_msgTypes[2].OneofWrappers = []any{
+	file_snapshot_agent_proto_msgTypes[4].OneofWrappers = []any{
 		(*BackendConfig_Cuda)(nil),
+		(*BackendConfig_Vllm)(nil),
+		(*BackendConfig_Sglang)(nil),
 	}
-	file_snapshot_agent_proto_msgTypes[8].OneofWrappers = []any{}
+	file_snapshot_agent_proto_msgTypes[10].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snapshot_agent_proto_rawDesc), len(file_snapshot_agent_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

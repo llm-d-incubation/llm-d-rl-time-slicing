@@ -76,18 +76,41 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 		}
 	}
 
-	if s.deploymentMode == "standalone" && len(explicitPIDs) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "explicit target PIDs must be specified in standalone mode")
-	}
-
 	backend, ok := s.backendMap[backendType]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
 	}
 
+	if s.deploymentMode == "standalone" && len(explicitPIDs) == 0 {
+		if _, isAppAware := backend.(backends.AppAwareBackend); !isAppAware {
+			return nil, status.Error(codes.InvalidArgument,
+				"explicit target PIDs must be specified in standalone mode")
+		}
+	}
+
 	s.ensureJobRunningIfGPUOccupied(ctx, req.GetJobId(), req.GetGroup())
 
 	bgCtx := context.WithoutCancel(ctx)
+
+	if aab, ok := backend.(backends.AppAwareBackend); ok {
+		appCfg := extractAppConfig(req.GetBackendConfig())
+		opID, err := s.state.StartSnapshot(
+			req.GetJobId(), req.GetGroup(), func() error {
+				slog.InfoContext(bgCtx, "Background: Starting app-aware snapshot",
+					"backend", backendType, "endpoints", appCfg.Endpoints)
+				if err := aab.SnapshotApp(bgCtx, appCfg); err != nil {
+					return fmt.Errorf("failed to snapshot job %s: %w",
+						req.GetJobId(), err)
+				}
+				return nil
+			})
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed to start snapshot", "error", err)
+			return nil, err
+		}
+		return &pb.SnapshotResponse{OperationId: opID}, nil
+	}
+
 	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), func() error {
 		slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
 		allPIDs, allPIDStrings, err := resolvePIDs(bgCtx, req.GetJobId(), explicitPIDs)
@@ -119,7 +142,33 @@ func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.Backe
 	if config.GetCuda() != nil {
 		return backends.BackendCuda
 	}
+	if config.GetVllm() != nil {
+		return backends.BackendVLLM
+	}
+	if config.GetSglang() != nil {
+		return backends.BackendSGLang
+	}
 	return s.defaultBackend
+}
+
+func extractAppConfig(config *pb.BackendConfig) backends.AppConfig {
+	if config == nil {
+		return backends.AppConfig{}
+	}
+	if vllm := config.GetVllm(); vllm != nil {
+		return backends.AppConfig{
+			Endpoints:  vllm.GetEndpoints(),
+			SleepLevel: vllm.GetSleepLevel(),
+			Tags:       vllm.GetWakeTags(),
+		}
+	}
+	if sglang := config.GetSglang(); sglang != nil {
+		return backends.AppConfig{
+			Endpoints: sglang.GetEndpoints(),
+			Tags:      sglang.GetTags(),
+		}
+	}
+	return backends.AppConfig{}
 }
 
 // ensureJobRunningIfGPUOccupied checks if the job is IDLE and the GPU has
@@ -153,9 +202,14 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 	ctx = logging.WithJobID(ctx, req.GetJobId())
 	ctx = logging.WithGroupID(ctx, req.GetGroup())
 
-	slog.InfoContext(ctx, "Restore called", "backend", req.GetBackend())
-
-	backendType := s.getBackendType(req.GetBackend())
+	var backendType backends.BackendType
+	if req.GetBackendConfig() != nil {
+		backendType = s.getSnapshotBackendType(req.GetBackendConfig())
+	} else {
+		//nolint:staticcheck // SA1019: supporting deprecated backend field
+		backendType = s.getBackendType(req.GetBackend())
+	}
+	slog.InfoContext(ctx, "Restore called", "backend", backendType)
 
 	backend, ok := s.backendMap[backendType]
 	if !ok {
@@ -163,6 +217,25 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 	}
 
 	bgCtx := context.WithoutCancel(ctx)
+
+	if aab, ok := backend.(backends.AppAwareBackend); ok {
+		appCfg := extractAppConfig(req.GetBackendConfig())
+		opID, err := s.state.StartRestore(
+			req.GetJobId(), req.GetGroup(), func() error {
+				slog.InfoContext(bgCtx, "Background: Starting app-aware restore",
+					"backend", backendType, "endpoints", appCfg.Endpoints)
+				if err := aab.RestoreApp(bgCtx, appCfg); err != nil {
+					return fmt.Errorf("failed to restore job %s: %w",
+						req.GetJobId(), err)
+				}
+				return nil
+			})
+		if err != nil {
+			return nil, err
+		}
+		return &pb.RestoreResponse{OperationId: opID}, nil
+	}
+
 	opID, err := s.state.StartRestore(req.GetJobId(), req.GetGroup(), func() error {
 		slog.InfoContext(bgCtx, "Background: Starting restore", "backend", backendType)
 
