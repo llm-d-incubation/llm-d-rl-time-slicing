@@ -1774,3 +1774,111 @@ func TestController_Reconcile_PreemptionSafetyGates_TransitioningJob(t *testing.
 		t.Errorf("Expected AddRateLimited to be called at least once, got %d", testQueue.getAddRateLimitedCount())
 	}
 }
+
+func TestController_Reconcile_DeduceActiveJob_RestartCase(t *testing.T) {
+	tests := []struct {
+		name              string
+		job1State         pb.SnapshotAgentJobState_State
+		job2State         pb.SnapshotAgentJobState_State
+		expectedActiveJob string
+		expectedLoadedJob string
+		expectedState     pb.GroupStatus_State
+	}{
+		{
+			name:              "Success: exactly one job running (loaded)",
+			job1State:         pb.SnapshotAgentJobState_STATE_RUNNING,
+			job2State:         pb.SnapshotAgentJobState_STATE_SAVED,
+			expectedActiveJob: "job-1",
+			expectedLoadedJob: "job-1",
+			expectedState:     pb.GroupStatus_STATE_IDLE_YIELDED,
+		},
+		{
+			name:              "NoneLoaded: both jobs in saved state",
+			job1State:         pb.SnapshotAgentJobState_STATE_SAVED,
+			job2State:         pb.SnapshotAgentJobState_STATE_SAVED,
+			expectedActiveJob: "",
+			expectedLoadedJob: "",
+			expectedState:     pb.GroupStatus_STATE_IDLE,
+		},
+		{
+			name:              "Ambiguous: both jobs in unspecified state (both loaded in init)",
+			job1State:         pb.SnapshotAgentJobState_STATE_UNSPECIFIED,
+			job2State:         pb.SnapshotAgentJobState_STATE_UNSPECIFIED,
+			expectedActiveJob: "",
+			expectedLoadedJob: "",
+			expectedState:     pb.GroupStatus_STATE_IDLE,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			lockStore := store.NewMemLockStore()
+			groupStore := store.NewGroupStore(lockStore)
+			jobStore := store.NewJobStore()
+			testQueue := &trackQueue{
+				TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+					workqueue.DefaultTypedControllerRateLimiter[string](),
+					workqueue.TypedRateLimitingQueueConfig[string]{Name: "test-" + tc.name},
+				),
+			}
+
+			groupID := "group-1"
+			nodeNames := []string{"node-1", "node-2"}
+
+			group, _, err := groupStore.GetOrCreate(ctx, groupID)
+			if err != nil {
+				t.Fatalf("failed to create group: %v", err)
+			}
+			group.Status().SetNodes(nodeNames)
+
+			job1 := store.NewJob(groupID, "job-1")
+			job1.UpdateContextState("node-1", tc.job1State)
+			job1.UpdateContextState("node-2", tc.job1State)
+			if err := jobStore.Put(ctx, job1); err != nil {
+				t.Fatalf("failed to put job1: %v", err)
+			}
+
+			job2 := store.NewJob(groupID, "job-2")
+			job2.UpdateContextState("node-1", tc.job2State)
+			job2.UpdateContextState("node-2", tc.job2State)
+			if err := jobStore.Put(ctx, job2); err != nil {
+				t.Fatalf("failed to put job2: %v", err)
+			}
+
+			mockOrch := &mockInfrastructureOrchestrator{
+				observeFunc: func(ctx context.Context, gID string) error {
+					return nil
+				},
+			}
+
+			c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, &controller.MockSnapshotAgentStore{})
+
+			go func() {
+				if err := c.Run(ctx, 1); err != nil {
+					t.Errorf("Controller Run failed: %v", err)
+				}
+			}()
+
+			testQueue.Add(groupID)
+
+			err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
+			if err != nil {
+				t.Fatalf("Timed out waiting for reconcile: %v", err)
+			}
+
+			if group.Spec().ActiveJob() != tc.expectedActiveJob {
+				t.Errorf("Expected ActiveJob %q, got %q", tc.expectedActiveJob, group.Spec().ActiveJob())
+			}
+			if group.Status().LoadedJob() != tc.expectedLoadedJob {
+				t.Errorf("Expected loadedJob %q, got %q", tc.expectedLoadedJob, group.Status().LoadedJob())
+			}
+			state, _ := group.Status().State()
+			if state != tc.expectedState {
+				t.Errorf("Expected state %v, got %v", tc.expectedState, state)
+			}
+		})
+	}
+}
