@@ -38,9 +38,57 @@ message CudaBackendConfig {
   ProcessTarget explicit_target = 1;
 }
 
+// App identifies the HTTP API dialect of an application-aware workload.
+// It grows only when a new HTTP dialect ships; workloads reached through a
+// registered workload channel never need an entry here.
+enum App {
+  APP_UNSPECIFIED = 0;
+  // vLLM's dev-mode sleep API: POST /sleep?level=N, POST /wake_up?tags=...
+  // Requires VLLM_SERVER_DEV_MODE=1 and --enable-sleep-mode on the server.
+  APP_VLLM = 1;
+  // SGLang's memory API: POST /release_memory_occupation and
+  // POST /resume_memory_occupation (JSON body). Requires
+  // --enable-memory-saver; whether suspended weights are preserved is fixed
+  // at server launch by --enable-weights-cpu-backup (see SuspendMode).
+  APP_SGLANG = 2;
+}
+
+// SuspendMode states what happens to the workload's durable state (model
+// weights, optimizer state) while suspended. Region-level engine specifics
+// (e.g. KV cache is discarded by engines in either mode) are handled by the
+// application dialect.
+enum SuspendMode {
+  // Use the application's default behavior.
+  SUSPEND_MODE_UNSPECIFIED = 0;
+  // State is preserved in host memory; Restore copies it back.
+  SUSPEND_MODE_OFFLOAD = 1;
+  // State is dropped; the application must re-provision it after Restore
+  // (e.g. RL weight sync). Unsupported by workloads that cannot reconstruct
+  // state, such as trainers.
+  SUSPEND_MODE_DISCARD = 2;
+}
+
+// AppEndpointConfig suspends/resumes an application-aware workload through
+// its HTTP API. Callers using this config supply the endpoints and therefore
+// know which application they deployed; `app` selects the HTTP dialect.
+message AppEndpointConfig {
+  App app = 1;
+  // HTTP endpoint(s) of the application server(s), e.g. "http://localhost:8000".
+  repeated string endpoints = 2;
+  // See SuspendMode. For APP_SGLANG this is advisory: the effective mode is
+  // fixed by the server's launch flags.
+  SuspendMode mode = 3;
+  // Region tags, e.g. "weights", "kv_cache". Free-form strings validated by
+  // the application; if empty, the application's full default region set is
+  // used. On Snapshot, tags select what to suspend (where the application
+  // supports it); on Restore, what to bring back.
+  repeated string tags = 4;
+}
+
 message BackendConfig {
   oneof backend {
     CudaBackendConfig cuda = 1;
+    AppEndpointConfig app_endpoint = 2;
   }
 }
 
