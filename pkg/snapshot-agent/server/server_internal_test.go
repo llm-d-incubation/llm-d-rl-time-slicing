@@ -421,6 +421,100 @@ func TestServer_Health(t *testing.T) {
 	}
 }
 
+//nolint:nonamedreturns // Conflict between gocritic's unnamedResult and nonamedreturns
+func newStandaloneTestServer(
+	t *testing.T,
+	backendsMap map[backends.BackendType]backends.Backend,
+	defaultBackend backends.BackendType,
+	gpuOccupied bool,
+) (client pb.SnapshotAgentServiceClient, cleanup func()) {
+	t.Helper()
+
+	origHasGPU := utils.HasGPUProcesses
+	utils.HasGPUProcesses = func(_ context.Context) (bool, error) {
+		return gpuOccupied, nil
+	}
+
+	lisLocal := bufconn.Listen(bufSize)
+	s := grpc.NewServer()
+	srv := NewServer(backendsMap, defaultBackend, "standalone")
+	pb.RegisterSnapshotAgentServiceServer(s, srv)
+	go func() {
+		if err := s.Serve(lisLocal); err != nil {
+			return
+		}
+	}()
+
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lisLocal.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+
+	cleanup = func() {
+		conn.Close()
+		s.GracefulStop()
+		utils.HasGPUProcesses = origHasGPU
+	}
+	client = pb.NewSnapshotAgentServiceClient(conn)
+	return client, cleanup
+}
+
+func TestServer_Snapshot_StandaloneAutoTransition(t *testing.T) {
+	noopBackend := backends.NewNoopBackend()
+	backendsMap := map[backends.BackendType]backends.Backend{
+		backends.BackendNoop: noopBackend,
+		backends.BackendCuda: noopBackend,
+	}
+
+	t.Run("CUDA with PIDs auto-transitions from IDLE", func(t *testing.T) {
+		client, cleanup := newStandaloneTestServer(t, backendsMap, backends.BackendNoop, true)
+		defer cleanup()
+
+		resp, err := client.Snapshot(context.Background(), &pb.SnapshotRequest{
+			JobId: "auto-cuda",
+			BackendConfig: &pb.BackendConfig{
+				Backend: &pb.BackendConfig_Cuda{
+					Cuda: &pb.CudaBackendConfig{
+						ExplicitTarget: &pb.ProcessTarget{Pids: []int32{123}},
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Expected success with GPU occupied, got: %v", err)
+		}
+		if resp.OperationId == "" {
+			t.Error("Expected operation ID")
+		}
+	})
+
+	t.Run("Rejects when GPU not occupied", func(t *testing.T) {
+		client, cleanup := newStandaloneTestServer(t, backendsMap, backends.BackendNoop, false)
+		defer cleanup()
+
+		_, err := client.Snapshot(context.Background(), &pb.SnapshotRequest{
+			JobId: "no-gpu",
+			BackendConfig: &pb.BackendConfig{
+				Backend: &pb.BackendConfig_Cuda{
+					Cuda: &pb.CudaBackendConfig{
+						ExplicitTarget: &pb.ProcessTarget{Pids: []int32{123}},
+					},
+				},
+			},
+		})
+		if err == nil {
+			t.Fatal("Expected failure when GPU not occupied")
+		}
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Errorf("Expected FailedPrecondition, got: %v", err)
+		}
+	})
+}
+
 func TestServer_Snapshot_StandaloneMode(t *testing.T) {
 	lisDev := bufconn.Listen(bufSize)
 	s := grpc.NewServer()
