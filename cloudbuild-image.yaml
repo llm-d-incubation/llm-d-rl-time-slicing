@@ -1,0 +1,16 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.snapshot-agent-runtime'
+      - '-t'
+      - '${_IMAGE}'
+      - '.'
+images:
+  - '${_IMAGE}'
+substitutions:
+  _IMAGE: 'gcr.io/${PROJECT_ID}/snapshot-agent:dev'
+timeout: '600s'
+options:
+  machineType: 'E2_HIGHCPU_8'
