@@ -103,16 +103,16 @@ func (f *FakeRLJob) acquireWithRetry(ctx context.Context, groupID string) (*pb.A
 	return nil, fmt.Errorf("failed to acquire lock for %s after retries", groupID)
 }
 
-func (f *FakeRLJob) yieldWithRetry(ctx context.Context, groupID string) (*pb.YieldResponse, error) {
+func (f *FakeRLJob) yieldWithRetry(ctx context.Context, groupID string) error {
 	maxRetries := 20
 	retryInterval := 500 * time.Millisecond
 	for i := 0; i < maxRetries; i++ {
-		resp, err := f.client.Yield(ctx, &pb.YieldRequest{
+		_, err := f.client.Yield(ctx, &pb.YieldRequest{
 			GroupId: groupID,
 			JobId:   f.name,
 		})
 		if err == nil {
-			return resp, nil
+			return nil
 		}
 
 		st, ok := status.FromError(err)
@@ -121,14 +121,14 @@ func (f *FakeRLJob) yieldWithRetry(ctx context.Context, groupID string) (*pb.Yie
 				f.name, groupID, err, retryInterval, i+1, maxRetries)
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return ctx.Err()
 			case <-time.After(retryInterval):
 				continue
 			}
 		}
-		return nil, err
+		return err
 	}
-	return nil, fmt.Errorf("failed to yield lock for %s after retries", groupID)
+	return fmt.Errorf("failed to yield lock for %s after retries", groupID)
 }
 
 func (f *FakeRLJob) Run(ctx context.Context) error {
@@ -174,8 +174,7 @@ func (f *FakeRLJob) init(ctx context.Context) error {
 
 	// Yield samplers
 	f.t.Logf("[Job %s] Yielding samplers lock...", f.name)
-	_, err = f.yieldWithRetry(ctx, "samplers")
-	if err != nil {
+	if err := f.yieldWithRetry(ctx, "samplers"); err != nil {
 		return err
 	}
 
@@ -197,8 +196,7 @@ func (f *FakeRLJob) init(ctx context.Context) error {
 
 	// Yield trainers
 	f.t.Logf("[Job %s] Yielding trainers lock...", f.name)
-	_, err = f.yieldWithRetry(ctx, "trainers")
-	if err != nil {
+	if err := f.yieldWithRetry(ctx, "trainers"); err != nil {
 		return err
 	}
 
@@ -232,8 +230,7 @@ func (f *FakeRLJob) loop(ctx context.Context) error {
 
 		// Yield samplers
 		f.t.Logf("[Job %s] Yielding samplers lock...", f.name)
-		_, err = f.yieldWithRetry(ctx, "samplers")
-		if err != nil {
+		if err := f.yieldWithRetry(ctx, "samplers"); err != nil {
 			return err
 		}
 
@@ -257,8 +254,7 @@ func (f *FakeRLJob) loop(ctx context.Context) error {
 
 		// Yield trainers
 		f.t.Logf("[Job %s] Yielding trainers lock...", f.name)
-		_, err = f.yieldWithRetry(ctx, "trainers")
-		if err != nil {
+		if err := f.yieldWithRetry(ctx, "trainers"); err != nil {
 			return err
 		}
 	}
