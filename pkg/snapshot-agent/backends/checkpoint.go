@@ -17,6 +17,9 @@ const (
 	// BackendAppEndpoint suspends/resumes application-aware workloads
 	// (vLLM, SGLang, ...) through their HTTP APIs.
 	BackendAppEndpoint BackendType = "app-endpoint"
+	// BackendAppChannel suspends/resumes application-aware workloads through
+	// their registered workload channels (see the WorkloadChannel RPC).
+	BackendAppChannel BackendType = "app-channel"
 )
 
 // Request carries one backend invocation: the job it targets and the

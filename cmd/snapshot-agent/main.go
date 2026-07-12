@@ -46,14 +46,18 @@ func main() {
 	}
 	ctx := context.Background()
 
+	// The channel registry is shared between the app-channel backend and the
+	// server's WorkloadChannel RPC handler.
+	channelRegistry := backends.NewChannelRegistry()
 	registeredBackends := map[backends.BackendType]backends.Backend{
 		backends.BackendCuda:        backends.NewCudaCheckpoint(),
 		backends.BackendNoop:        backends.NewNoopBackend(),
 		backends.BackendAppEndpoint: backends.NewAppEndpointBackend(),
+		backends.BackendAppChannel:  backends.NewAppChannelBackend(channelRegistry),
 	}
 
 	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", *port, "deploymentMode", depMode)
-	if err := server.StartServer(ctx, *port, registeredBackends, backends.BackendCuda, depMode); err != nil {
+	if err := server.StartServer(ctx, *port, registeredBackends, backends.BackendCuda, depMode, channelRegistry); err != nil {
 		slog.ErrorContext(ctx, "Failed to start server", "error", err)
 		os.Exit(1)
 	}
