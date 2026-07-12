@@ -5,7 +5,7 @@ import warnings
 
 from timeslice.snapshot_agent import snapshot_agent_pb2 as timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2
 
-GRPC_GENERATED_VERSION = '1.81.1'
+GRPC_GENERATED_VERSION = '1.82.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -55,6 +55,11 @@ class SnapshotAgentServiceStub:
                 request_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusRequest.SerializeToString,
                 response_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusResponse.FromString,
                 _registered_method=True)
+        self.WorkloadChannel = channel.stream_stream(
+                '/snapshot_agent.v1alpha1.SnapshotAgentService/WorkloadChannel',
+                request_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.WorkloadMessage.SerializeToString,
+                response_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.AgentCommand.FromString,
+                _registered_method=True)
 
 
 class SnapshotAgentServiceServicer:
@@ -89,6 +94,18 @@ class SnapshotAgentServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def WorkloadChannel(self, request_iterator, context):
+        """WorkloadChannel is a long-lived bidirectional stream through which an
+        application-aware workload registers itself with the agent and receives
+        snapshot/restore commands. Workloads that embed their engine in-process
+        (no HTTP server) use this instead of AppEndpointConfig. The first message
+        from the workload must be a RegisterWorkload; subsequent messages are
+        CommandResults acknowledging AgentCommands.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SnapshotAgentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -111,6 +128,11 @@ def add_SnapshotAgentServiceServicer_to_server(servicer, server):
                     servicer.Status,
                     request_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusRequest.FromString,
                     response_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusResponse.SerializeToString,
+            ),
+            'WorkloadChannel': grpc.stream_stream_rpc_method_handler(
+                    servicer.WorkloadChannel,
+                    request_deserializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.WorkloadMessage.FromString,
+                    response_serializer=timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.AgentCommand.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -222,6 +244,33 @@ class SnapshotAgentService:
             '/snapshot_agent.v1alpha1.SnapshotAgentService/Status',
             timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusRequest.SerializeToString,
             timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.StatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WorkloadChannel(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/snapshot_agent.v1alpha1.SnapshotAgentService/WorkloadChannel',
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.WorkloadMessage.SerializeToString,
+            timeslice_dot_snapshot__agent_dot_snapshot__agent__pb2.AgentCommand.FromString,
             options,
             channel_credentials,
             insecure,
