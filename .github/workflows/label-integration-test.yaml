@@ -1,0 +1,33 @@
+name: Integration test gate
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled]
+
+jobs:
+  label:
+    name: Auto-label snapshot-agent PRs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          configuration-path: .github/labeler.yml
+
+  gate:
+    name: Integration test required
+    runs-on: ubuntu-latest
+    needs: label
+    steps:
+      - name: Block merge if integration test not completed
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if echo "$LABELS" | grep -q "needs-integration-test"; then
+            echo "::error::This PR modifies snapshot-agent and requires manual integration testing."
+            echo "::error::See tests/integration/snapshot-agent/README.md for how to run the integration tests."
+            echo "::error::Post the test results as a comment on this PR, or if integration tests are not applicable, comment a justification. Then remove the 'needs-integration-test' label."
+            exit 1
+          fi
+          echo "No integration test label found. Merge allowed."
