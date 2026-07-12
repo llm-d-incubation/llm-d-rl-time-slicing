@@ -23,23 +23,28 @@ import (
 // Server implements the SnapshotAgentService gRPC server.
 type Server struct {
 	pb.UnimplementedSnapshotAgentServiceServer
-	state          *sm.StateManager
-	backendMap     map[backends.BackendType]backends.Backend
-	defaultBackend backends.BackendType
-	deploymentMode string
+	state           *sm.StateManager
+	backendMap      map[backends.BackendType]backends.Backend
+	defaultBackend  backends.BackendType
+	deploymentMode  string
+	channelRegistry *backends.ChannelRegistry
 }
 
-// NewServer creates a new Server instance.
+// NewServer creates a new Server instance. channelRegistry is shared with
+// the app-channel backend so workloads registered through the
+// WorkloadChannel RPC are reachable by Snapshot/Restore.
 func NewServer(
 	backendMap map[backends.BackendType]backends.Backend,
 	defaultBackend backends.BackendType,
 	deploymentMode string,
+	channelRegistry *backends.ChannelRegistry,
 ) *Server {
 	return &Server{
-		state:          sm.NewStateManager(),
-		backendMap:     backendMap,
-		defaultBackend: defaultBackend,
-		deploymentMode: deploymentMode,
+		state:           sm.NewStateManager(),
+		backendMap:      backendMap,
+		defaultBackend:  defaultBackend,
+		deploymentMode:  deploymentMode,
+		channelRegistry: channelRegistry,
 	}
 }
 
@@ -86,6 +91,9 @@ func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.Backe
 	if config.GetAppEndpoint() != nil {
 		return backends.BackendAppEndpoint
 	}
+	if config.GetAppChannel() != nil {
+		return backends.BackendAppChannel
+	}
 	return s.defaultBackend
 }
 
@@ -124,8 +132,9 @@ func (s *Server) ensureJobRunningIfGPUOccupied(ctx context.Context, jobID, group
 // deployment mode and backend. In standalone mode the caller-provided
 // BackendConfig is passed through to the backend as-is. In k8s mode, the CUDA
 // backend needs PID discovery (resolve PIDs from pods via the watcher's job
-// labels, then cache them for restore); inference engine backends carry their
-// targets (HTTP endpoints) in the config itself, so it is passed through.
+// labels, then cache them for restore); application-aware backends resolve
+// their targets themselves (HTTP endpoints from the config, or the workload
+// channel registered under the job ID), so the config is passed through.
 func (s *Server) buildSnapshotFn(
 	bgCtx context.Context,
 	jobID string,
@@ -156,7 +165,7 @@ func (s *Server) buildSnapshotFn(
 				s.state.UpdateJobPIDs(jobID, allPIDs)
 				return nil
 			}, nil
-		case backends.BackendAppEndpoint:
+		case backends.BackendAppEndpoint, backends.BackendAppChannel:
 			return func() error {
 				slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
 				return backend.Snapshot(bgCtx, backends.Request{JobID: jobID, Config: config})
@@ -187,9 +196,9 @@ func extractExplicitPIDs(config *pb.BackendConfig) []int32 {
 // deployment mode and backend. In standalone mode the caller-provided
 // BackendConfig is passed through as-is. In k8s mode, the CUDA backend
 // restores from the PIDs cached at snapshot time (NVML cannot re-discover
-// them after checkpoint frees the GPU); inference engine backends carry
-// their targets (HTTP endpoints) in the config itself, so it is passed
-// through.
+// them after checkpoint frees the GPU); application-aware backends resolve
+// their targets themselves (HTTP endpoints from the config, or the workload
+// channel registered under the job ID), so the config is passed through.
 func (s *Server) buildRestoreFn(
 	bgCtx context.Context,
 	jobID string,
@@ -219,7 +228,7 @@ func (s *Server) buildRestoreFn(
 				slog.InfoContext(bgCtx, "Restoring PIDs", "pids", pidStrings, "backend", backendType)
 				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: backends.BuildCudaConfig(pidStrings)})
 			}, nil
-		case backends.BackendAppEndpoint:
+		case backends.BackendAppEndpoint, backends.BackendAppChannel:
 			return func() error {
 				slog.InfoContext(bgCtx, "Background: Starting restore", "backend", backendType)
 				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: config})
@@ -360,6 +369,7 @@ func StartServer(
 	backendMap map[backends.BackendType]backends.Backend,
 	defaultBackend backends.BackendType,
 	deploymentMode string,
+	channelRegistry *backends.ChannelRegistry,
 ) error {
 	lc := net.ListenConfig{}
 	lis, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", port))
@@ -374,7 +384,7 @@ func StartServer(
 	}
 
 	// 2. Create Server (which creates StateManager internally)
-	srv := NewServer(backendMap, defaultBackend, deploymentMode)
+	srv := NewServer(backendMap, defaultBackend, deploymentMode, channelRegistry)
 
 	// 3. Start the Watcher internally
 	watcher, err := NewWatcher(k8sClient, srv.state)
