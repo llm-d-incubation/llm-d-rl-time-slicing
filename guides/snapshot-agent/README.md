@@ -132,6 +132,7 @@ The Snapshot Agent supports multiple backends for different GPU memory managemen
 |---------|--------|-------------|------------|-------------|
 | CUDA Checkpoint | `cuda` | Process-level CUDA state save/restore via `cuda-checkpoint` | ~100% | ~1-3s |
 | Application-Aware | `app_endpoint` | Suspend/resume through the application's own HTTP API (vLLM, SGLang) | ~96% | ~50-100ms |
+| Application-Aware | `app_channel` | Suspend/resume pushed over a channel the workload registered (Python-API workloads, no HTTP server) | ~96% | ~50-100ms |
 
 The VRAM Freed and Resume Time figures are illustrative, measured with a small model (Qwen2.5-0.5B) on an H100; actual numbers depend on the model size, hardware, and engine version.
 
@@ -244,9 +245,89 @@ with SnapshotAgentClient("localhost:9001") as client:
     client.restore_and_wait(job_id="my-sglang-job", backend_config=sglang_config)
 ```
 
+### Application-Aware (app_channel)
+
+For workloads that embed their engine in-process through a Python API — no HTTP
+server for the agent to call (e.g. an RL sampler running vLLM via
+`AsyncLLMEngine`). The connection is inverted: the workload registers with the
+node-local agent once at startup, and the agent pushes suspend/resume commands
+over that stream. Callers address the workload by `job_id` alone — no
+endpoints, and no knowledge of which application is running.
+
+**Workload side** — register once at startup with `register_workload`:
+
+```python
+from timeslice.snapshot_agent import register_workload
+
+engine = AsyncLLMEngine.from_engine_args(args)   # enable_sleep_mode=True
+
+handle = register_workload(
+    "127.0.0.1:9001",       # the agent on this node (registration is node-scoped)
+    job_id="my-sampler",    # must match the job_id used in Snapshot/Restore
+                            # requests (in k8s: the timeslice.io/job-id pod label)
+    group="samplers",
+    workload=engine,        # vLLM engines are recognized by type
+)
+# ... run; the library services commands in the background ...
+handle.close()              # on clean shutdown
+```
+
+The library owns the stream: a background thread, command dispatch and
+acknowledgements, and reconnect with backoff (re-registering after agent
+restarts). Recognized engines (vLLM `LLM`/`AsyncLLMEngine`/`AsyncLLM`) need
+nothing else.
+
+Workloads with no publicly known C/R API (e.g. hand-rolled FSDP offload) keep
+their own mechanics and hand them to the library, either as an object with
+`snapshot(mode, tags)`/`restore(tags)` methods:
+
+```python
+class TrainerWorkload:
+    supported_modes = ["offload"]   # trainers can't reconstruct dropped state
+
+    def snapshot(self, mode, tags):
+        offload_model_and_optimizer_to_host()
+
+    def restore(self, tags):
+        reload_from_host()
+
+register_workload("127.0.0.1:9001", job_id="my-trainer", group="trainers",
+                  workload=TrainerWorkload())
+```
+
+or as plain callbacks:
+
+```python
+register_workload("127.0.0.1:9001", job_id="my-trainer", group="trainers",
+                  on_snapshot=lambda mode, tags: trainer.offload(),
+                  on_restore=lambda tags: trainer.reload(),
+                  supported_modes=["offload"])
+```
+
+At registration the workload advertises its capabilities (`supported_modes`,
+`default_mode`). The agent resolves each request as: explicit request mode →
+registered default → `SUSPEND_MODE_OFFLOAD`, and rejects unsupported modes
+before any command is sent (e.g. DISCARD against a trainer that only supports
+OFFLOAD fails the operation immediately).
+
+**Caller side** — the usual `Snapshot`/`Restore` with an `app_channel` config.
+An empty config means "suspend however the workload declared at registration":
+
+```python
+channel_config = snapshot.BackendConfig(app_channel=snapshot.AppChannelConfig())
+
+result = client.snapshot_and_wait(job_id="my-sampler", backend_config=channel_config)
+
+result = client.restore_and_wait(job_id="my-sampler", backend_config=channel_config)
+```
+
+A request for a job with no registered channel fails fast with
+`no workload channel registered for job "..."`. If the workload's suspend
+raises, the operation fails with the workload's error text.
+
 ### Composing Backends
 
-Application-aware suspend and CUDA checkpoint are separate operations that compose. Suspend first, then checkpoint; restore in reverse order:
+Application-aware suspend (either transport) and CUDA checkpoint are separate operations that compose. Suspend first, then checkpoint; restore in reverse order:
 
 ```python
 app_config = snapshot.BackendConfig(
