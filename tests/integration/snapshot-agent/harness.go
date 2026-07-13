@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,6 +47,15 @@ const (
 	opTimeout = 120 * time.Second
 	// vramFreedMiB is the threshold below which we consider GPU memory freed.
 	vramFreedMiB = 5000
+
+	// Channel workload pod pieces (see channelWorkloadPod and
+	// WithChannelWorkload).
+	channelPodName       = "channel-workload-test"
+	channelConfigMapName = "channel-workload-src"
+	channelContainer     = "workload"
+	// channelClientSrcDir is the Python client package, relative to this
+	// package (go test's working directory), mounted into the workload pod.
+	channelClientSrcDir = "../../../pkg/client/python/timeslice/snapshot_agent"
 )
 
 // Harness manages the test stack for one deployment mode.
@@ -318,10 +328,15 @@ func (h *Harness) findPID(t *testing.T, pattern string) int32 {
 // VRAMMiB returns the GPU memory used (MiB) as seen from the engine pod.
 func (h *Harness) VRAMMiB(t *testing.T, e *Engine) int {
 	t.Helper()
-	out, err := h.execPod(e.PodName, e.Spec.Name,
+	return h.podVRAMMiB(t, e.PodName, e.Spec.Name)
+}
+
+func (h *Harness) podVRAMMiB(t *testing.T, podName, container string) int {
+	t.Helper()
+	out, err := h.execPod(podName, container,
 		"nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits")
 	if err != nil {
-		t.Fatalf("querying VRAM on %s: %v", e.PodName, err)
+		t.Fatalf("querying VRAM on %s: %v", podName, err)
 	}
 	mib, err := strconv.Atoi(strings.TrimSpace(strings.Split(out, "\n")[0]))
 	if err != nil {
@@ -357,6 +372,16 @@ func cudaConfig(pids ...int32) BackendArgs {
 // mode may be "" (application default), "offload", or "discard".
 func appConfig(app, endpoint, mode string) BackendArgs {
 	args := BackendArgs{"--backend", "app", "--app", app, "--endpoints", endpoint}
+	if mode != "" {
+		args = append(args, "--mode", mode)
+	}
+	return args
+}
+
+// channelConfig targets the workload registered on the job's channel.
+// mode may be "" (workload's registered default), "offload", or "discard".
+func channelConfig(mode string) BackendArgs {
+	args := BackendArgs{"--backend", "channel"}
 	if mode != "" {
 		args = append(args, "--mode", mode)
 	}
@@ -444,3 +469,122 @@ func RequireFreedAndCorrect(t *testing.T, vramWhileAsleep int, before, after str
 	}
 }
 
+
+// --- Channel workload helpers ---
+
+// ChannelWorkload is a running Python-API workload registered with the agent
+// over the workload channel.
+type ChannelWorkload struct {
+	PodName string
+	JobID   string
+	PID     int32 // standalone mode only
+}
+
+// WithChannelWorkload deploys the channel workload pod (vLLM via the Python
+// API, registered through the client library), waits until it is registered,
+// runs fn, and deletes the pod (freeing the GPU).
+func (h *Harness) WithChannelWorkload(t *testing.T, fn func(t *testing.T, w *ChannelWorkload)) {
+	t.Helper()
+	jobID := "chan-standalone"
+	if h.Mode == "k8s" {
+		jobID = "chan-k8s"
+	}
+
+	h.createChannelSourceConfigMap(t)
+	defer h.deleteConfigMap(channelConfigMapName)
+
+	h.deletePodAndWait(t, channelPodName)
+	pod := channelWorkloadPod(h, jobID)
+	if _, err := h.Client.CoreV1().Pods(namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating channel workload pod: %v", err)
+	}
+	defer h.deletePodAndWait(t, channelPodName)
+
+	// The readiness probe covers model load and channel registration.
+	h.waitPodReady(t, channelPodName)
+	t.Logf("channel workload ready, registered as job %s", jobID)
+
+	w := &ChannelWorkload{PodName: channelPodName, JobID: jobID}
+	if h.Mode == "standalone" {
+		w.PID = h.findPID(t, "channel_workload")
+		t.Logf("channel workload PID: %d", w.PID)
+	} else {
+		t.Log("waiting 10s for watcher to register the job...")
+		time.Sleep(10 * time.Second)
+	}
+
+	fn(t, w)
+}
+
+// createChannelSourceConfigMap packages the Python client library and the
+// workload script into a ConfigMap mounted by the workload pod, so the pod
+// runs the exact client code under test.
+func (h *Harness) createChannelSourceConfigMap(t *testing.T) {
+	t.Helper()
+	files := map[string]string{}
+	entries, err := os.ReadDir(channelClientSrcDir)
+	if err != nil {
+		t.Fatalf("reading client source dir: %v", err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".py") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(channelClientSrcDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("reading %s: %v", entry.Name(), err)
+		}
+		files[entry.Name()] = string(data)
+	}
+	script, err := os.ReadFile("channel_workload.py")
+	if err != nil {
+		t.Fatalf("reading channel_workload.py: %v", err)
+	}
+	files["channel_workload.py"] = string(script)
+
+	h.deleteConfigMap(channelConfigMapName)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      channelConfigMapName,
+			Namespace: namespace,
+			Labels:    map[string]string{"test-suite": "snapshot-agent-integration"},
+		},
+		Data: files,
+	}
+	if _, err := h.Client.CoreV1().ConfigMaps(namespace).Create(context.Background(), cm, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating ConfigMap %s: %v", channelConfigMapName, err)
+	}
+}
+
+func (h *Harness) deleteConfigMap(name string) {
+	_ = h.Client.CoreV1().ConfigMaps(namespace).Delete(context.Background(), name, metav1.DeleteOptions{})
+}
+
+// TriggerGenerate asks the workload for a deterministic generation through
+// its file protocol and returns the completion text.
+func (h *Harness) TriggerGenerate(t *testing.T, w *ChannelWorkload) string {
+	t.Helper()
+	_, err := h.execPod(w.PodName, channelContainer, "sh", "-c",
+		"rm -f /workload-state/result && touch /workload-state/trigger")
+	if err != nil {
+		t.Fatalf("triggering generation on %s: %v", w.PodName, err)
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		out, err := h.execPod(w.PodName, channelContainer, "sh", "-c",
+			"cat /workload-state/result 2>/dev/null")
+		if err == nil && out != "" {
+			return out
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("timeout waiting for generation from %s", w.PodName)
+	return ""
+}
+
+// WorkloadVRAMMiB returns the GPU memory used (MiB) as seen from the channel
+// workload pod.
+func (h *Harness) WorkloadVRAMMiB(t *testing.T, w *ChannelWorkload) int {
+	t.Helper()
+	return h.podVRAMMiB(t, w.PodName, channelContainer)
+}

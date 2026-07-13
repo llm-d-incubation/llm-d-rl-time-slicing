@@ -7,10 +7,11 @@ the tests exercise the real production path: the Python client
 constructed here, in Python, the same way a real workload would build them.
 
 Usage:
-  agentctl.py --agent HOST:PORT snapshot|restore --job-id ID --backend cuda|app
+  agentctl.py --agent HOST:PORT snapshot|restore --job-id ID
+              --backend cuda|app|channel
               [--pids 1,2,3]                       (cuda)
               [--app vllm|sglang] [--endpoints URL,URL]
-              [--mode offload|discard] [--tags a,b] (app)
+              [--mode offload|discard] [--tags a,b] (app, channel)
 
 Exits 0 when the operation completes, 1 otherwise.
 """
@@ -51,6 +52,12 @@ def build_config(args: argparse.Namespace) -> snapshot_agent_pb2.BackendConfig:
             app_endpoint.tags.extend(args.tags.split(","))
         return snapshot_agent_pb2.BackendConfig(app_endpoint=app_endpoint)
 
+    if args.backend == "channel":
+        app_channel = snapshot_agent_pb2.AppChannelConfig(mode=MODES[args.mode])
+        if args.tags:
+            app_channel.tags.extend(args.tags.split(","))
+        return snapshot_agent_pb2.BackendConfig(app_channel=app_channel)
+
     raise ValueError(f"unknown backend {args.backend!r}")
 
 
@@ -60,7 +67,7 @@ def main() -> int:
     parser.add_argument("--agent", required=True, help="agent endpoint HOST:PORT")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--group", default="test")
-    parser.add_argument("--backend", required=True, choices=["cuda", "app"])
+    parser.add_argument("--backend", required=True, choices=["cuda", "app", "channel"])
     parser.add_argument("--pids", default="", help="comma-separated PIDs (cuda)")
     parser.add_argument("--app", default="", choices=["", "vllm", "sglang"], help="application (app backend)")
     parser.add_argument("--endpoints", default="", help="comma-separated application URLs")
