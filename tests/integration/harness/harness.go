@@ -275,3 +275,13 @@ func (c *Cluster) PodVRAMMiB(t *testing.T, pod, container string, timeout time.D
 	}
 	return mib
 }
+
+// DeleteConfigMap deletes a ConfigMap by name in the cluster's namespace.
+// NotFound errors are ignored (idempotent cleanup).
+func (c *Cluster) DeleteConfigMap(name string) error {
+	err := c.Client.CoreV1().ConfigMaps(c.Namespace).Delete(context.Background(), name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
