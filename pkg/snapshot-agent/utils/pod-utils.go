@@ -46,6 +46,36 @@ type DeviceInterface interface {
 	GetGraphicsRunningProcesses() ([]nvml.ProcessInfo, nvml.Return)
 }
 
+// HasGPUProcesses checks whether any GPU on the node has running compute processes.
+// This is a lightweight NVML check that does not require K8s.
+var HasGPUProcesses = func(ctx context.Context) (bool, error) {
+	ret := NvmlInit()
+	if ret != nvml.SUCCESS {
+		return false, fmt.Errorf("failed to initialize NVML: %v", nvml.ErrorString(ret))
+	}
+	defer NvmlShutdown() //nolint:errcheck // best-effort cleanup, nothing to do on failure
+
+	count, ret := NvmlDeviceGetCount()
+	if ret != nvml.SUCCESS {
+		return false, fmt.Errorf("failed to get device count: %v", nvml.ErrorString(ret))
+	}
+
+	for i := 0; i < count; i++ {
+		device, ret := NvmlDeviceGetHandleByIndex(i)
+		if ret != nvml.SUCCESS {
+			continue
+		}
+		procs, ret := device.GetComputeRunningProcesses()
+		if ret != nvml.SUCCESS {
+			continue
+		}
+		if len(procs) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // GetLocalPods returns a list of pods running on the same node as the current pod.
 // It uses the NODE_NAME environment variable (populated via the Downward API)
 // to filter pods by node and the snapshot-agent label to filter by managed pods.
