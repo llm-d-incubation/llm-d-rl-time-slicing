@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -80,6 +81,9 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 
 		err = backend.Snapshot(bgCtx, allPIDStrings)
 		if err != nil {
+			if errors.Is(err, backends.ErrPIDNotFound) {
+				return fmt.Errorf("failed to snapshot job %s: %w", req.GetJobId(), sm.ErrJobNotFound)
+			}
 			return fmt.Errorf("failed to snapshot job %s: %w", req.GetJobId(), err)
 		}
 
@@ -135,6 +139,9 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 
 		slog.InfoContext(bgCtx, "Restoring PIDs", "pids", pidStrings, "backend", backendType)
 		if err := backend.Restore(bgCtx, pidStrings); err != nil {
+			if errors.Is(err, backends.ErrPIDNotFound) {
+				return fmt.Errorf("failed to restore job %s: %w", req.GetJobId(), sm.ErrJobNotFound)
+			}
 			return fmt.Errorf("failed to restore job %s: %w", req.GetJobId(), err)
 		}
 		return nil

@@ -2,14 +2,20 @@ package backends
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
 )
+
+// ErrPIDNotFound is returned when cuda-checkpoint fails because the target PID was not found.
+var ErrPIDNotFound = errors.New("pid not found")
+
 
 type nvmlClient interface {
 	Init() nvml.Return
@@ -95,7 +101,11 @@ func (c *CudaCheckpoint) getCudaCheckpointPath() string {
 
 func (c *CudaCheckpoint) runSudoCommand(ctx context.Context, name string, args ...string) error {
 	if out, err := c.execCommand(ctx, name, args...); err != nil {
-		return fmt.Errorf("command failed: %w, output: %s", err, string(out))
+		outStr := string(out)
+		if strings.Contains(outStr, "No such process") || strings.Contains(outStr, "process not found") || strings.Contains(outStr, "invalid PID") {
+			return fmt.Errorf("command failed: %w: %s", ErrPIDNotFound, outStr)
+		}
+		return fmt.Errorf("command failed: %w, output: %s", err, outStr)
 	}
 	return nil
 }

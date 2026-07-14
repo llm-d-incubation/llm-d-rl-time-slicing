@@ -90,6 +90,13 @@ func TestStartSnapshot(t *testing.T) {
 			expectOp:     true,
 			finalState:   pb.JobState_JOB_STATE_FAULTED,
 		},
+		{
+			name:         "Worker failure with ErrJobNotFound leads to NOT_FOUND",
+			initialState: pb.JobState_JOB_STATE_RUNNING,
+			workerErr:    statemachine.ErrJobNotFound,
+			expectOp:     true,
+			finalState:   pb.JobState_JOB_STATE_NOT_FOUND,
+		},
 	}
 
 	for _, tc := range tests {
@@ -184,6 +191,12 @@ func TestStartRestore(t *testing.T) {
 			initialState: pb.JobState_JOB_STATE_SAVED,
 			workerErr:    errors.New("restore failed"),
 			finalState:   pb.JobState_JOB_STATE_FAULTED,
+		},
+		{
+			name:         "Worker failure with ErrJobNotFound leads to NOT_FOUND",
+			initialState: pb.JobState_JOB_STATE_SAVED,
+			workerErr:    statemachine.ErrJobNotFound,
+			finalState:   pb.JobState_JOB_STATE_NOT_FOUND,
 		},
 	}
 

@@ -2,6 +2,7 @@ package backends_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -32,7 +33,9 @@ func TestSnapshot(t *testing.T) {
 		name        string
 		pids        []string
 		execErr     error
+		execOut     []byte
 		expectedErr bool
+		errIs       error
 	}{
 		{
 			name:        "Success",
@@ -46,18 +49,37 @@ func TestSnapshot(t *testing.T) {
 			execErr:     fmt.Errorf("exec error"),
 			expectedErr: true,
 		},
+		{
+			name:        "PIDNotFound_NoSuchProcess",
+			pids:        []string{"123"},
+			execErr:     fmt.Errorf("exec error"),
+			execOut:     []byte("Unable to detach from 123: No such process"),
+			expectedErr: true,
+			errIs:       backends.ErrPIDNotFound,
+		},
+		{
+			name:        "PIDNotFound_ProcessNotFound",
+			pids:        []string{"123"},
+			execErr:     fmt.Errorf("exec error"),
+			execOut:     []byte("process not found"),
+			expectedErr: true,
+			errIs:       backends.ErrPIDNotFound,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := backends.NewCudaCheckpoint()
 			c.SetExecCommand(func(ctx context.Context, name string, args ...string) ([]byte, error) {
-				return nil, tt.execErr
+				return tt.execOut, tt.execErr
 			})
 
 			err := c.Snapshot(context.Background(), tt.pids)
 			if (err != nil) != tt.expectedErr {
 				t.Errorf("Snapshot() error = %v, expectedErr %v", err, tt.expectedErr)
+			}
+			if tt.errIs != nil && !errors.Is(err, tt.errIs) {
+				t.Errorf("Snapshot() error = %v, expected to be %v", err, tt.errIs)
 			}
 		})
 	}
@@ -68,7 +90,9 @@ func TestRestore(t *testing.T) {
 		name        string
 		pids        []string
 		execErr     error
+		execOut     []byte
 		expectedErr bool
+		errIs       error
 	}{
 		{
 			name:        "Success",
@@ -88,18 +112,37 @@ func TestRestore(t *testing.T) {
 			execErr:     fmt.Errorf("exec error"),
 			expectedErr: true,
 		},
+		{
+			name:        "PIDNotFound_NoSuchProcess",
+			pids:        []string{"123"},
+			execErr:     fmt.Errorf("exec error"),
+			execOut:     []byte("Unable to detach from 123: No such process"),
+			expectedErr: true,
+			errIs:       backends.ErrPIDNotFound,
+		},
+		{
+			name:        "PIDNotFound_ProcessNotFound",
+			pids:        []string{"123"},
+			execErr:     fmt.Errorf("exec error"),
+			execOut:     []byte("process not found"),
+			expectedErr: true,
+			errIs:       backends.ErrPIDNotFound,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := backends.NewCudaCheckpoint()
 			c.SetExecCommand(func(ctx context.Context, name string, args ...string) ([]byte, error) {
-				return nil, tt.execErr
+				return tt.execOut, tt.execErr
 			})
 
 			err := c.Restore(context.Background(), tt.pids)
 			if (err != nil) != tt.expectedErr {
 				t.Errorf("Restore() error = %v, expectedErr %v", err, tt.expectedErr)
+			}
+			if tt.errIs != nil && !errors.Is(err, tt.errIs) {
+				t.Errorf("Restore() error = %v, expected to be %v", err, tt.errIs)
 			}
 		})
 	}

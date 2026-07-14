@@ -1,6 +1,7 @@
 package statemachine
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -9,6 +10,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// ErrJobNotFound is returned when the job's processes cannot be found.
+var ErrJobNotFound = errors.New("job not found")
 
 // OpType represents the type of operation (Snapshot or Restore).
 type OpType string
@@ -126,7 +130,11 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) 
 		if err != nil {
 			op.Status = pb.OperationStatus_OPERATION_STATUS_FAILED
 			op.Error = err.Error()
-			job.State = pb.JobState_JOB_STATE_FAULTED
+			if errors.Is(err, ErrJobNotFound) {
+				job.State = pb.JobState_JOB_STATE_NOT_FOUND
+			} else {
+				job.State = pb.JobState_JOB_STATE_FAULTED
+			}
 		} else {
 			op.Status = pb.OperationStatus_OPERATION_STATUS_COMPLETE
 			op.StorageBytes = 1024
@@ -191,7 +199,11 @@ func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (
 		if err != nil {
 			op.Status = pb.OperationStatus_OPERATION_STATUS_FAILED
 			op.Error = err.Error()
-			job.State = pb.JobState_JOB_STATE_FAULTED
+			if errors.Is(err, ErrJobNotFound) {
+				job.State = pb.JobState_JOB_STATE_NOT_FOUND
+			} else {
+				job.State = pb.JobState_JOB_STATE_FAULTED
+			}
 		} else {
 			op.Status = pb.OperationStatus_OPERATION_STATUS_COMPLETE
 			job.State = pb.JobState_JOB_STATE_RUNNING
