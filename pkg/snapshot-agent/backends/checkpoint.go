@@ -14,6 +14,9 @@ const (
 	BackendCuda BackendType = "cuda"
 	// BackendNoop is a dummy backend for testing.
 	BackendNoop BackendType = "noop"
+	// BackendAppEndpoint suspends/resumes application-aware workloads
+	// (vLLM, SGLang, ...) through their HTTP APIs.
+	BackendAppEndpoint BackendType = "app-endpoint"
 )
 
 // Request carries one backend invocation: the job it targets and the
