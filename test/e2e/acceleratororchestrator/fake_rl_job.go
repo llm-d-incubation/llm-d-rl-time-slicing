@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -73,6 +75,62 @@ func (f *FakeRLJob) RegisterPodTemplate(groupID string, pod *corev1.Pod) {
 	f.podFactory.Register(groupID, pod)
 }
 
+func (f *FakeRLJob) acquireWithRetry(ctx context.Context, groupID string) (*pb.AcquireResponse, error) {
+	maxRetries := 20
+	retryInterval := 500 * time.Millisecond
+	for i := 0; i < maxRetries; i++ {
+		resp, err := f.client.Acquire(ctx, &pb.AcquireRequest{
+			GroupId: groupID,
+			JobId:   f.name,
+		})
+		if err == nil {
+			return resp, nil
+		}
+
+		st, ok := status.FromError(err)
+		if ok && (st.Code() == codes.Unavailable || st.Code() == codes.Internal) {
+			f.t.Logf("[Job %s] WARNING: Acquire for group %s returned transient error (%v), retrying in %v (attempt %d/%d)...",
+				f.name, groupID, err, retryInterval, i+1, maxRetries)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryInterval):
+				continue
+			}
+		}
+		return nil, err
+	}
+	return nil, fmt.Errorf("failed to acquire lock for %s after retries", groupID)
+}
+
+func (f *FakeRLJob) yieldWithRetry(ctx context.Context, groupID string) error {
+	maxRetries := 20
+	retryInterval := 500 * time.Millisecond
+	for i := 0; i < maxRetries; i++ {
+		_, err := f.client.Yield(ctx, &pb.YieldRequest{
+			GroupId: groupID,
+			JobId:   f.name,
+		})
+		if err == nil {
+			return nil
+		}
+
+		st, ok := status.FromError(err)
+		if ok && (st.Code() == codes.Unavailable || st.Code() == codes.Internal) {
+			f.t.Logf("[Job %s] WARNING: Yield for group %s returned transient error (%v), retrying in %v (attempt %d/%d)...",
+				f.name, groupID, err, retryInterval, i+1, maxRetries)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryInterval):
+				continue
+			}
+		}
+		return err
+	}
+	return fmt.Errorf("failed to yield lock for %s after retries", groupID)
+}
+
 func (f *FakeRLJob) Run(ctx context.Context) error {
 	f.t.Logf("[Job %s] Starting RL Job", f.name)
 
@@ -100,10 +158,7 @@ func (f *FakeRLJob) init(ctx context.Context) error {
 
 	// Acquire lock for samplers
 	f.t.Logf("[Job %s] Acquiring lock for samplers...", f.name)
-	resp, err := f.client.Acquire(ctx, &pb.AcquireRequest{
-		GroupId: "samplers",
-		JobId:   f.name,
-	})
+	resp, err := f.acquireWithRetry(ctx, "samplers")
 	if err != nil {
 		return err
 	}
@@ -119,20 +174,13 @@ func (f *FakeRLJob) init(ctx context.Context) error {
 
 	// Yield samplers
 	f.t.Logf("[Job %s] Yielding samplers lock...", f.name)
-	_, err = f.client.Yield(ctx, &pb.YieldRequest{
-		GroupId: "samplers",
-		JobId:   f.name,
-	})
-	if err != nil {
+	if err := f.yieldWithRetry(ctx, "samplers"); err != nil {
 		return err
 	}
 
 	// Acquire lock for trainers
 	f.t.Logf("[Job %s] Acquiring lock for trainers...", f.name)
-	resp, err = f.client.Acquire(ctx, &pb.AcquireRequest{
-		GroupId: "trainers",
-		JobId:   f.name,
-	})
+	resp, err = f.acquireWithRetry(ctx, "trainers")
 	if err != nil {
 		return err
 	}
@@ -148,11 +196,7 @@ func (f *FakeRLJob) init(ctx context.Context) error {
 
 	// Yield trainers
 	f.t.Logf("[Job %s] Yielding trainers lock...", f.name)
-	_, err = f.client.Yield(ctx, &pb.YieldRequest{
-		GroupId: "trainers",
-		JobId:   f.name,
-	})
-	if err != nil {
+	if err := f.yieldWithRetry(ctx, "trainers"); err != nil {
 		return err
 	}
 
@@ -168,10 +212,7 @@ func (f *FakeRLJob) loop(ctx context.Context) error {
 
 		// 1. Lock samplers
 		f.t.Logf("[Job %s] Acquiring lock for samplers...", f.name)
-		resp, err := f.client.Acquire(ctx, &pb.AcquireRequest{
-			GroupId: "samplers",
-			JobId:   f.name,
-		})
+		resp, err := f.acquireWithRetry(ctx, "samplers")
 		if err != nil {
 			return err
 		}
@@ -189,20 +230,13 @@ func (f *FakeRLJob) loop(ctx context.Context) error {
 
 		// Yield samplers
 		f.t.Logf("[Job %s] Yielding samplers lock...", f.name)
-		_, err = f.client.Yield(ctx, &pb.YieldRequest{
-			GroupId: "samplers",
-			JobId:   f.name,
-		})
-		if err != nil {
+		if err := f.yieldWithRetry(ctx, "samplers"); err != nil {
 			return err
 		}
 
 		// 2. Lock trainers
 		f.t.Logf("[Job %s] Acquiring lock for trainers...", f.name)
-		resp, err = f.client.Acquire(ctx, &pb.AcquireRequest{
-			GroupId: "trainers",
-			JobId:   f.name,
-		})
+		resp, err = f.acquireWithRetry(ctx, "trainers")
 		if err != nil {
 			return err
 		}
@@ -220,11 +254,7 @@ func (f *FakeRLJob) loop(ctx context.Context) error {
 
 		// Yield trainers
 		f.t.Logf("[Job %s] Yielding trainers lock...", f.name)
-		_, err = f.client.Yield(ctx, &pb.YieldRequest{
-			GroupId: "trainers",
-			JobId:   f.name,
-		})
-		if err != nil {
+		if err := f.yieldWithRetry(ctx, "trainers"); err != nil {
 			return err
 		}
 	}
