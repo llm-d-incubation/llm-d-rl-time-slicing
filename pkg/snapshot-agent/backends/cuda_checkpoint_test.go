@@ -6,8 +6,19 @@ import (
 	"testing"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
+	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
 )
+
+func cudaConfig(pids ...int32) *pb.BackendConfig {
+	return &pb.BackendConfig{
+		Backend: &pb.BackendConfig_Cuda{
+			Cuda: &pb.CudaBackendConfig{
+				ExplicitTarget: &pb.ProcessTarget{Pids: pids},
+			},
+		},
+	}
+}
 
 type mockNvmlClient struct {
 	initRet        nvml.Return
@@ -30,20 +41,28 @@ func TestNewCudaCheckpoint(t *testing.T) {
 func TestSnapshot(t *testing.T) {
 	tests := []struct {
 		name        string
-		pids        []string
+		config      *pb.BackendConfig
 		execErr     error
 		expectedErr bool
 	}{
 		{
-			name:        "Success",
-			pids:        []string{"123", "456"},
-			execErr:     nil,
-			expectedErr: false,
+			name:   "Success",
+			config: cudaConfig(123, 456),
 		},
 		{
 			name:        "ExecFailure",
-			pids:        []string{"123"},
+			config:      cudaConfig(123),
 			execErr:     fmt.Errorf("exec error"),
+			expectedErr: true,
+		},
+		{
+			name:        "NoPIDs",
+			config:      cudaConfig(),
+			expectedErr: true,
+		},
+		{
+			name:        "NilConfig",
+			config:      nil,
 			expectedErr: true,
 		},
 	}
@@ -51,11 +70,11 @@ func TestSnapshot(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := backends.NewCudaCheckpoint()
-			c.SetExecCommand(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			c.SetExecCommand(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 				return nil, tt.execErr
 			})
 
-			err := c.Snapshot(context.Background(), tt.pids)
+			err := c.Snapshot(context.Background(), backends.Request{JobID: "test-job", Config: tt.config})
 			if (err != nil) != tt.expectedErr {
 				t.Errorf("Snapshot() error = %v, expectedErr %v", err, tt.expectedErr)
 			}
@@ -66,25 +85,22 @@ func TestSnapshot(t *testing.T) {
 func TestRestore(t *testing.T) {
 	tests := []struct {
 		name        string
-		pids        []string
+		config      *pb.BackendConfig
 		execErr     error
 		expectedErr bool
 	}{
 		{
-			name:        "Success",
-			pids:        []string{"123"},
-			execErr:     nil,
-			expectedErr: false,
+			name:   "Success",
+			config: cudaConfig(123),
 		},
 		{
 			name:        "NoPIDs",
-			pids:        []string{},
-			execErr:     nil,
+			config:      cudaConfig(),
 			expectedErr: true,
 		},
 		{
 			name:        "ExecFailure",
-			pids:        []string{"123"},
+			config:      cudaConfig(123),
 			execErr:     fmt.Errorf("exec error"),
 			expectedErr: true,
 		},
@@ -93,11 +109,11 @@ func TestRestore(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := backends.NewCudaCheckpoint()
-			c.SetExecCommand(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			c.SetExecCommand(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 				return nil, tt.execErr
 			})
 
-			err := c.Restore(context.Background(), tt.pids)
+			err := c.Restore(context.Background(), backends.Request{JobID: "test-job", Config: tt.config})
 			if (err != nil) != tt.expectedErr {
 				t.Errorf("Restore() error = %v, expectedErr %v", err, tt.expectedErr)
 			}
@@ -118,7 +134,6 @@ func TestHealthCheck(t *testing.T) {
 			initRet:        nvml.SUCCESS,
 			deviceCount:    1,
 			deviceCountRet: nvml.SUCCESS,
-			expectedErr:    false,
 		},
 		{
 			name:        "NVMLInitFailure",
