@@ -4,6 +4,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// durationBuckets spans 1ms to 10min: operation times range from near-instant
+// (uncontended lock acquisition) to minutes (snapshot/restore of large models).
+var durationBuckets = []float64{0.001, 0.01, 0.1, 1, 10, 60, 300, 600}
+
 var (
 	// QueueDepth tracks the current number of jobs waiting in the queue for a group lock.
 	QueueDepth = prometheus.NewGaugeVec(
@@ -19,7 +23,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "accelerator_orchestrator_acquire_wait_duration_seconds",
 			Help:    "Time spent by a job waiting in Acquire() until lock acquisition and context restoration.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: durationBuckets,
 		},
 		[]string{"group_id"},
 	)
@@ -29,7 +33,7 @@ var (
 		prometheus.HistogramOpts{
 			Name:    "accelerator_orchestrator_agent_operation_duration_seconds",
 			Help:    "Duration of snapshot and restore operations as reported by snapshot agents.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: durationBuckets,
 		},
 		[]string{"group_id", "job_id", "node", "operation"},
 	)
