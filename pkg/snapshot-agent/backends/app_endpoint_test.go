@@ -75,6 +75,25 @@ func TestVLLMSnapshotDiscard(t *testing.T) {
 	}
 }
 
+func TestTrailingSlashEndpointNormalized(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	backend := backends.NewAppEndpointBackend()
+	err := backend.Snapshot(context.Background(),
+		appConfig(pb.App_APP_VLLM, srv.URL+"/", pb.SuspendMode_SUSPEND_MODE_DISCARD))
+	if err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+	if gotPath != "/sleep" {
+		t.Errorf("expected /sleep for trailing-slash endpoint, got %s", gotPath)
+	}
+}
+
 func TestVLLMSnapshotDefaultModeIsOffload(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -30,9 +30,9 @@ type AppProfile struct {
 var vllmProfile = &AppProfile{
 	Name: "vllm",
 	BuildSnapshotRequest: func(ctx context.Context, endpoint string, mode pb.SuspendMode, _ []string) (*http.Request, error) {
-		u, err := url.Parse(endpoint + "/sleep")
+		u, err := appURL(endpoint, "sleep")
 		if err != nil {
-			return nil, fmt.Errorf("invalid endpoint %q: %w", endpoint, err)
+			return nil, err
 		}
 		level := "1"
 		if mode == pb.SuspendMode_SUSPEND_MODE_DISCARD {
@@ -44,9 +44,9 @@ var vllmProfile = &AppProfile{
 		return http.NewRequestWithContext(ctx, http.MethodPost, u.String(), http.NoBody)
 	},
 	BuildRestoreRequest: func(ctx context.Context, endpoint string, tags []string) (*http.Request, error) {
-		u, err := url.Parse(endpoint + "/wake_up")
+		u, err := appURL(endpoint, "wake_up")
 		if err != nil {
-			return nil, fmt.Errorf("invalid endpoint %q: %w", endpoint, err)
+			return nil, err
 		}
 		if len(tags) > 0 {
 			q := u.Query()
@@ -65,11 +65,21 @@ var vllmProfile = &AppProfile{
 var sglangProfile = &AppProfile{
 	Name: "sglang",
 	BuildSnapshotRequest: func(ctx context.Context, endpoint string, _ pb.SuspendMode, tags []string) (*http.Request, error) {
-		return buildSGLangRequest(ctx, endpoint+"/release_memory_occupation", tags)
+		return buildSGLangRequest(ctx, endpoint, "release_memory_occupation", tags)
 	},
 	BuildRestoreRequest: func(ctx context.Context, endpoint string, tags []string) (*http.Request, error) {
-		return buildSGLangRequest(ctx, endpoint+"/resume_memory_occupation", tags)
+		return buildSGLangRequest(ctx, endpoint, "resume_memory_occupation", tags)
 	},
+}
+
+// appURL parses the base endpoint once and joins the operation path onto it,
+// preserving any base path and query while normalizing slashes.
+func appURL(endpoint, op string) (*url.URL, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid endpoint %q: %w", endpoint, err)
+	}
+	return u.JoinPath(op), nil
 }
 
 // appProfiles maps the App enum to its HTTP dialect.
@@ -81,9 +91,10 @@ var appProfiles = map[pb.App]*AppProfile{
 // buildSGLangRequest builds a JSON POST request. SGLang requires a JSON body
 // on these endpoints even when no tags are given, so an empty object is sent
 // rather than an empty body.
-func buildSGLangRequest(ctx context.Context, rawURL string, tags []string) (*http.Request, error) {
-	if _, err := url.Parse(rawURL); err != nil {
-		return nil, fmt.Errorf("invalid URL %q: %w", rawURL, err)
+func buildSGLangRequest(ctx context.Context, endpoint, op string, tags []string) (*http.Request, error) {
+	u, err := appURL(endpoint, op)
+	if err != nil {
+		return nil, err
 	}
 	payload := map[string]any{}
 	if len(tags) > 0 {
@@ -93,7 +104,7 @@ func buildSGLangRequest(ctx context.Context, rawURL string, tags []string) (*htt
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +154,7 @@ func (b *AppEndpointBackend) Snapshot(ctx context.Context, req Request) error {
 			return fmt.Errorf("failed to build snapshot request for %s: %w", ep, err)
 		}
 		slog.InfoContext(ctx, "Sending app snapshot request",
-			"app", profile.Name, "endpoint", ep, "url", req.URL.String())
+			"app", profile.Name, "endpoint", ep, "url", req.URL.Redacted())
 		start := time.Now()
 		if err := b.doRequest(req); err != nil {
 			return fmt.Errorf("snapshot request to %s failed: %w", ep, err)
@@ -166,7 +177,7 @@ func (b *AppEndpointBackend) Restore(ctx context.Context, req Request) error {
 			return fmt.Errorf("failed to build restore request for %s: %w", ep, err)
 		}
 		slog.InfoContext(ctx, "Sending app restore request",
-			"app", profile.Name, "endpoint", ep, "url", req.URL.String())
+			"app", profile.Name, "endpoint", ep, "url", req.URL.Redacted())
 		start := time.Now()
 		if err := b.doRequest(req); err != nil {
 			return fmt.Errorf("restore request to %s failed: %w", ep, err)
