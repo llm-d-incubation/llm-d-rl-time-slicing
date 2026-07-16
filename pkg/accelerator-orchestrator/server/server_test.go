@@ -7,8 +7,10 @@ import (
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/metrics"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -24,6 +26,7 @@ func TestServer_Acquire(t *testing.T) {
 		timeout       time.Duration
 		expectedCode  codes.Code
 		expectEnqueue bool
+		verify        func(t *testing.T, resp *pb.AcquireResponse, err error)
 	}{
 		{
 			name: "group not found",
@@ -74,6 +77,39 @@ func TestServer_Acquire(t *testing.T) {
 			expectedCode:  codes.DeadlineExceeded,
 			expectEnqueue: true,
 		},
+		{
+			name: "success immediate",
+			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
+				t.Helper()
+				lockStore := store.NewMemLockStore()
+				if err := lockStore.Lock(ctx, "group-1", "job-1"); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+				gs := store.NewGroupStore(lockStore)
+				g, _, err := gs.GetOrCreate(ctx, "group-1")
+				if err != nil {
+					t.Fatalf("failed to create group: %v", err)
+				}
+				g.Status().SetLoadedJob("job-1")
+				return gs, store.NewJobStore()
+			},
+			groupID:       "group-1",
+			jobID:         "job-1",
+			expectedCode:  codes.OK,
+			expectEnqueue: true,
+			verify: func(t *testing.T, resp *pb.AcquireResponse, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
+				if !resp.Success {
+					t.Errorf("Expected success to be true")
+				}
+				if testutil.CollectAndCount(metrics.AcquireWaitDuration) == 0 {
+					t.Errorf("Expected AcquireWaitDuration observations, got 0")
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -100,7 +136,7 @@ func TestServer_Acquire(t *testing.T) {
 			defer conn.Close()
 			client := pb.NewAcceleratorOrchestratorServiceClient(conn)
 
-			_, err = client.Acquire(clientCtx, &pb.AcquireRequest{
+			resp, err := client.Acquire(clientCtx, &pb.AcquireRequest{
 				GroupId: tc.groupID,
 				JobId:   tc.jobID,
 			})
@@ -128,6 +164,10 @@ func TestServer_Acquire(t *testing.T) {
 					t.Errorf("Expected code %v, got %v", tc.expectedCode, st.Code())
 				}
 				return
+			}
+
+			if tc.verify != nil {
+				tc.verify(t, resp, err)
 			}
 		})
 	}
@@ -205,6 +245,9 @@ func TestServer_Yield(t *testing.T) {
 				}
 				if !resp.SnapshotDeferred {
 					t.Errorf("Expected snapshot to be deferred")
+				}
+				if testutil.ToFloat64(metrics.DeferredSnapshotsTotal.WithLabelValues("group-1")) < 1 {
+					t.Errorf("Expected DeferredSnapshotsTotal >= 1")
 				}
 			},
 		},

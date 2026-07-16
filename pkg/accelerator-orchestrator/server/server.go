@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/metrics"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -123,6 +126,7 @@ func (s *Server) defaultCheckAcquire(
 	// (fixes premature success bug)
 	if group.Spec().LockingJob() == jobID && group.Status().LoadedJob() == jobID {
 		slog.InfoContext(ctx, "Acquire succeeded, job loaded and lock held")
+		metrics.AcquireWaitDuration.WithLabelValues(groupID).Observe(time.Since(startTime).Seconds())
 		return &pb.AcquireResponse{
 			Success:         true,
 			ContextRestored: true, // Default to true, as we don't have enough info to determine if it was zero-overhead
@@ -185,6 +189,9 @@ func (s *Server) Yield(ctx context.Context, req *pb.YieldRequest) (*pb.YieldResp
 
 	// 4. Construct Response from Snapshot
 	numWaiters := snap.WaiterQueueDepth
+	if numWaiters == 0 {
+		metrics.DeferredSnapshotsTotal.WithLabelValues(groupID).Inc()
+	}
 	return &pb.YieldResponse{
 		Success:          true,
 		PendingWaiters:   int64(numWaiters),
@@ -264,6 +271,7 @@ func (s *Server) GetGroupStatus(ctx context.Context, req *pb.GetGroupStatusReque
 func StartServer(
 	ctx context.Context,
 	port int,
+	metricsPort int,
 	ctrl *controller.Controller,
 	groupStore GroupStore,
 	jobStore JobStore,
@@ -273,6 +281,24 @@ func StartServer(
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
+
+	// Start HTTP metrics server
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	httpServer := &http.Server{
+		Addr:              fmt.Sprintf(":%d", metricsPort),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	go func() {
+		slog.InfoContext(ctx, "Starting HTTP metrics server", "port", metricsPort)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.ErrorContext(ctx, "HTTP metrics server failed", "error", err)
+		}
+	}()
 
 	// Start controller in background
 	go func() {
@@ -300,8 +326,13 @@ func StartServer(
 			return err
 		}
 	case <-ctx.Done():
-		slog.InfoContext(ctx, "Context canceled, shutting down gRPC server gracefully")
+		slog.InfoContext(ctx, "Context canceled, shutting down servers gracefully")
 		s.GracefulStop()
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			slog.ErrorContext(ctx, "HTTP metrics server shutdown error", "error", err)
+		}
+		cancel()
 		<-errChan
 		slog.InfoContext(ctx, "Server stopped")
 	}

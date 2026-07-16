@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/metrics"
 )
 
 var (
@@ -106,6 +108,7 @@ func (s *GroupStore) Delete(ctx context.Context, id string) error {
 			return err
 		}
 		delete(s.groups, id)
+		metrics.CleanupGroup(id)
 	}
 	return nil
 }

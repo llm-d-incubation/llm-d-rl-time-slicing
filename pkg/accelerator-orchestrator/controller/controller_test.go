@@ -10,8 +10,10 @@ import (
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/metrics"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -266,6 +268,9 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	if !testGroup.Spec().GetWaitingJobQueue().Exists("job-2") {
 		t.Errorf("Phase 2: expected job-2 to be in queue")
 	}
+	if qd := testutil.ToFloat64(metrics.QueueDepth.WithLabelValues(groupID)); qd != 1 {
+		t.Errorf("Phase 2: expected QueueDepth=1, got %v", qd)
+	}
 
 	// 3. job-1 yields the lock -> job-2 should get the lock
 	err = testGroup.Spec().Yield(ctx, "job-1")
@@ -286,6 +291,9 @@ func TestController_Reconcile_TwoJobsTakeLockTurns(t *testing.T) {
 	}
 	if testGroup.Spec().GetWaitingJobQueue().Exists("job-2") {
 		t.Errorf("Phase 3: expected job-2 to be dequeued")
+	}
+	if qd := testutil.ToFloat64(metrics.QueueDepth.WithLabelValues(groupID)); qd != 0 {
+		t.Errorf("Phase 3: expected QueueDepth=0, got %v", qd)
 	}
 
 	// 4. job-1 requests lock again (gets in queue)
@@ -521,6 +529,9 @@ func TestController_Reconcile_TriggersSnapshot(t *testing.T) {
 	if err != nil {
 		t.Errorf("Timed out waiting for job-2 state to be refreshed to SAVED in store")
 	}
+	if testutil.CollectAndCount(metrics.AgentOperationDuration) == 0 {
+		t.Errorf("Expected AgentOperationDuration histogram observations, got 0")
+	}
 }
 
 func TestController_Reconcile_ActiveJobFaultedFails(t *testing.T) {
@@ -754,6 +765,9 @@ func TestController_Reconcile_TriggersRestore(t *testing.T) {
 	}, 2*time.Second)
 	if err != nil {
 		t.Errorf("Timed out waiting for job-1 state to be refreshed to RUNNING in store")
+	}
+	if testutil.CollectAndCount(metrics.AgentOperationDuration) == 0 {
+		t.Errorf("Expected AgentOperationDuration histogram observations, got 0")
 	}
 }
 

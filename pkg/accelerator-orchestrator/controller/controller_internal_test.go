@@ -93,7 +93,7 @@ func TestController_WaitForOperation(t *testing.T) {
 			defer cancel()
 
 			start := time.Now()
-			err := c.waitForOperation(ctx, nodeName, opID)
+			err := c.waitForOperation(ctx, "test-group", "test-job", nodeName, opID, "snapshot")
 			duration := time.Since(start)
 
 			switch {

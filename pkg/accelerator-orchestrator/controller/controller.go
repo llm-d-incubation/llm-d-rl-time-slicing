@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/metrics"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
@@ -249,6 +250,8 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 		return fmt.Errorf("failed to update group status: %w", err)
 	}
 
+	metrics.QueueDepth.WithLabelValues(group.ID()).Set(float64(group.Snapshot().WaiterQueueDepth))
+
 	return nil
 }
 
@@ -305,7 +308,7 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 			if err != nil {
 				return fmt.Errorf("failed to trigger snapshot for job %s on node %s: %w", jobID, nodeName, err)
 			}
-			if err := c.waitForOperation(ctx, nodeName, resp.OperationId); err != nil {
+			if err := c.waitForOperation(ctx, groupID, jobID, nodeName, resp.OperationId, "snapshot"); err != nil {
 				return fmt.Errorf("failed while waiting for snapshot operation %s for job %s on node %s: %w",
 					resp.OperationId, jobID, nodeName, err)
 			}
@@ -337,7 +340,7 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 		return fmt.Errorf("failed to trigger restore for active job %s on node %s: %w",
 			activeJobID, nodeName, err)
 	}
-	if err := c.waitForOperation(ctx, nodeName, resp.OperationId); err != nil {
+	if err := c.waitForOperation(ctx, groupID, activeJobID, nodeName, resp.OperationId, "restore"); err != nil {
 		return fmt.Errorf("failed waiting for restore op %s for job %s on %s: %w",
 			resp.OperationId, activeJobID, nodeName, err)
 	}
@@ -562,7 +565,7 @@ func translateJobState(s agentpb.JobState) pb.SnapshotAgentJobState_State {
 }
 
 // waitForOperation blocks until the given operation on the node completes or fails.
-func (c *Controller) waitForOperation(ctx context.Context, nodeName, operationID string) error {
+func (c *Controller) waitForOperation(ctx context.Context, groupID, jobID, nodeName, operationID, operationType string) error {
 	ctx = logging.WithNodeName(ctx, nodeName)
 	ctx = logging.WithOperationID(ctx, operationID)
 
@@ -585,6 +588,8 @@ func (c *Controller) waitForOperation(ctx context.Context, nodeName, operationID
 			switch resp.Status {
 			case agentpb.OperationStatus_OPERATION_STATUS_COMPLETE:
 				slog.InfoContext(ctx, "Operation completed successfully", "elapsedMs", resp.ElapsedMs)
+				durationSec := float64(resp.ElapsedMs) / 1000.0
+				metrics.AgentOperationDuration.WithLabelValues(groupID, jobID, nodeName, operationType).Observe(durationSec)
 				return nil
 			case agentpb.OperationStatus_OPERATION_STATUS_FAILED:
 				errStr := "unknown error"

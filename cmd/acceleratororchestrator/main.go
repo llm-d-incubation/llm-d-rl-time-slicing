@@ -12,6 +12,7 @@ import (
 
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/infrastructure"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/metrics"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
@@ -37,11 +38,14 @@ func run() error {
 	slog.SetDefault(slog.New(ctxHandler))
 
 	port := flag.Int("port", 50051, "The server port")
+	metricsPort := flag.Int("metrics-port", 8080, "The metrics server port")
 	kubeconfig := flag.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	controllerWorkers := flag.Int("controller-workers", 1, "The number of workers for the controller")
 	snapshotAgentPort := flag.Int("snapshot-agent-port", 9001, "The default port for snapshot agents")
 	resyncPeriod := flag.Duration("resync-period", 30*time.Second, "The period for periodic resync of agent states")
 	flag.Parse()
+
+	metrics.Register()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -99,7 +103,7 @@ func run() error {
 	podInformerFactory.Start(ctx.Done())
 
 	slog.InfoContext(ctx, "Starting Accelerator Orchestrator server")
-	return server.StartServer(ctx, *port, ctrl, groupStore, jobStore, *controllerWorkers)
+	return server.StartServer(ctx, *port, *metricsPort, ctrl, groupStore, jobStore, *controllerWorkers)
 }
 
 func buildKubeConfig(kubeconfigPath string) (*rest.Config, error) {
