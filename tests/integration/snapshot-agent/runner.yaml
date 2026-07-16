@@ -28,6 +28,8 @@ metadata:
   name: snapshot-agent-test-runner
   namespace: default
 ---
+# Cluster-wide read-only: node discovery and the all-namespaces pod listing
+# used to find a free GPU. Pod CRUD/exec stays namespace-local below.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -38,13 +40,7 @@ rules:
     verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "create", "delete"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -53,6 +49,36 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
+  name: snapshot-agent-test-runner
+subjects:
+  - kind: ServiceAccount
+    name: snapshot-agent-test-runner
+    namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: snapshot-agent-test-runner
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: snapshot-agent-test-runner
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
   name: snapshot-agent-test-runner
 subjects:
   - kind: ServiceAccount

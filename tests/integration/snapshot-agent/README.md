@@ -56,7 +56,7 @@ This builds from your working directory, so local modifications are included —
 
 ## Options
 
-```
+```text
 --image IMAGE        Snapshot-agent container image (required)
 --project PROJECT    GCP project (runs gcloud get-credentials)
 --cluster CLUSTER    GKE cluster name
