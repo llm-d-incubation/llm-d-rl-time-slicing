@@ -266,6 +266,8 @@ func (h *Harness) waitHTTP(t *testing.T, url string) {
 
 // execPod runs a command in a pod container and returns stdout.
 func (h *Harness) execPod(pod, container string, command ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+	defer cancel()
 	req := h.Client.CoreV1().RESTClient().Post().
 		Resource("pods").Name(pod).Namespace(namespace).SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
@@ -280,7 +282,7 @@ func (h *Harness) execPod(pod, container string, command ...string) (string, err
 		return "", fmt.Errorf("creating executor: %w", err)
 	}
 	var stdout, stderr bytes.Buffer
-	err = exec.StreamWithContext(context.Background(), remotecommand.StreamOptions{
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})

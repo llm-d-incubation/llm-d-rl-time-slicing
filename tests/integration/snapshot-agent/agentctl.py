@@ -40,6 +40,8 @@ def build_config(args: argparse.Namespace) -> snapshot_agent_pb2.BackendConfig:
         return snapshot_agent_pb2.BackendConfig(cuda=cuda)
 
     if args.backend == "app":
+        if args.app not in APPS:
+            raise ValueError(f"--app is required for --backend app (one of {sorted(APPS)})")
         app_endpoint = snapshot_agent_pb2.AppEndpointConfig(
             app=APPS[args.app],
             endpoints=args.endpoints.split(",") if args.endpoints else [],

@@ -112,9 +112,10 @@ func agentPod(image, node, mode string) *corev1.Pod {
 			HostPID:            true,
 			Tolerations:        gpuTolerations(),
 			InitContainers: []corev1.Container{{
-				Name:    "install-cuda-checkpoint",
-				Image:   "alpine:latest",
-				Command: []string{"sh", "-c", "apk add --no-cache wget && wget -qO /opt/bin/cuda-checkpoint https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/main/bin/x86_64_Linux/cuda-checkpoint && chmod +x /opt/bin/cuda-checkpoint"},
+				Name:  "install-cuda-checkpoint",
+				Image: "alpine:latest",
+				// Pinned to an immutable commit rather than the mutable main ref.
+				Command: []string{"sh", "-c", "apk add --no-cache wget && wget -qO /opt/bin/cuda-checkpoint https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/00d5cce84c628088d6caa203fc4af40c1538b6f7/bin/x86_64_Linux/cuda-checkpoint && chmod +x /opt/bin/cuda-checkpoint"},
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: "bin-dir", MountPath: "/opt/bin"},
 				},
