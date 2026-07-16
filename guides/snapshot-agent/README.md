@@ -59,14 +59,14 @@ pip install "git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#s
 Trigger a snapshot by passing the target PIDs using a `BackendConfig` object:
 ```python
 from timeslice.snapshot_agent import SnapshotAgentClient
-from timeslice.snapshot_agent import snapshot_agent_pb2
+from timeslice.snapshot_agent import snapshot_agent_pb2 as snapshot
 
 # Connect to the local agent
 with SnapshotAgentClient("localhost:9001") as client:
     # Define the backend config with target PIDs
-    backend_config = snapshot_agent_pb2.BackendConfig(
-        cuda=snapshot_agent_pb2.CudaBackendConfig(
-            explicit_target=snapshot_agent_pb2.ProcessTarget(pids=[1234])
+    backend_config = snapshot.BackendConfig(
+        cuda=snapshot.CudaBackendConfig(
+            explicit_target=snapshot.ProcessTarget(pids=[1234])
         )
     )
 
@@ -124,7 +124,155 @@ result = client.snapshot_and_wait(job_id="my-k8s-job-id")
 
 ---
 
-## 3. Monitoring and Troubleshooting
+## 3. Backends
+
+The Snapshot Agent supports multiple backends for different GPU memory management strategies. Each backend is selected per-request via the `backend_config` field.
+
+| Backend | Config | How it works | VRAM Freed | Resume Time |
+|---------|--------|-------------|------------|-------------|
+| CUDA Checkpoint | `cuda` | Process-level CUDA state save/restore via `cuda-checkpoint` | ~100% | ~1-3s |
+| Application-Aware | `app_endpoint` | Suspend/resume through the application's own HTTP API (vLLM, SGLang) | ~96% | ~50-100ms |
+
+The VRAM Freed and Resume Time figures are illustrative, measured with a small model (Qwen2.5-0.5B) on an H100; actual numbers depend on the model size, hardware, and engine version.
+
+### CUDA Checkpoint
+
+Saves and restores the entire CUDA context of a process. Works with any GPU workload regardless of framework.
+
+```python
+from timeslice.snapshot_agent import SnapshotAgentClient
+from timeslice.snapshot_agent import snapshot_agent_pb2 as snapshot
+
+cuda_config = snapshot.BackendConfig(
+    cuda=snapshot.CudaBackendConfig(
+        explicit_target=snapshot.ProcessTarget(pids=[1234])
+    )
+)
+
+with SnapshotAgentClient("localhost:9001") as client:
+    # Checkpoint
+    result = client.snapshot_and_wait(job_id="my-job", backend_config=cuda_config)
+
+    # Restore
+    result = client.restore_and_wait(job_id="my-job", backend_config=cuda_config)
+```
+
+In Kubernetes mode, PIDs are discovered automatically — omit `explicit_target`:
+```python
+result = client.snapshot_and_wait(
+    job_id="my-k8s-job",
+    backend_config=snapshot.BackendConfig(cuda=snapshot.CudaBackendConfig()),
+)
+```
+
+### Application-Aware (app_endpoint)
+
+This backend implements application-aware snapshot/restore: suspend and resume are HTTP calls to an endpoint on the running application, and the application itself offloads or drops its GPU state in response (vLLM's sleep API, SGLang's memory-occupation API). The `app` field selects the application; `endpoints` targets the server(s).
+
+**Suspend mode** states what happens to the workload's durable state while suspended:
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `SUSPEND_MODE_OFFLOAD` | State preserved in host memory; Restore copies it back | Standard suspend/resume |
+| `SUSPEND_MODE_DISCARD` | State dropped; the application re-provisions it after Restore | RL training — push new weights after resume |
+
+When the mode is unspecified (`SUSPEND_MODE_UNSPECIFIED`), the application's default behavior applies: for vLLM that is OFFLOAD; for SGLang the launch flags decide either way (see below).
+
+**Tags** select memory regions (`weights`, `kv_cache`, ...). If omitted, the application's full region set is used. On Snapshot, tags select what to suspend (where the application supports it); on Restore, what to bring back.
+
+#### vLLM
+
+Server requirements:
+
+```bash
+VLLM_SERVER_DEV_MODE=1 python -m vllm.entrypoints.openai.api_server \
+  --model <model> \
+  --enable-sleep-mode
+```
+
+```python
+vllm_config = snapshot.BackendConfig(
+    app_endpoint=snapshot.AppEndpointConfig(
+        app=snapshot.APP_VLLM,
+        endpoints=["http://localhost:8000"],
+    )
+)
+
+with SnapshotAgentClient("localhost:9001") as client:
+    # Suspend: offload weights to CPU, discard KV cache
+    client.snapshot_and_wait(job_id="my-vllm-job", backend_config=vllm_config)
+
+    # Resume: restore all
+    client.restore_and_wait(job_id="my-vllm-job", backend_config=vllm_config)
+```
+
+Partial resume — bring back only specific regions:
+```python
+app_endpoint=snapshot.AppEndpointConfig(
+    app=snapshot.APP_VLLM,
+    endpoints=["http://localhost:8000"],
+    tags=["weights"],
+)
+```
+
+#### SGLang
+
+Server requirements:
+
+```bash
+python -m sglang.launch_server \
+  --model-path <model> \
+  --enable-memory-saver \
+  --enable-weights-cpu-backup
+```
+
+For SGLang the effective suspend mode is fixed by the server's launch flags, not per call: with `--enable-weights-cpu-backup` weights are preserved (OFFLOAD behavior); without it they are discarded (DISCARD behavior) and inference produces incorrect results after resume unless the application pushes new weights.
+
+```python
+sglang_config = snapshot.BackendConfig(
+    app_endpoint=snapshot.AppEndpointConfig(
+        app=snapshot.APP_SGLANG,
+        endpoints=["http://localhost:30000"],
+    )
+)
+
+with SnapshotAgentClient("localhost:9001") as client:
+    # Suspend: release GPU memory
+    client.snapshot_and_wait(job_id="my-sglang-job", backend_config=sglang_config)
+
+    # Resume: restore GPU memory
+    client.restore_and_wait(job_id="my-sglang-job", backend_config=sglang_config)
+```
+
+### Composing Backends
+
+Application-aware suspend and CUDA checkpoint are separate operations that compose. Suspend first, then checkpoint; restore in reverse order:
+
+```python
+app_config = snapshot.BackendConfig(
+    app_endpoint=snapshot.AppEndpointConfig(
+        app=snapshot.APP_VLLM,
+        endpoints=["http://localhost:8000"],
+    )
+)
+cuda_config = snapshot.BackendConfig(
+    cuda=snapshot.CudaBackendConfig(
+        explicit_target=snapshot.ProcessTarget(pids=[1234])
+    )
+)
+
+# 1. Application-level suspend (frees most VRAM)
+client.snapshot_and_wait(job_id="app-job", backend_config=app_config)
+
+# 2. CUDA checkpoint (frees the remaining CUDA context)
+client.snapshot_and_wait(job_id="cuda-job", backend_config=cuda_config)
+
+# Restore: 3. CUDA restore, then 4. application-level resume
+```
+
+---
+
+## 4. Monitoring and Troubleshooting
 
 ### Checking Agent Status
 You can query the agent for the status of all managed jobs:
@@ -173,3 +321,5 @@ grpcurl -plaintext \
 - **Permission Denied:** Ensure the Snapshot Agent pod is running as `privileged: true`.
 - **Connection Refused:** Verify the `AGENT_ENDPOINT` environment variable correctly points to `$(NODE_IP):9001`.
 - **GPU Not Found:** Check that the `nvidia.driver.hostPath` in the agent's configuration matches your node's setup.
+- **Garbage inference after resume (vLLM):** The workload was suspended with `SUSPEND_MODE_DISCARD`, which drops weights. Suspend with `SUSPEND_MODE_OFFLOAD` (vLLM's default when the mode is unspecified), or have the application push new weights after resume.
+- **Garbage inference after SGLang resume:** The SGLang server was started without `--enable-weights-cpu-backup`. Restart with this flag.
