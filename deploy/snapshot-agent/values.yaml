@@ -1,8 +1,8 @@
 # Default values for snapshot-agent.
 image:
-  repository: ghcr.io/llm-d/snapshot-agent
-  pullPolicy: IfNotPresent
-  tag: ""
+  repository: ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/snapshot-agent
+  pullPolicy: Always
+  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""

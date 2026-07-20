@@ -2,10 +2,14 @@ name: CI - Release
 
 on:
   push:
-    tags:
-      - 'v*'
-  release:
-    types: [published]
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to publish (e.g. v0.1.0). Leave empty to publish 'latest'."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -14,35 +18,47 @@ permissions:
 jobs:
   docker-build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Single-platform (amd64) for both components: the platform is adopted
+          # as a unit, and the snapshot-agent is x86_64-only today (cuda-checkpoint
+          # binary + CGO build). Revisit both together when an aarch64
+          # cuda-checkpoint is available.
+          - component: acceleratororchestrator
+            dockerfile: docker/acceleratororchestrator/Dockerfile
+            platforms: linux/amd64
+          - component: snapshot-agent
+            dockerfile: docker/snapshot-agent/Dockerfile
+            platforms: linux/amd64
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
 
-      - name: Set project name from repository
-        id: meta
-        run: |
-          repo="${GITHUB_REPOSITORY##*/}"
-          echo "project_name=$repo" >> "$GITHUB_OUTPUT"
-
       - name: Determine tag
         id: tag
         run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
-            echo "tag=${GITHUB_REF##refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=${{ github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF##refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          version="${{ github.event.inputs.version }}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${version}" ]]; then
+            # Manual versioned release: publish only the requested tag,
+            # leave 'latest' to main-branch builds.
+            echo "tag=${version}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
+            # Every main merge (and tag-less manual runs) publishes 'latest'.
             echo "tag=latest" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
         shell: bash
 
       - name: Build and push
         uses: ./.github/actions/docker-build-and-push
         with:
-          image-name: ${{ steps.meta.outputs.project_name }}
+          image-name: ${{ matrix.component }}
+          dockerfile: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          registry: ghcr.io/${{ github.repository }}
           tag: ${{ steps.tag.outputs.tag }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           prerelease: ${{ steps.tag.outputs.prerelease }}
@@ -50,4 +66,4 @@ jobs:
       - name: Trivy security scan
         uses: ./.github/actions/trivy-scan
         with:
-          image: ghcr.io/llm-d/${{ steps.meta.outputs.project_name }}:${{ steps.tag.outputs.tag }}
+          image: ghcr.io/${{ github.repository }}/${{ matrix.component }}:${{ steps.tag.outputs.tag }}

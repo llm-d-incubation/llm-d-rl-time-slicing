@@ -1,8 +1,8 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/llm-d/acceleratororchestrator
-  pullPolicy: IfNotPresent
+  repository: ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/acceleratororchestrator
+  pullPolicy: Always
   tag: "latest"
 
 service:

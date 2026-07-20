@@ -2,6 +2,8 @@
 
 This directory contains the Helm chart for deploying the Accelerator Orchestrator in a Kubernetes cluster.
 
+Public images are published to `ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/*` by CI: `latest` on every merge to main; versioned tags via a manual workflow run.
+
 ## Prerequisites
 
 *   A Kubernetes cluster.
