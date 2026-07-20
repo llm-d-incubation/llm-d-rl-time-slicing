@@ -30,6 +30,13 @@ jobs:
     permissions:
       pull-requests: read
     steps:
+      # Fail closed: if the labeler errored, we cannot know whether this PR
+      # needs integration testing. (Skipped is fine — that's the unlabeled path.)
+      - name: Fail if the labeler failed
+        if: ${{ needs.label.result == 'failure' }}
+        run: |
+          echo "::error::Auto-labeler failed; cannot determine whether integration testing is required."
+          exit 1
       - name: Block merge if integration test not completed
         env:
           GH_TOKEN: ${{ github.token }}
