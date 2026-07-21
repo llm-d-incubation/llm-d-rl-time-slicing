@@ -71,7 +71,7 @@ $K exec test-runner -- sh -c "apt-get update -qq > /dev/null && apt-get install 
 
 log "Running Go test suite in-cluster (this deploys agent + engine pods)..."
 EXIT=0
-$K exec test-runner -- env "AGENT_IMAGE=${IMAGE}" "MODEL=${MODEL}" \
+$K exec test-runner -- env "AGENT_IMAGE=${IMAGE}" "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
   sh -c "cd /workspace && go test -tags=integration -count=1 -v -timeout 40m -run '${RUN_PATTERN}' ./tests/integration/snapshot-agent/" \
   || EXIT=$?
 

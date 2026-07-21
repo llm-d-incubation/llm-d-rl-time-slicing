@@ -66,6 +66,11 @@ This builds from your working directory, so local modifications are included —
 --skip-cleanup       Leave the test-runner pod running for debugging
 ```
 
+Environment: `TEST_NODE=<node-name>` pins the suite to a specific node instead
+of the default pick (first node with a free GPU by requests). Use it when the
+cluster runs workloads that occupy GPUs without requesting them (time-slicing
+experiments), which the default pick cannot see.
+
 ## Exit code
 
 `go test`'s exit code (0 = all passed).
