@@ -22,7 +22,7 @@ var VLLM = EngineSpec{
 	Port:       8000,
 	PIDPattern: "vllm.entrypoints",
 	BuildPod: func(h *Harness) *corev1.Pod {
-		return enginePod(h, "vllm", "vllm/vllm-openai:latest",
+		return enginePod(h, "vllm", "vllm/vllm-openai:v0.25.1@sha256:e4f88a835143cd22aee2397a26ec6bb80b3a4a6fe0c882bcbc63822904766089",
 			[]string{"python3", "-m", "vllm.entrypoints.openai.api_server"},
 			[]string{
 				"--model=" + h.Model,
@@ -42,7 +42,7 @@ var SGLang = EngineSpec{
 	Port:       30000,
 	PIDPattern: "sglang.launch_server",
 	BuildPod: func(h *Harness) *corev1.Pod {
-		return enginePod(h, "sglang", "lmsysorg/sglang:latest",
+		return enginePod(h, "sglang", "lmsysorg/sglang:v0.5.15@sha256:af911a303a12516adf23ab8bb89c8fdf161ec0ceafc278a436fa111f5c118988",
 			[]string{"python3", "-m", "sglang.launch_server"},
 			[]string{
 				"--model-path=" + h.Model,

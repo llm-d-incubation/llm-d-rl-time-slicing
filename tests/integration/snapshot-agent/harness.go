@@ -84,7 +84,13 @@ func NewHarness(t *testing.T, mode string) *Harness {
 	}
 
 	h := &Harness{Client: client, Config: cfg, Image: image, Model: model, Mode: mode}
-	h.Node = h.pickGPUNode(t)
+	// TEST_NODE pins the suite to a specific node (e.g. one known to be
+	// otherwise idle); by default the first node with a free GPU is used.
+	if node := os.Getenv("TEST_NODE"); node != "" {
+		h.Node = node
+	} else {
+		h.Node = h.pickGPUNode(t)
+	}
 	t.Logf("using node %s, image %s, mode %s", h.Node, h.Image, h.Mode)
 
 	h.deployAgent(t)
