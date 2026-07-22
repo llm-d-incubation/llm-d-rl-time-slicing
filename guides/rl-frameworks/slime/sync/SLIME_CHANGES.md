@@ -6,7 +6,7 @@ These changes are categorized by their implementation purpose below:
 
 ---
 
-### 1. Timeslicing Lock Coordination & Deadlock Prevention
+### 1. Time-Slicing Lock Coordination & Deadlock Prevention
 * **Purpose:** Integrates the gRPC-based Accelerator Orchestrator client into Slime's main training loop to coordinate GPU residency and prevent cross-cluster circular wait deadlocks.
 * **Key Files:** [`train.py`](https://github.com/jessicaochen/slime/blob/timeslice/train.py), [`slime/utils/arguments.py`](https://github.com/jessicaochen/slime/blob/timeslice/slime/utils/arguments.py).
 * **Implementation Details:**
@@ -14,7 +14,7 @@ These changes are categorized by their implementation purpose below:
   * **Parallel Grant Acquisition at Startup:** In `train.py`, placement group creation for Trainer actors and Rollout samplers is decoupled and executed concurrently using a 2-worker `ThreadPoolExecutor`.
   * **Strict Trainer-First Lock Ordering:** To guarantee deadlock freedom when multiple jobs initialize or sync weights simultaneously, lock acquisition strictly enforces a **Trainer lock first, then Sampler lock** hierarchy. The Trainer lock is acquired prior to requesting actor placement groups from Ray.
   * **Residency-Aligned Phase Toggling:** Aligns lock boundaries with GPU execution phases:
-    * Holds the Sampler lock during rollout generation and yields it immediately after generation and KV cache offloading complete.
+    * Holds the Sampler lock during rollout generation and yields it immediately after generation and KV cache offloading are complete.
     * Acquires the Trainer lock prior to policy backpropagation (`critic_model.async_train` and PPO steps) and yields it after offloading Trainer weights to CPU.
     * Re-acquires the Sampler lock while holding the Trainer lock during NCCL weight broadcasts (`update_weights`), yielding the Trainer lock once transfer finishes while retaining the Sampler lock for the next rollout epoch.
   * **Clean Teardown:** Added explicit lock release (`client.release()`) and socket teardown (`client.close()`) calls on loop completion to prevent lock leakage in the orchestrator.

@@ -1,6 +1,6 @@
 # Multi-Cluster Time-Sliced Disaggregated GRPO Example
 
-This directory contains the files required to deploy two independent sync RL jobs, each provisioned in its **own distinct Ray Cluster**, concurrently sharing physical GPU pools using Kubernetes **Dynamic Resource Allocation (DRA) Overloading** and the **Accelerator Orchestrator** time-slicing lock queues.
+This directory contains the files required to deploy two independent sync RL jobs, each provisioned in its **own distinct Ray Cluster**, concurrently sharing physical GPU pools using Kubernetes **Dynamic Resource Allocation (DRA) Overloading** and the **Accelerator Orchestrator** time-slicing lock queues. This serves as a simple, quick example of the behavioral mechanisms of time slicing. 
 
 Because physical GPU limits (`nvidia.com/gpu`) are replaced with DRA `ResourceClaim`s, Kubernetes allows worker pods from both Job 1 and Job 2 to co-locate and schedule onto the exact same physical GPU nodes simultaneously. At runtime, the workloads coordinate via the Accelerator Orchestrator to atomically snapshot and swap accelerator memory, eliminating idle waiting and maximizing GPU duty cycles.
 
@@ -17,7 +17,7 @@ Because physical GPU limits (`nvidia.com/gpu`) are replaced with DRA `ResourceCl
 
 ## 2. Execution Guide
 
-Assumes you have already deployed timeslicing helm on your cluster.
+Assumes you have already deployed the time-slicing Helm chart on your cluster.
 
 ### Step 2.1: Apply Global DRA Resource Claims
 Deploy the shared DRA resource claims that all jobs will reference across the trainer and sampler groups:

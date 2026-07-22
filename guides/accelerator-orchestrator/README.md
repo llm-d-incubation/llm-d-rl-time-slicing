@@ -69,7 +69,7 @@ The Accelerator Orchestrator is deployed as a standard Kubernetes Deployment, ty
 
 ### Cluster Prerequisites
 To enable time-slicing, the cluster must be configured with:
-- **Kubernetes Version:** 1.32 or later (required for DRA).
+- **Kubernetes Version:** 1.34 or later (required for DRA v1).
 - **At least one GPU node with:**
   - **NVIDIA Driver:** 565 or later (required for DRA Driver).
   - **Labels & Taints:** `timeslice.io/enabled=true` and tainted with `timeslice.io/shared=true:NoSchedule` to isolate time-slicing workloads.

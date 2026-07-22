@@ -25,14 +25,21 @@ For a step-by-step reproduction guide using RayCluster Kubernetes manifests and 
 Before deploying cooperative time-slicing for Slime, ensure your Kubernetes cluster meets the following requirements:
 
 ### Kubernetes Version
-* Kubernetes **v1.26** or later.
+* Kubernetes **v1.34** or later.
 
 ### GPU Node Configuration
-* GPU nodes must run **NVIDIA GPU Driver 565 or later**. This is a strict requirement to support **NVIDIA Dynamic Resource Allocation (DRA)**, which enables transparent context switching and snapshot/restore of GPU state.
-* GPU memory capacity must be sufficient to hold the active working set of a single Slime job's trainer or sampler at any one time (since inactive jobs will have their GPU states checkpointed and evicted).
+* GPU nodes must run **NVIDIA GPU Driver 565 or later**. This is a strict requirement to support **NVIDIA Dynamic Resource Allocation (DRA)**.
+* GPU memory capacity must be sufficient to hold the active working set of a single Slime job's trainer or sampler at any one time (since inactive jobs will have their GPU memory checkpointed and evicted).
+* Sampler/trainer node host memory capacity must be sufficient to hold the GPU memory footprint of the trainers/samplers needed for the number of parallel Slime jobs.
 
-### Node Labeling for Time-Slice Pools
-The `timeslice` platform relies on node labels to identify resource pools (groups). For disaggregated Slime executions, label your GPU nodes accordingly:
+### Node Labeling and Tainting for Time-Slice Pools
+The `timeslice` platform relies on node labels and taints to identify resource pools (groups) and isolate time-sliced workloads. For disaggregated Slime executions, label and taint your GPU nodes accordingly:
+
+* **Enable Time-Slicing & Taint Nodes**:
+  ```bash
+  kubectl label nodes <node-name> timeslice.io/enabled=true
+  kubectl taint nodes <node-name> timeslice.io/shared=true:NoSchedule
+  ```
 * **Sampler Nodes**:
   ```bash
   kubectl label nodes <node-name> group.timeslice.io/samplers=true
@@ -237,7 +244,7 @@ To run your modified Slime workload on the cluster, you must package the `timesl
 ### Step 1: Package and Containerize
 Ensure the `timeslice` Python client is installed in your Slime container image. Add the following to your Slime `Dockerfile`:
 
-<!-- TDB: Less than 98% confident in the exact base image or Dockerfile structure of the Slime workload. Customize this step to fit your existing Docker build process. -->
+<!-- TBD: Less than 98% confident in the exact base image or Dockerfile structure of the Slime workload. Customize this step to fit your existing Docker build process. -->
 ```dockerfile
 # Copy the local timeslice Python client library into the image
 COPY pkg/client/python /opt/timeslice-client
@@ -247,7 +254,7 @@ RUN pip install /opt/timeslice-client
 ```
 
 ### Step 2: Configure KubeRay `RayJob` with DRA Resource Claims
-When deploying Slime across independent Ray clusters, use KubeRay `RayJob` manifests configured with **Kubernetes Dynamic Resource Allocation (DRA)** (`resourceClaims`). Bounding containers to shared DRA claims (`shared-trainers-gpu-claim` and `shared-samplers-gpu-claim`) instead of static `nvidia.com/gpu` limits allows multiple jobs' worker pods to co-locate on the same physical GPU nodes without scheduler blocking:
+When deploying Slime across independent Ray clusters, use KubeRay `RayJob` manifests configured with **Kubernetes Dynamic Resource Allocation (DRA)** (`resourceClaims`). Binding containers to shared DRA claims (`shared-trainers-gpu-claim` and `shared-samplers-gpu-claim`) instead of static `nvidia.com/gpu` limits allows multiple jobs' worker pods to co-locate on the same physical GPU nodes without scheduler blocking:
 
 ```yaml
 apiVersion: ray.io/v1
@@ -266,6 +273,14 @@ spec:
         spec:
           nodeSelector:
             group.timeslice.io/trainers: "true"
+          tolerations:
+          - key: "nvidia.com/gpu"
+            operator: "Exists"
+            effect: "NoSchedule"
+          - key: "timeslice.io/shared"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
           containers:
           - name: ray-worker
             image: my-registry/slime-modified:latest
@@ -285,7 +300,7 @@ spec:
 ```
 
 > [!TIP]
-> Example KubeRay templates and initialization scripts, see **[`sync/ray-job.yaml.template`](sync/ray-job.yaml.template)** and **[`sync/setup_node.sh`](sync/setup_node.sh)**.
+> For example KubeRay templates and initialization scripts, see **[`sync/ray-job.yaml.template`](sync/ray-job.yaml.template)** and **[`sync/setup_node.sh`](sync/setup_node.sh)**.
 
 ---
 

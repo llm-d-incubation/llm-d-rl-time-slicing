@@ -81,8 +81,7 @@ spec:
             group.timeslice.io/trainers: "true"
           tolerations:
           - key: "nvidia.com/gpu"
-            operator: "Equal"
-            value: "present"
+            operator: "Exists"
             effect: "NoSchedule"
           - key: "timeslice.io/shared"
             operator: "Equal"
@@ -136,8 +135,7 @@ spec:
             group.timeslice.io/samplers: "true"
           tolerations:
           - key: "nvidia.com/gpu"
-            operator: "Equal"
-            value: "present"
+            operator: "Exists"
             effect: "NoSchedule"
           - key: "timeslice.io/shared"
             operator: "Equal"

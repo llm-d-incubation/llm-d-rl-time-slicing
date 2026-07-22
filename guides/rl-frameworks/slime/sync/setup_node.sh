@@ -10,9 +10,9 @@ git -C /root/slime fetch fork
 git -C /root/slime checkout timeslice
 git -C /root/slime reset --hard fork/timeslice
 
-echo "[Setup] Installing python client library..."
+echo "[Setup] Installing Python client library..."
 pip install -U grpcio
-pip install git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/client/python
+pip install git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git@11a661f#subdirectory=pkg/client/python
 
 echo "[Setup] Ensuring HuggingFace assets exist in /tmp..."
 python3 -c "
