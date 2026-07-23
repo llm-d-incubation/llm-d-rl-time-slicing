@@ -1,14 +1,16 @@
 # Project configuration
-# TODO: Replace {{PROJECT_NAME}} with your project name
 PROJECT_NAME ?= llm-d-rl-time-slicing
-REGISTRY ?= ghcr.io/llm-d
-IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)
+# Matches where CI publishes (ghcr.io/<owner>/<repo>/<component>); override
+# REGISTRY for dev pushes to your own registry.
+REGISTRY ?= ghcr.io/llm-d-incubation
 ORCHESTRATOR_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/acceleratororchestrator
 ORCHESTRATOR_DOCKERFILE ?= docker/acceleratororchestrator/Dockerfile
 SNAPSHOT_AGENT_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/snapshot-agent
 SNAPSHOT_AGENT_DOCKERFILE ?= docker/snapshot-agent/Dockerfile
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-PLATFORMS ?= linux/amd64,linux/arm64
+# amd64-only, same as CI: the snapshot-agent needs the x86_64 cuda-checkpoint
+# binary and a CGO build; the platform is adopted as a unit.
+PLATFORMS ?= linux/amd64
 
 # Go configuration
 GOFLAGS ?=
@@ -80,25 +82,6 @@ pre-commit: ## Run pre-commit hooks on all files
 
 ##@ Container
 
-.PHONY: image-build
-image-build: ## Build multi-arch container image (local only)
-	docker buildx build \
-		--platform $(PLATFORMS) \
-		--tag $(IMAGE):$(VERSION) \
-		--tag $(IMAGE):latest \
-		.
-
-.PHONY: image-push
-image-push: ## Build and push multi-arch container image
-	docker buildx build \
-		--platform $(PLATFORMS) \
-		--push \
-		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
-		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
-		--tag $(IMAGE):$(VERSION) \
-		--tag $(IMAGE):latest \
-		.
-
 .PHONY: image-build-orchestrator
 image-build-orchestrator: ## Build acceleratororchestrator container image (local only)
 	docker buildx build \
@@ -113,7 +96,7 @@ image-push-orchestrator: ## Build and push acceleratororchestrator container ima
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--push \
-		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
+		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d-incubation/$(PROJECT_NAME)" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
 		--tag $(ORCHESTRATOR_IMAGE):$(VERSION) \
 		--tag $(ORCHESTRATOR_IMAGE):latest \
@@ -134,7 +117,7 @@ snapshot-agent-image-push: ## Build and push snapshot-agent container image
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--push \
-		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d/$(PROJECT_NAME)" \
+		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d-incubation/$(PROJECT_NAME)" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
 		--tag $(SNAPSHOT_AGENT_IMAGE):$(VERSION) \
 		--tag $(SNAPSHOT_AGENT_IMAGE):latest \
