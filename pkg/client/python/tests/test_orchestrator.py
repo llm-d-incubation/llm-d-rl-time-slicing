@@ -69,7 +69,9 @@ class TestTimeSliceOrchestratorClient(unittest.TestCase):
 
     def test_init_custom_channel_options_override(self):
         custom_options = [("grpc.max_receive_message_length", 1024)]
-        client = TimeSliceOrchestratorClient(self.target, channel_options=custom_options)
+        client = TimeSliceOrchestratorClient(
+            self.target, channel_options=custom_options
+        )
         self.mock_insecure_channel.assert_called_with(
             self.target, options=custom_options
         )
