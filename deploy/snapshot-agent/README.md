@@ -138,7 +138,7 @@ We use the provided `Makefile` targets to build and push the container image.
     ```bash
     make snapshot-agent-image-push
     ```
-    This will build the image and push it to `your-custom-registry.com/your-project/snapshot-agent:dev-<hash>`.
+    This will build the image and push it to `your-custom-registry.com/your-project/llm-d-rl-time-slicing/snapshot-agent:dev-<hash>` (the repo name comes from `PROJECT_NAME`, also overridable).
 
 ### 2. Deploy with your Custom Image
 

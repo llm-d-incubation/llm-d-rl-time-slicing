@@ -38,13 +38,19 @@ jobs:
 
       - name: Determine tag
         id: tag
+        env:
+          # Read via env, not template interpolation, so the input can't be
+          # rendered into Bash source; validated as a Docker tag below.
+          VERSION: ${{ github.event.inputs.version }}
         run: |
-          version="${{ github.event.inputs.version }}"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${version}" ]]; then
+          if [[ -n "${VERSION}" && ! "${VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid image tag: ${VERSION}" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${VERSION}" ]]; then
             # Manual versioned release: publish only the requested tag,
             # leave 'latest' to main-branch builds.
-            echo "tag=${version}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            printf 'tag=%s\nprerelease=true\n' "${VERSION}" >> "$GITHUB_OUTPUT"
           else
             # Every main merge (and tag-less manual runs) publishes 'latest'.
             echo "tag=latest" >> "$GITHUB_OUTPUT"
