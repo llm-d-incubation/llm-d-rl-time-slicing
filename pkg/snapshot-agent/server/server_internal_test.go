@@ -64,7 +64,7 @@ func initGRPCServer() {
 	// Default to BackendCuda (matching production) so that requests without a
 	// BackendConfig take the k8s CUDA discovery path; the registered
 	// implementation is still the noop backend.
-	testServer = NewServer(backendsMap, backends.BackendCuda, "k8s")
+	testServer = NewServer(backendsMap, backends.BackendCuda, "k8s", backends.NewChannelRegistry())
 	pb.RegisterSnapshotAgentServiceServer(s, testServer)
 	grpc_health_v1.RegisterHealthServer(s, NewHealthServer(backendsMap, backends.BackendNoop))
 	go func() {
@@ -469,7 +469,7 @@ func newModeTestServer(
 
 	lisLocal := bufconn.Listen(bufSize)
 	s := grpc.NewServer()
-	srv := NewServer(backendsMap, defaultBackend, mode)
+	srv := NewServer(backendsMap, defaultBackend, mode, backends.NewChannelRegistry())
 	pb.RegisterSnapshotAgentServiceServer(s, srv)
 	go func() {
 		if err := s.Serve(lisLocal); err != nil {
@@ -577,7 +577,7 @@ func TestServer_Snapshot_StandaloneMode(t *testing.T) {
 		backends.BackendCuda: noopBackend,
 	}
 	// enable standalone mode
-	standaloneServer := NewServer(backendsMap, backends.BackendNoop, "standalone")
+	standaloneServer := NewServer(backendsMap, backends.BackendNoop, "standalone", backends.NewChannelRegistry())
 	pb.RegisterSnapshotAgentServiceServer(s, standaloneServer)
 	go func() {
 		if err := s.Serve(lisDev); err != nil {
@@ -689,7 +689,7 @@ func TestServer_Snapshot_StandaloneMode_BackendValidation(t *testing.T) {
 	backendsMap := map[backends.BackendType]backends.Backend{
 		backends.BackendCuda: backends.NewCudaCheckpoint(),
 	}
-	standaloneServer := NewServer(backendsMap, backends.BackendCuda, "standalone")
+	standaloneServer := NewServer(backendsMap, backends.BackendCuda, "standalone", backends.NewChannelRegistry())
 	pb.RegisterSnapshotAgentServiceServer(s, standaloneServer)
 	go func() {
 		if err := s.Serve(lisDev); err != nil {
