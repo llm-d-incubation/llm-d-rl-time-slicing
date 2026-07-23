@@ -81,4 +81,33 @@ func TestStandalone(t *testing.T) {
 			RequireFreedAndCorrect(t, vramReleased, before, after)
 		})
 	})
+
+	// The channel workload embeds vLLM through the Python API (no HTTP
+	// server) and registers with the agent via the client library; snapshot
+	// requests address it by job ID alone.
+	h.WithChannelWorkload(t, func(t *testing.T, w *ChannelWorkload) {
+		t.Run("VLLMChannelSleepWake", func(t *testing.T) {
+			before := h.TriggerGenerate(t, w)
+			h.SnapshotOK(t, w.JobID, channelConfig(""))
+			vramAsleep := h.WorkloadVRAMMiB(t, w)
+			t.Logf("VRAM after channel snapshot: %d MiB", vramAsleep)
+			h.RestoreOK(t, w.JobID, channelConfig(""))
+			after := h.TriggerGenerate(t, w)
+			RequireFreedAndCorrect(t, vramAsleep, before, after)
+		})
+
+		// Compound: channel-level suspend, then CUDA checkpoint of the
+		// suspended process, restored in reverse order.
+		t.Run("VLLMChannelCompound", func(t *testing.T) {
+			before := h.TriggerGenerate(t, w)
+			h.SnapshotOK(t, w.JobID, channelConfig(""))
+			h.SnapshotOK(t, "chan-cuda", cudaConfig(w.PID))
+			h.RestoreOK(t, "chan-cuda", cudaConfig(w.PID))
+			h.RestoreOK(t, w.JobID, channelConfig(""))
+			after := h.TriggerGenerate(t, w)
+			if before != after {
+				t.Errorf("generation changed after restore: before=%q after=%q", before, after)
+			}
+		})
+	})
 }

@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -161,4 +163,72 @@ func gpuTolerations() []corev1.Toleration {
 		Operator: corev1.TolerationOpExists,
 		Effect:   corev1.TaintEffectNoSchedule,
 	}}
+}
+
+// channelWorkloadPod runs vLLM through its Python API (no HTTP server) and
+// registers with the agent over the workload channel. The client library and
+// the workload script are mounted from a ConfigMap built by the harness; the
+// readiness probe fires once the model is loaded and the workload registered.
+func channelWorkloadPod(h *Harness, jobID string) *corev1.Pod {
+	labels := map[string]string{
+		"app":        channelPodName,
+		"test-suite": "snapshot-agent-integration",
+	}
+	if h.Mode == "k8s" {
+		labels["timeslice.io/job-id"] = jobID
+		labels["timeslice.io/group"] = "test"
+	}
+	// The script must not run from /opt/src: the client package's types.py
+	// would shadow the stdlib types module via the script-dir sys.path entry.
+	startup := "pip install -q --upgrade grpcio protobuf && " +
+		"mkdir -p /opt/pkg/timeslice/snapshot_agent && " +
+		"cp /opt/src/*.py /opt/pkg/timeslice/snapshot_agent/ && " +
+		": > /opt/pkg/timeslice/__init__.py && " +
+		"cp /opt/src/channel_workload.py /opt/channel_workload.py && " +
+		"PYTHONPATH=/opt/pkg exec python3 /opt/channel_workload.py"
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      channelPodName,
+			Namespace: namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "snapshot-agent-test",
+			RestartPolicy:      corev1.RestartPolicyNever,
+			NodeName:           h.Node,
+			Tolerations:        gpuTolerations(),
+			Volumes: []corev1.Volume{{
+				Name: "src",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: channelConfigMapName},
+					},
+				},
+			}},
+			Containers: []corev1.Container{{
+				Name:    channelContainer,
+				Image:   "vllm/vllm-openai:v0.25.1@sha256:e4f88a835143cd22aee2397a26ec6bb80b3a4a6fe0c882bcbc63822904766089",
+				Command: []string{"sh", "-c", startup},
+				Env: []corev1.EnvVar{
+					{Name: "MODEL", Value: h.Model},
+					{Name: "SNAPSHOT_AGENT_ADDR", Value: fmt.Sprintf("%s:%d", h.AgentIP, agentPort)},
+					{Name: "TIME_SLICE_JOB_ID", Value: jobID},
+					{Name: "TIME_SLICE_GROUP", Value: "test"},
+				},
+				VolumeMounts: []corev1.VolumeMount{{Name: "src", MountPath: "/opt/src"}},
+				ReadinessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						Exec: &corev1.ExecAction{Command: []string{"test", "-f", "/workload-state/ready"}},
+					},
+					InitialDelaySeconds: 20,
+					PeriodSeconds:       5,
+					FailureThreshold:    60,
+				},
+				Resources: corev1.ResourceRequirements{
+					Limits:   corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("1")},
+					Requests: corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("1")},
+				},
+			}},
+		},
+	}
 }

@@ -46,4 +46,18 @@ func TestK8s(t *testing.T) {
 			RequireFreedAndCorrect(t, vramReleased, before, after)
 		})
 	})
+
+	// The channel workload's pod carries the job label the watcher discovers;
+	// the workload registers over the channel under the same job ID.
+	h.WithChannelWorkload(t, func(t *testing.T, w *ChannelWorkload) {
+		t.Run("VLLMChannelSleepWake", func(t *testing.T) {
+			before := h.TriggerGenerate(t, w)
+			h.SnapshotOK(t, w.JobID, channelConfig(""))
+			vramAsleep := h.WorkloadVRAMMiB(t, w)
+			t.Logf("VRAM after channel snapshot: %d MiB", vramAsleep)
+			h.RestoreOK(t, w.JobID, channelConfig(""))
+			after := h.TriggerGenerate(t, w)
+			RequireFreedAndCorrect(t, vramAsleep, before, after)
+		})
+	})
 }
