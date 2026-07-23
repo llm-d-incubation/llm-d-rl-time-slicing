@@ -4,3 +4,4 @@ needs-integration-test:
           - 'pkg/snapshot-agent/**'
           - 'cmd/snapshot-agent/**'
           - 'pkg/client/python/timeslice/snapshot_agent/**'
+          - 'tests/integration/**'
