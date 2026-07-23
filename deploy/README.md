@@ -2,6 +2,8 @@
 
 This is the parent Helm chart that coordinates the deployment of both the **Accelerator Orchestrator** and the **Snapshot Agent**.
 
+Public images are published to `ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/*` by CI: `latest` on every merge to main; versioned tags via a manual workflow run.
+
 ## Directory Structure
 
 *   `Chart.yaml`: Defines the parent chart and its dependencies.

@@ -2,6 +2,8 @@
 
 This directory contains the Helm chart for deploying the Snapshot Agent DaemonSet in a Kubernetes cluster.
 
+Public images are published to `ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/*` by CI: `latest` on every merge to main; versioned tags via a manual workflow run.
+
 ## Prerequisites
 
 *   A Kubernetes cluster with GPU nodes (NVIDIA).
@@ -134,7 +136,7 @@ We use the provided `Makefile` targets to build and push the container image.
     ```
 2.  Run the following make target from the repository root to build and push the image:
     ```bash
-    make image-push-snapshot-agent
+    make snapshot-agent-image-push
     ```
     This will build the image and push it to `your-custom-registry.com/your-project/snapshot-agent:dev-<hash>`.
 

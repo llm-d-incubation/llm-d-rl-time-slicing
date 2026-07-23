@@ -28,6 +28,7 @@ spec:
       initContainers:
         - name: install-cuda-checkpoint
           image: alpine:latest
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["sh", "-c", "apk add --no-cache wget && wget -qO /opt/bin/cuda-checkpoint https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/main/bin/x86_64_Linux/cuda-checkpoint && chmod +x /opt/bin/cuda-checkpoint && echo 'cuda-checkpoint installed'"]
           volumeMounts:
             - name: bin-dir

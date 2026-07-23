@@ -15,12 +15,17 @@ RUN rm -f go.work && \
 # Build the snapshot-agent
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /workspace/snapshot-agent ./cmd/snapshot-agent
 
+# Fetch cuda-checkpoint (pinned to a specific NVIDIA/cuda-checkpoint commit) so the
+# image is self-contained and builds from a fresh clone without a pre-populated bin/
+ADD https://github.com/NVIDIA/cuda-checkpoint/raw/00d5cce84c628088d6caa203fc4af40c1538b6f7/bin/x86_64_Linux/cuda-checkpoint /workspace/bin/cuda-checkpoint
+RUN chmod +x /workspace/bin/cuda-checkpoint
+
 # --- Runtime stage ---
 FROM gcr.io/distroless/base
 
 WORKDIR /
 COPY --from=builder /workspace/snapshot-agent .
-# Copy pre-built binaries (like cuda-checkpoint) from the bin directory
+# Copy bundled binaries (cuda-checkpoint) from the builder's bin directory
 COPY --from=builder /workspace/bin ./bin
 
 

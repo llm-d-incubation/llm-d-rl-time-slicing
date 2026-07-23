@@ -15,6 +15,10 @@ inputs:
     required: false
     description: Container registry
     default: ghcr.io/llm-d
+  dockerfile:
+    required: false
+    description: Path to the Dockerfile to build
+    default: Dockerfile
   platforms:
     required: false
     description: Target platforms
@@ -45,6 +49,7 @@ runs:
           LATEST_TAG="-t ${{ inputs.registry }}/${{ inputs.image-name }}:latest"
         fi
         docker buildx build \
+          -f ${{ inputs.dockerfile }} \
           --platform ${{ inputs.platforms }} \
           --push \
           --annotation "index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
