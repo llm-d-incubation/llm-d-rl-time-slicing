@@ -1,4 +1,5 @@
 import contextlib
+import json
 from typing import Any, List, Optional, Tuple
 
 import grpc
@@ -14,6 +15,34 @@ from timeslice.orchestrator.types import (
     SnapshotAgentJobState,
     YieldResult,
 )
+
+DEFAULT_SERVICE_CONFIG = json.dumps(
+    {
+        "methodConfig": [
+            {
+                "name": [
+                    {"service": "timeslice.orchestrator.AcceleratorOrchestratorService"}
+                ],
+                "retryPolicy": {
+                    "maxAttempts": 5,
+                    "initialBackoff": "0.1s",
+                    "maxBackoff": "1s",
+                    "backoffMultiplier": 2.0,
+                    "retryableStatusCodes": [
+                        "UNAVAILABLE",
+                        "RESOURCE_EXHAUSTED",
+                        "ABORTED",
+                        "DEADLINE_EXCEEDED",
+                    ],
+                },
+            }
+        ]
+    }
+)
+
+DEFAULT_CHANNEL_OPTIONS: List[Tuple[str, Any]] = [
+    ("grpc.service_config", DEFAULT_SERVICE_CONFIG),
+]
 
 
 class TimeSliceOrchestratorClient:
@@ -37,6 +66,9 @@ class TimeSliceOrchestratorClient:
         self.target = target
         self.job_id = job_id
         self.group_id = group_id
+
+        if channel_options is None:
+            channel_options = DEFAULT_CHANNEL_OPTIONS
 
         # Initialize insecure channel. (Can be extended to secure if needed in future)
         self._channel = grpc.insecure_channel(target, options=channel_options)

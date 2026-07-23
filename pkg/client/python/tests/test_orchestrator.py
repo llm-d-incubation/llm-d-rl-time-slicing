@@ -1,10 +1,12 @@
 import datetime
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
 import grpc
 
 from timeslice import TimeSliceOrchestratorClient
+from timeslice.orchestrator.client import DEFAULT_CHANNEL_OPTIONS
 from timeslice.orchestrator.exceptions import (
     OrchestratorConnectionError,
     OrchestratorTimeoutError,
@@ -44,12 +46,36 @@ class TestTimeSliceOrchestratorClient(unittest.TestCase):
         self.mock_stub_patcher.stop()
 
     def test_init(self):
-        self.mock_insecure_channel.assert_called_once_with(self.target, options=None)
+        self.mock_insecure_channel.assert_called_once_with(
+            self.target, options=DEFAULT_CHANNEL_OPTIONS
+        )
         self.mock_stub_class.assert_called_once_with(
             self.mock_insecure_channel.return_value
         )
         self.assertEqual(self.client.job_id, self.job_id)
         self.assertEqual(self.client.group_id, self.group_id)
+
+    def test_default_retry_status_codes(self):
+        # Verify DEFAULT_CHANNEL_OPTIONS configures retryable status codes
+        self.assertEqual(len(DEFAULT_CHANNEL_OPTIONS), 1)
+        key, service_config_str = DEFAULT_CHANNEL_OPTIONS[0]
+        self.assertEqual(key, "grpc.service_config")
+        config = json.loads(service_config_str)
+        retry_policy = config["methodConfig"][0]["retryPolicy"]
+        self.assertEqual(
+            retry_policy["retryableStatusCodes"],
+            ["UNAVAILABLE", "RESOURCE_EXHAUSTED", "ABORTED", "DEADLINE_EXCEEDED"],
+        )
+
+    def test_init_custom_channel_options_override(self):
+        custom_options = [("grpc.max_receive_message_length", 1024)]
+        client = TimeSliceOrchestratorClient(
+            self.target, channel_options=custom_options
+        )
+        self.mock_insecure_channel.assert_called_with(
+            self.target, options=custom_options
+        )
+        client.close()
 
     def test_acquire_success(self):
         # Mock Acquire response
