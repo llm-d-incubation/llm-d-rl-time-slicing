@@ -1,0 +1,55 @@
+name: Integration test gate
+# pull_request_target so the labeler can write labels on fork PRs too.
+# Safe: this workflow never checks out or executes PR code.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  label:
+    name: Auto-label snapshot-agent PRs
+    # Skip on unlabeled: re-running the labeler would immediately re-add the
+    # label that was just removed, so manual removal would never stick.
+    if: github.event.action != 'unlabeled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          configuration-path: .github/labeler.yml
+
+  gate:
+    name: Integration test required
+    runs-on: ubuntu-latest
+    needs: label
+    if: ${{ !cancelled() }}
+    permissions:
+      pull-requests: read
+    steps:
+      # Fail closed: if the labeler errored, we cannot know whether this PR
+      # needs integration testing. (Skipped is fine — that's the unlabeled path.)
+      - name: Fail if the labeler failed
+        if: ${{ needs.label.result == 'failure' }}
+        run: |
+          echo "::error::Auto-labeler failed; cannot determine whether integration testing is required."
+          exit 1
+      - name: Block merge if integration test not completed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        # Query live labels rather than the event payload: the payload
+        # predates whatever the label job just did in this same run.
+        run: |
+          labels=$(gh api "repos/$REPO/issues/$PR/labels" --jq '.[].name')
+          if printf '%s\n' "$labels" | grep -Fxq "needs-integration-test"; then
+            echo "::error::This PR modifies snapshot-agent and requires manual integration testing."
+            echo "::error::See tests/integration/snapshot-agent/README.md for how to run the integration tests."
+            echo "::error::Post the test results as a comment on this PR, or if integration tests are not applicable, comment a justification. Then remove the 'needs-integration-test' label."
+            exit 1
+          fi
+          echo "No integration test label found. Merge allowed."

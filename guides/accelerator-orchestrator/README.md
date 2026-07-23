@@ -196,12 +196,12 @@ Typically, you configure a central coordinator (such as the RL loop actor in ini
 
 This ordering prevents resource conflicts during the initial startup and initialization phases.
 
-The following Python example demonstrates how to use the `OrchestratorClient` to safely orchestrate the startup and deployment of work pods:
+The following Python example demonstrates how to use the `TimeSliceOrchestratorClient` to safely orchestrate the startup and deployment of work pods:
 
 ```python
-from timeslice import OrchestratorClient
+from timeslice import TimeSliceOrchestratorClient
 
-orchestrator = OrchestratorClient(
+orchestrator = TimeSliceOrchestratorClient(
     target="accelerator-orchestrator.timeslice-system.svc.cluster.local:50051",
     job_id="job-a",
     group_id="group-ab-sampler"
@@ -239,11 +239,11 @@ Typically, you configure the job logic (such as the RL loop actor in the loop) t
 The cleanest developer experience is to wrap your GPU-bound phases in functions decorated with `@on_accelerators`. This automatically acquires the lock when the function starts and yields it when the function returns, allowing other jobs to interleave during CPU-bound phases (like reward computation).
 
 ```python
-from timeslice import OrchestratorClient
+from timeslice import TimeSliceOrchestratorClient
 import time
 
 # Initialize the client. The job_id identifies this workload (e.g., 'job-a')
-orchestrator = OrchestratorClient(target="accelerator-orchestrator.timeslice-system.svc.cluster.local:50051", job_id="job-a")
+orchestrator = TimeSliceOrchestratorClient(target="accelerator-orchestrator.timeslice-system.svc.cluster.local:50051", job_id="job-a")
 
 # Decorate GPU tasks to automatically yield/acquire hardware via the Orchestrator
 @orchestrator.on_accelerators(group_id="group-ab-trainer")

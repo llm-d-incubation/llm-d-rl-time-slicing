@@ -1,6 +1,6 @@
 # Accelerator Orchestrator Python Client
 
-The `OrchestratorClient` coordinates access to shared accelerators (GPUs/TPUs) among multiple jobs in a time-slice group. It ensures that only one job has exclusive access to the accelerator at any given time, driving the snapshot/restore cycle automatically behind the scenes.
+The `TimeSliceOrchestratorClient` coordinates access to shared accelerators (GPUs/TPUs) among multiple jobs in a time-slice group. It ensures that only one job has exclusive access to the accelerator at any given time, driving the snapshot/restore cycle automatically behind the scenes.
 
 ## Usage
 
@@ -9,11 +9,11 @@ The `OrchestratorClient` coordinates access to shared accelerators (GPUs/TPUs) a
 You can explicitly control accelerator access using `acquire()` and `release()`. It is highly recommended to use a `try...finally` block to ensure the access is always released.
 
 ```python
-from timeslice import OrchestratorClient
+from timeslice import TimeSliceOrchestratorClient
 from timeslice.orchestrator import OrchestratorError
 
 # Initialize client for a specific job in a shared GPU group
-client = OrchestratorClient(
+client = TimeSliceOrchestratorClient(
     target="orchestrator-service:50051",
     job_id="my-job-123",
     group_id="shared-gpu-group"
@@ -38,9 +38,9 @@ finally:
 A cleaner and safer way to manage accelerator access is using the `on_accelerators()` context manager, which automatically handles acquisition and release. It yields an `AcquireResult` that you can inspect inside the block.
 
 ```python
-from timeslice import OrchestratorClient
+from timeslice import TimeSliceOrchestratorClient
 
-client = OrchestratorClient("orchestrator-service:50051", "my-job", "shared-gpu")
+client = TimeSliceOrchestratorClient("orchestrator-service:50051", "my-job", "shared-gpu")
 
 # Automatically acquires on enter, releases on exit (even if exceptions occur)
 with client.on_accelerators(timeout_sec=30.0) as result:
@@ -53,9 +53,9 @@ with client.on_accelerators(timeout_sec=30.0) as result:
 The `on_accelerators()` method also supports decorator usage out of the box. Exclusive accelerator access is acquired when the decorated function is called and released when it returns.
 
 ```python
-from timeslice import OrchestratorClient
+from timeslice import TimeSliceOrchestratorClient
 
-client = OrchestratorClient("orchestrator-service:50051", "my-job", "shared-gpu")
+client = TimeSliceOrchestratorClient("orchestrator-service:50051", "my-job", "shared-gpu")
 
 @client.on_accelerators(timeout_sec=10.0)
 def run_gpu_kernel():
@@ -71,10 +71,10 @@ run_gpu_kernel()
 The `job_id` and `group_id` are optional on construction. If omitted, they **must** be provided dynamically during the method calls. You can also override the constructor-configured values on a per-call basis.
 
 ```python
-from timeslice import OrchestratorClient
+from timeslice import TimeSliceOrchestratorClient
 
 # Initialize without job_id and group_id
-client = OrchestratorClient(target="orchestrator-service:50051")
+client = TimeSliceOrchestratorClient(target="orchestrator-service:50051")
 
 # Pass them dynamically during acquire/release
 client.acquire(job_id="job-A", group_id="group-A")
@@ -92,11 +92,11 @@ with client.on_accelerators(job_id="job-B", group_id="group-B") as result:
 
 In a typical Reinforcement Learning setup, a single training job might need to coordinate access across two different GPU resource pools: one dedicated to **Sampling** (generating experience rollouts) and another dedicated to **Training** (updating model weights).
 
-Using `OrchestratorClient` as a **decorator** (`@client.on_accelerators()`), we can cleanly bind GPU access management directly to the execution functions. This keeps the orchestration loop in `main()` extremely clean and readable.
+Using `TimeSliceOrchestratorClient` as a **decorator** (`@client.on_accelerators()`), we can cleanly bind GPU access management directly to the execution functions. This keeps the orchestration loop in `main()` extremely clean and readable.
 
 ```python
 import time
-from timeslice import OrchestratorClient
+from timeslice import TimeSliceOrchestratorClient
 
 # Configuration
 ORCHESTRATOR_TARGET = "orchestrator-service:50051"
@@ -109,8 +109,8 @@ SAMPLING_GROUP = "sampling-gpu-pool"
 TRAINING_GROUP = "training-gpu-pool"
 
 # Initialize clients at the module level so they can be used as decorators
-sampler_client = OrchestratorClient(ORCHESTRATOR_TARGET, job_id=RL_JOB_ID, group_id=SAMPLING_GROUP)
-trainer_client = OrchestratorClient(ORCHESTRATOR_TARGET, job_id=RL_JOB_ID, group_id=TRAINING_GROUP)
+sampler_client = TimeSliceOrchestratorClient(ORCHESTRATOR_TARGET, job_id=RL_JOB_ID, group_id=SAMPLING_GROUP)
+trainer_client = TimeSliceOrchestratorClient(ORCHESTRATOR_TARGET, job_id=RL_JOB_ID, group_id=TRAINING_GROUP)
 
 
 # Decorate functions to automatically manage GPU access when they are invoked

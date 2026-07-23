@@ -1,4 +1,4 @@
-from timeslice.orchestrator.client import OrchestratorClient
+from timeslice.orchestrator.client import TimeSliceOrchestratorClient
 from timeslice.orchestrator.exceptions import (
     OrchestratorError,
     OrchestratorConnectionError,
@@ -17,7 +17,7 @@ from timeslice.orchestrator.types import (
 )
 
 __all__ = [
-    "OrchestratorClient",
+    "TimeSliceOrchestratorClient",
     "OrchestratorError",
     "OrchestratorConnectionError",
     "OrchestratorTimeoutError",

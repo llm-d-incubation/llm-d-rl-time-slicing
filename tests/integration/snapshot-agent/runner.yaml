@@ -1,0 +1,101 @@
+# Bootstrap for the integration tests: the test-runner pod executes the Go
+# test suite in-cluster (see run.sh), deploying the agent and engine pods
+# itself via the Kubernetes API.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snapshot-agent-test
+  namespace: default
+---
+# The agent's watcher lists pods to discover jobs (k8s mode).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: snapshot-agent-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
+subjects:
+  - kind: ServiceAccount
+    name: snapshot-agent-test
+    namespace: default
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: snapshot-agent-test-runner
+  namespace: default
+---
+# Cluster-wide read-only: node discovery and the all-namespaces pod listing
+# used to find a free GPU. Pod CRUD/exec stays namespace-local below.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: snapshot-agent-test-runner
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: snapshot-agent-test-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: snapshot-agent-test-runner
+subjects:
+  - kind: ServiceAccount
+    name: snapshot-agent-test-runner
+    namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: snapshot-agent-test-runner
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: snapshot-agent-test-runner
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: snapshot-agent-test-runner
+subjects:
+  - kind: ServiceAccount
+    name: snapshot-agent-test-runner
+    namespace: default
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-runner
+  labels:
+    app: test-runner
+    test-suite: snapshot-agent-integration
+spec:
+  serviceAccountName: snapshot-agent-test-runner
+  containers:
+    - name: runner
+      image: golang:1.25-bookworm
+      command: ["sleep", "infinity"]
+  restartPolicy: Never

@@ -91,7 +91,9 @@ jobs:
 
       - name: Install ruff
         if: steps.check-python.outputs.has_python == 'true'
-        run: pip install ruff
+        # Pinned so lint results only change when we bump the version, not
+        # when ruff releases (0.16.0 introduced 101 new findings, see #116).
+        run: pip install ruff==0.15.22
 
       - name: Run ruff check
         if: steps.check-python.outputs.has_python == 'true'
