@@ -14,8 +14,6 @@ spec:
   submitterPodTemplate:
     spec:
       restartPolicy: Never
-      nodeSelector:
-        cloud.google.com/gke-nodepool: utility-pool-large
       containers:
       - name: ray-job-submitter
         image: rayproject/ray:2.9.0
@@ -35,8 +33,6 @@ spec:
         dashboard-host: '0.0.0.0'
       template:
         spec:
-          nodeSelector:
-            cloud.google.com/gke-nodepool: utility-pool-large
           containers:
           - name: ray-head
             image: slimerl/slime@sha256:c95eb968649ee8e2a567c500df5a5643c9f85951622646fe6e08244d939e4b94

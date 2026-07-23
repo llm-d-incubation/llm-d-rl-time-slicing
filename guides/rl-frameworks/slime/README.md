@@ -5,8 +5,8 @@ This guide provides step-by-step instructions on how to integrate and deploy **S
 ### Motivation: Maximizing GPU Utilization
 In traditional disaggregated RL setups, GPUs sit idle whenever worker groups wait for another phase to complete (e.g., trainer GPUs idling during rollout generation, or rollout GPUs idling during policy updates). Cooperative time-slicing enables multiple independent Slime jobs to multiplex physical GPU resource pools concurrently. When one job finishes a phase, its GPU context is checkpointed and evicted, allowing another job to immediately utilize the hardware—significantly driving up GPU duty cycle and overall cluster throughput.
 
-For a step-by-step reproduction guide using RayCluster Kubernetes manifests and disaggregated GRPO launch scripts, see:
-* **[Multi-Cluster Time-Sliced Disaggregated GRPO Guide](sync/README.md)**
+For a runnable example, see:
+* **[GRPO Integration Example](sync/README.md)**
 
 ---
 
@@ -48,6 +48,44 @@ The `timeslice` platform relies on node labels and taints to identify resource p
   ```bash
   kubectl label nodes <node-name> group.timeslice.io/trainers=true
   ```
+
+### Shared DRA Resource Claims
+Cooperative time-slicing leverages Kubernetes **Dynamic Resource Allocation (DRA)** so multiple jobs' worker pods can share physical GPU hardware without scheduler blocking. Before submitting jobs, create shared `ResourceClaim` manifests for both the trainer and sampler pools in your target namespace:
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: shared-trainers-gpu-claim
+  namespace: default
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        deviceClassName: gpu.nvidia.com
+        allocationMode: ExactCount
+        count: 1
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: shared-samplers-gpu-claim
+  namespace: default
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        deviceClassName: gpu.nvidia.com
+        allocationMode: ExactCount
+        count: 1
+```
+
+Apply these resource claims to your cluster:
+```bash
+kubectl apply -f sync/resource-claims.yaml
+```
 
 ---
 
@@ -117,7 +155,7 @@ parser.add_argument(
     "--enable-timeslice",
     action="store_true",
     default=False,
-    help="Enable llm-d-rl-time-slicing cooperative GPU grant acquisition.",
+    help="Enable llm-d-rl-time-slicing cooperative accelerator acquisition.",
 )
 parser.add_argument(
     "--timeslice-orchestrator-addr",
@@ -171,7 +209,7 @@ def train(args):
             sampler_client.acquire()
         return create_placement_groups(args, role="rollout")
 
-    # Parallel deployment of the actor (ie. trainer) & sampler groups    
+    # Parallel deployment of the actor (i.e. trainer) & sampler groups    
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         f_actor = executor.submit(create_placement_groups, args, role="actor") 
         f_rollout = executor.submit(_create_rollout_group)
@@ -229,14 +267,6 @@ Acquire and release GPU grants around the rollout collection and policy training
 
 ---
 
-## Concrete Deployment & Benchmark Reference
-
-For a step-by-step reproduction guide using RayCluster Kubernetes manifests, disaggregated GRPO launch scripts, and verified performance benchmark numbers, see:
-
-* **[Disaggregated Time-Sliced Slime Deployment Guide](sync/README.md)**
-
----
-
 ## 4. Deploying the Modified Slime Variant
 
 To run your modified Slime workload on the cluster, you must package the `timeslice` client library and configure the Kubernetes deployments.
@@ -254,7 +284,13 @@ RUN pip install /opt/timeslice-client
 ```
 
 ### Step 2: Configure KubeRay `RayJob` with DRA Resource Claims
-When deploying Slime across independent Ray clusters, use KubeRay `RayJob` manifests configured with **Kubernetes Dynamic Resource Allocation (DRA)** (`resourceClaims`). Binding containers to shared DRA claims (`shared-trainers-gpu-claim` and `shared-samplers-gpu-claim`) instead of static `nvidia.com/gpu` limits allows multiple jobs' worker pods to co-locate on the same physical GPU nodes without scheduler blocking:
+When deploying Slime across independent Ray clusters, use KubeRay `RayJob` manifests configured with **Kubernetes Dynamic Resource Allocation (DRA)** (`resourceClaims`). Binding containers to shared DRA claims (`shared-trainers-gpu-claim` and `shared-samplers-gpu-claim`) instead of static `nvidia.com/gpu` limits allows multiple jobs' worker pods to co-locate on the same physical GPU nodes without scheduler blocking.
+
+A complete disaggregated Slime workload requires defining **two separate worker groups** under `workerGroupSpecs`: one for trainers and one for rollouts (samplers). For each group:
+* **Custom Ray Resources**: Include custom resource counts in `rayStartParams` (`"{\"trainers\": 1}"` for trainers and `"{\"samplers\": 1}"` for rollouts) so that Ray placement groups can bind tasks to the appropriate worker pool.
+* **Pool-Specific Identifiers**: Ensure each worker group is configured with its corresponding node selector (`group.timeslice.io/trainers: "true"` vs. `samplers: "true"`), pod labels (`timeslice.io/group: trainers` vs. `samplers`), and shared DRA claim (`shared-trainers-gpu-claim` vs. `shared-samplers-gpu-claim`).
+
+The example below illustrates the configuration for the trainer worker group:
 
 ```yaml
 apiVersion: ray.io/v1
@@ -265,6 +301,8 @@ spec:
   rayClusterSpec:
     workerGroupSpecs:
     - groupName: trainer-group
+      rayStartParams:
+        resources: '"{\"trainers\": 1}"'
       template:
         metadata:
           labels:
@@ -283,6 +321,7 @@ spec:
             effect: "NoSchedule"
           containers:
           - name: ray-worker
+            # Must be a Slime container image built with your time-slicing modifications
             image: my-registry/slime-modified:latest
             env:
             - name: TIMESLICE_JOB_ID
@@ -290,10 +329,6 @@ spec:
             resources:
               claims:
               - name: gpu-claim
-            lifecycle:
-              postStart:
-                exec:
-                  command: ["/bin/sh", "-c", "/opt/scripts/setup_node.sh"]
           resourceClaims:
           - name: gpu-claim
             resourceClaimName: shared-trainers-gpu-claim
@@ -373,7 +408,7 @@ Slime workloads typically log training metrics to **TensorBoard**, **Weights & B
 3. **KL Divergence**: Monitor the KL divergence between the active policy and the reference model to ensure it stays within target bounds (e.g., to prevent policy collapse).
 4. **Step vs. Wall-Clock Time**:
    * **Step-wise Convergence**: The step-wise convergence graph (e.g., Reward vs. Training Steps) will align perfectly with a standalone (non-timesliced) run. The time-slicing process does not alter the mathematical state transitions.
-   * **Wall-Clock Progress**: Because the GPUs are shared, the wall-clock time per step will increase by a factor of $N$ (where $N$ is the number of co-located jobs), minus any gains from overlapping CPU-heavy phases (like reward processing or data loading) of one job with the other job's GPU phases.
+   * **Wall-Clock Progress**: Because the trainers and samplers are disaggregated & RL jobs interleaved, wall-clock time saved to run N jobs will depend on how much time the jobs can run different phases in parallel minus accelerator context swap time.
 
 ### B. Observing Job Completion
 When a Slime job completes its designated number of iterations:
