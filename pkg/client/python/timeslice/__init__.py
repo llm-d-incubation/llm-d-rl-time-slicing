@@ -1,7 +1,7 @@
 from .snapshot_agent.client import SnapshotAgentClient
-from .orchestrator.client import OrchestratorClient
+from .orchestrator.client import TimeSliceOrchestratorClient
 
 __all__ = [
     "SnapshotAgentClient",
-    "OrchestratorClient",
+    "TimeSliceOrchestratorClient",
 ]

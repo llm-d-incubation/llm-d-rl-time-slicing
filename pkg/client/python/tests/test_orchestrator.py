@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import grpc
 
-from timeslice import OrchestratorClient
+from timeslice import TimeSliceOrchestratorClient
 from timeslice.orchestrator.exceptions import (
     OrchestratorConnectionError,
     OrchestratorTimeoutError,
@@ -14,7 +14,7 @@ from timeslice.orchestrator.types import AgentJobState, GroupLockState
 from timeslice.orchestrator._generated import pb2
 
 
-class TestOrchestratorClient(unittest.TestCase):
+class TestTimeSliceOrchestratorClient(unittest.TestCase):
     def setUp(self):
         self.target = "localhost:50051"
         self.job_id = "test-job"
@@ -34,7 +34,9 @@ class TestOrchestratorClient(unittest.TestCase):
         self.mock_stub = MagicMock()
         self.mock_stub_class.return_value = self.mock_stub
 
-        self.client = OrchestratorClient(self.target, self.job_id, self.group_id)
+        self.client = TimeSliceOrchestratorClient(
+            self.target, self.job_id, self.group_id
+        )
 
     def tearDown(self):
         self.client.close()
@@ -211,13 +213,13 @@ class TestOrchestratorClient(unittest.TestCase):
 
     def test_init_optional_args(self):
         # We can create a client with only target
-        client = OrchestratorClient(self.target)
+        client = TimeSliceOrchestratorClient(self.target)
         self.assertIsNone(client.job_id)
         self.assertIsNone(client.group_id)
         client.close()
 
     def test_acquire_missing_args_raises_value_error(self):
-        client = OrchestratorClient(self.target)
+        client = TimeSliceOrchestratorClient(self.target)
 
         # Missing both
         with self.assertRaises(ValueError) as ctx:

@@ -16,7 +16,7 @@ from timeslice.orchestrator.types import (
 )
 
 
-class OrchestratorClient:
+class TimeSliceOrchestratorClient:
     """Convenient UX wrapper client for the Accelerator Orchestrator Service."""
 
     def __init__(
