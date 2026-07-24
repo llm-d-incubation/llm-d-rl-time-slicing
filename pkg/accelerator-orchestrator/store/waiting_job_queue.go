@@ -64,6 +64,21 @@ func (q *WaitingJobQueue) Dequeue() (string, bool) {
 	return job.JobID, true
 }
 
+// Remove removes the given job from the queue regardless of its position.
+// Returns true if the job was removed, false if it was not in the queue.
+func (q *WaitingJobQueue) Remove(jobID string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	elem, ok := q.exist[jobID]
+	if !ok {
+		return false
+	}
+	q.jobs.Remove(elem)
+	delete(q.exist, jobID)
+	return true
+}
+
 // Peek returns the next job from the front of the queue without removing it.
 // Returns the jobID and true if successful, or empty string and false if the queue is empty.
 func (q *WaitingJobQueue) Peek() (string, bool) {

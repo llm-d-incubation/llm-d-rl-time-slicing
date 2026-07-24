@@ -92,12 +92,40 @@ func (s *Server) Acquire(ctx context.Context, req *pb.AcquireRequest) (*pb.Acqui
 		select {
 		case <-ctx.Done():
 			slog.InfoContext(ctx, "Acquire context cancelled", "error", ctx.Err())
+			s.cancelLockRequest(ctx, groupID, jobID)
 			return nil, status.FromContextError(ctx.Err()).Err()
 		case <-ticker.C:
 			resp, err, done := s.checkAcquire(ctx, groupID, jobID, startTime)
 			if done {
 				return resp, err
 			}
+		}
+	}
+}
+
+// cancelLockRequest undoes the lock request made by Acquire when the caller
+// stops waiting, so the group is not left locked (or the job queued) for a
+// caller that believes the acquire failed.
+func (s *Server) cancelLockRequest(ctx context.Context, groupID, jobID string) {
+	// The request context is already cancelled; detach so the store updates can proceed.
+	ctx = context.WithoutCancel(ctx)
+
+	// Re-read group to get the latest status and spec from the store
+	group, err := s.groupStore.Get(ctx, groupID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get group to cancel lock request", "error", err)
+		return
+	}
+
+	released, err := group.Spec().CancelLockRequest(ctx, jobID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to cancel lock request", "error", err)
+		return
+	}
+	if released {
+		slog.InfoContext(ctx, "Released lock held by cancelled acquire")
+		if s.ctrl != nil {
+			s.ctrl.EnqueueWork(groupID)
 		}
 	}
 }

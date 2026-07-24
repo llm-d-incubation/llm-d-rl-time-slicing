@@ -10,7 +10,7 @@ import (
 
 func TestWaitingJobQueue_BasicAndDuplicates(t *testing.T) {
 	type op struct {
-		action   string // "enqueue", "dequeue", "exists", "len"
+		action   string // "enqueue", "dequeue", "remove", "exists", "len"
 		val      string // input for action
 		wantBool bool   // expected result for enqueue/dequeue/exists
 		wantInt  int    // expected result for len
@@ -38,6 +38,25 @@ func TestWaitingJobQueue_BasicAndDuplicates(t *testing.T) {
 			},
 		},
 		{
+			name: "remove from any position preserves FIFO order",
+			steps: []op{
+				{action: "enqueue", val: "job-a", wantBool: true},
+				{action: "enqueue", val: "job-b", wantBool: true},
+				{action: "enqueue", val: "job-c", wantBool: true},
+				{action: "remove", val: "job-b", wantBool: true},
+				{action: "len", wantInt: 2},
+				{action: "exists", val: "job-b", wantBool: false},
+				{action: "remove", val: "job-b", wantBool: false}, // already removed
+				{action: "remove", val: "job-d", wantBool: false}, // never enqueued
+				{action: "dequeue", wantBool: true, wantVal: "job-a"},
+				{action: "dequeue", wantBool: true, wantVal: "job-c"},
+				{action: "len", wantInt: 0},
+				// removed job can be re-enqueued
+				{action: "enqueue", val: "job-b", wantBool: true},
+				{action: "dequeue", wantBool: true, wantVal: "job-b"},
+			},
+		},
+		{
 			name: "prevent duplicates",
 			steps: []op{
 				{action: "enqueue", val: "job-a", wantBool: true},
@@ -51,27 +70,32 @@ func TestWaitingJobQueue_BasicAndDuplicates(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			queue := store.NewWaitingJobQueue()
-			for i, step := range tc.steps {
+			for stepIdx, step := range tc.steps {
 				switch step.action {
 				case "enqueue":
 					got := queue.Enqueue(step.val)
 					if got != step.wantBool {
-						t.Fatalf("step %d: Enqueue(%q) = %t, want %t", i, step.val, got, step.wantBool)
+						t.Fatalf("step %d: Enqueue(%q) = %t, want %t", stepIdx, step.val, got, step.wantBool)
 					}
 				case "dequeue":
 					gotVal, ok := queue.Dequeue()
 					if ok != step.wantBool || gotVal != step.wantVal {
-						t.Fatalf("step %d: Dequeue() = (%q, %t), want (%q, %t)", i, gotVal, ok, step.wantVal, step.wantBool)
+						t.Fatalf("step %d: Dequeue() = (%q, %t), want (%q, %t)", stepIdx, gotVal, ok, step.wantVal, step.wantBool)
+					}
+				case "remove":
+					got := queue.Remove(step.val)
+					if got != step.wantBool {
+						t.Fatalf("step %d: Remove(%q) = %t, want %t", stepIdx, step.val, got, step.wantBool)
 					}
 				case "exists":
 					got := queue.Exists(step.val)
 					if got != step.wantBool {
-						t.Fatalf("step %d: Exists(%q) = %t, want %t", i, step.val, got, step.wantBool)
+						t.Fatalf("step %d: Exists(%q) = %t, want %t", stepIdx, step.val, got, step.wantBool)
 					}
 				case "len":
 					got := queue.Len()
 					if got != step.wantInt {
-						t.Fatalf("step %d: Len() = %d, want %d", i, got, step.wantInt)
+						t.Fatalf("step %d: Len() = %d, want %d", stepIdx, got, step.wantInt)
 					}
 				}
 			}

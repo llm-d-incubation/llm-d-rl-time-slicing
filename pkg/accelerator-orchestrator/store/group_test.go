@@ -255,6 +255,86 @@ func TestGroupSpec_Yield(t *testing.T) {
 	}
 }
 
+func TestGroupSpec_CancelLockRequest(t *testing.T) {
+	tests := []struct {
+		name         string
+		initialLock  string
+		queuedJobs   []string
+		cancelJob    string
+		wantReleased bool
+		wantLock     string
+		wantQueue    []string
+	}{
+		{
+			name:         "cancel by lock holder releases lock",
+			initialLock:  "job-1",
+			cancelJob:    "job-1",
+			wantReleased: true,
+			wantLock:     "",
+		},
+		{
+			name:         "cancel by queued job removes it from queue",
+			initialLock:  "job-1",
+			queuedJobs:   []string{"job-2", "job-3"},
+			cancelJob:    "job-2",
+			wantReleased: false,
+			wantLock:     "job-1",
+			wantQueue:    []string{"job-3"},
+		},
+		{
+			name:         "cancel by unknown job is a no-op",
+			initialLock:  "job-1",
+			queuedJobs:   []string{"job-2"},
+			cancelJob:    "job-4",
+			wantReleased: false,
+			wantLock:     "job-1",
+			wantQueue:    []string{"job-2"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			lockStore := store.NewMemLockStore()
+			if tc.initialLock != "" {
+				if err := lockStore.Lock(ctx, "group-1", tc.initialLock); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+			}
+			wrapped := store.NewGroupLockStoreWrapper(lockStore, "group-1")
+			group, err := store.NewGroup(ctx, "group-1", wrapped)
+			if err != nil {
+				t.Fatalf("failed to create group: %v", err)
+			}
+			spec := group.Spec()
+			for _, jobID := range tc.queuedJobs {
+				spec.RequestLock(jobID)
+			}
+
+			released, err := spec.CancelLockRequest(ctx, tc.cancelJob)
+			if err != nil {
+				t.Fatalf("CancelLockRequest() error = %v", err)
+			}
+			if released != tc.wantReleased {
+				t.Errorf("CancelLockRequest() released = %v, want %v", released, tc.wantReleased)
+			}
+			if spec.LockingJob() != tc.wantLock {
+				t.Errorf("LockingJob() = %q, want %q", spec.LockingJob(), tc.wantLock)
+			}
+
+			queue := spec.GetWaitingJobQueue()
+			if queue.Len() != len(tc.wantQueue) {
+				t.Fatalf("queue len = %d, want %d", queue.Len(), len(tc.wantQueue))
+			}
+			for i, waiting := range queue.List() {
+				if waiting.JobID != tc.wantQueue[i] {
+					t.Errorf("queue[%d] = %q, want %q", i, waiting.JobID, tc.wantQueue[i])
+				}
+			}
+		})
+	}
+}
+
 func TestGroupSpec_TryPromote(t *testing.T) {
 	tests := []struct {
 		name         string
