@@ -4,11 +4,13 @@ package integration
 
 import "testing"
 
-// TestStandalone exercises all backends in standalone mode: the caller
+// TestStandalone exercises all backends in standalone mode against an agent
+// running from the `make standalone` artifacts (bin/snapshot-agent +
+// bin/cuda-checkpoint) — the install path a standalone user takes. The caller
 // provides the full BackendConfig (explicit PIDs for CUDA) and the agent's
 // NVML check bootstraps jobs on first snapshot.
 func TestStandalone(t *testing.T) {
-	h := NewHarness(t, "standalone")
+	h := NewHarness(t)
 
 	h.WithEngine(t, VLLM, func(t *testing.T, e *Engine) {
 		t.Run("CUDACheckpointRestore", func(t *testing.T) {

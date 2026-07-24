@@ -93,7 +93,13 @@ func enginePod(h *Harness, name, image string, command, args []string, env []cor
 	}
 }
 
-func agentPod(image, node, mode string) *corev1.Pod {
+// agentPod runs the standalone agent from the `make standalone` artifacts
+// (bin/snapshot-agent, bin/cuda-checkpoint): a plain Debian base image plus
+// the binaries the harness copies in — the install path a standalone user
+// takes, rather than any container image of the agent. The container waits
+// for the harness to copy the artifacts (see installAgentBinaries) and then
+// execs the agent.
+func agentPod(node string) *corev1.Pod {
 	privileged := true
 	hostPathDir := corev1.HostPathDirectory
 	return &corev1.Pod{
@@ -111,21 +117,14 @@ func agentPod(image, node, mode string) *corev1.Pod {
 			NodeName:           node,
 			HostPID:            true,
 			Tolerations:        gpuTolerations(),
-			InitContainers: []corev1.Container{{
-				Name:  "install-cuda-checkpoint",
-				Image: "alpine:latest",
-				// Pinned to an immutable commit rather than the mutable main ref.
-				Command: []string{"sh", "-c", "apk add --no-cache wget && wget -qO /opt/bin/cuda-checkpoint https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/00d5cce84c628088d6caa203fc4af40c1538b6f7/bin/x86_64_Linux/cuda-checkpoint && chmod +x /opt/bin/cuda-checkpoint"},
-				VolumeMounts: []corev1.VolumeMount{
-					{Name: "bin-dir", MountPath: "/opt/bin"},
-				},
-			}},
 			Containers: []corev1.Container{{
 				Name:  "snapshot-agent",
-				Image: image,
-				Args:  []string{"--port=9001", "--deployment-mode=" + mode},
+				Image: "debian:bookworm-slim",
+				Command: []string{"sh", "-c",
+					`until [ -f /opt/rlts/.ready ]; do sleep 1; done; exec /opt/rlts/bin/snapshot-agent --port=9001 --deployment-mode=standalone`},
 				Env: []corev1.EnvVar{
-					{Name: "PATH", Value: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin"},
+					// /opt/rlts/bin provides the make-built cuda-checkpoint.
+					{Name: "PATH", Value: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/rlts/bin"},
 					{Name: "NODE_NAME", ValueFrom: &corev1.EnvVarSource{
 						FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"},
 					}},
@@ -136,12 +135,12 @@ func agentPod(image, node, mode string) *corev1.Pod {
 				Ports:           []corev1.ContainerPort{{ContainerPort: agentPort}},
 				SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
 				VolumeMounts: []corev1.VolumeMount{
-					{Name: "bin-dir", MountPath: "/opt/bin"},
+					{Name: "rlts", MountPath: "/opt/rlts"},
 					{Name: "nvidia-driver", MountPath: "/usr/local/nvidia", ReadOnly: true},
 				},
 			}},
 			Volumes: []corev1.Volume{
-				{Name: "bin-dir", VolumeSource: corev1.VolumeSource{
+				{Name: "rlts", VolumeSource: corev1.VolumeSource{
 					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				}},
 				{Name: "nvidia-driver", VolumeSource: corev1.VolumeSource{

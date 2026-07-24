@@ -13,11 +13,13 @@
 package integration
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -39,6 +41,9 @@ const (
 	namespace     = "default"
 	agentPodName  = "snapshot-agent-test"
 	agentPort     = 9001
+	// chartNamespace is where the official Helm charts install components:
+	// their templates pin the namespace rather than using the release's.
+	chartNamespace = "timeslice-system"
 	podTimeout    = 5 * time.Minute
 	healthTimeout = 5 * time.Minute
 	// opTimeout bounds one agentctl.py invocation (RPC + operation polling);
@@ -53,16 +58,20 @@ type Harness struct {
 	Client *kubernetes.Clientset
 	Config *rest.Config
 	Node   string
-	Image  string
 	Model  string
 	Mode   string // "standalone" or "k8s"
 
 	AgentIP string
+	// AgentPort is the agent's gRPC port: agentPort for harness-deployed
+	// agents, overridable via CHART_AGENT_PORT for chart-deployed ones (so
+	// the suite can coexist with an unrelated agent on the default port).
+	AgentPort int
 }
 
 // NewHarness connects to the cluster, picks a GPU node, and deploys the
-// snapshot-agent in the given mode. The agent is deleted via t.Cleanup.
-func NewHarness(t *testing.T, mode string) *Harness {
+// standalone agent from the `make standalone` artifacts (run.sh builds them
+// in the test-runner pod). The agent is deleted via t.Cleanup.
+func NewHarness(t *testing.T) *Harness {
 	t.Helper()
 
 	cfg, err := rest.InClusterConfig()
@@ -74,16 +83,12 @@ func NewHarness(t *testing.T, mode string) *Harness {
 		t.Fatalf("k8s client: %v", err)
 	}
 
-	image := os.Getenv("AGENT_IMAGE")
-	if image == "" {
-		t.Fatal("AGENT_IMAGE env var is required")
-	}
 	model := os.Getenv("MODEL")
 	if model == "" {
 		model = "Qwen/Qwen2.5-0.5B"
 	}
 
-	h := &Harness{Client: client, Config: cfg, Image: image, Model: model, Mode: mode}
+	h := &Harness{Client: client, Config: cfg, Model: model, Mode: "standalone", AgentPort: agentPort}
 	// TEST_NODE pins the suite to a specific node (e.g. one known to be
 	// otherwise idle); by default the first node with a free GPU is used.
 	if node := os.Getenv("TEST_NODE"); node != "" {
@@ -91,10 +96,75 @@ func NewHarness(t *testing.T, mode string) *Harness {
 	} else {
 		h.Node = h.pickGPUNode(t)
 	}
-	t.Logf("using node %s, image %s, mode %s", h.Node, h.Image, h.Mode)
+	t.Logf("using node %s, mode %s", h.Node, h.Mode)
 
 	h.deployAgent(t)
 	return h
+}
+
+// NewChartHarness attaches to the snapshot-agent deployed by the official
+// Helm chart (run.sh installs it for the k8s phase) instead of deploying an
+// agent pod. The chart's DaemonSet is pinned to TEST_NODE via nodeSelector,
+// so TEST_NODE is required.
+func NewChartHarness(t *testing.T) *Harness {
+	t.Helper()
+
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		t.Fatalf("in-cluster config: %v", err)
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		t.Fatalf("k8s client: %v", err)
+	}
+
+	node := os.Getenv("TEST_NODE")
+	if node == "" {
+		t.Fatal("TEST_NODE env var is required for chart tests")
+	}
+	model := os.Getenv("MODEL")
+	if model == "" {
+		model = "Qwen/Qwen2.5-0.5B"
+	}
+
+	h := &Harness{Client: client, Config: cfg, Model: model, Mode: "k8s", Node: node, AgentPort: agentPort}
+	if p := os.Getenv("CHART_AGENT_PORT"); p != "" {
+		port, err := strconv.Atoi(p)
+		if err != nil {
+			t.Fatalf("invalid CHART_AGENT_PORT %q: %v", p, err)
+		}
+		h.AgentPort = port
+	}
+	h.AgentIP = h.waitChartAgentReady(t)
+	t.Logf("using node %s, chart-deployed agent at %s:%d", h.Node, h.AgentIP, h.AgentPort)
+	return h
+}
+
+// waitChartAgentReady waits for the chart's DaemonSet pod on the harness node
+// and returns its IP (the node IP — the chart runs the agent on hostNetwork,
+// which is also how the orchestrator reaches agents).
+func (h *Harness) waitChartAgentReady(t *testing.T) string {
+	t.Helper()
+	deadline := time.Now().Add(podTimeout)
+	for time.Now().Before(deadline) {
+		pods, err := h.Client.CoreV1().Pods(chartNamespace).List(context.Background(), metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=snapshot-agent,app.kubernetes.io/instance=sa-chart-test",
+			FieldSelector: "spec.nodeName=" + h.Node,
+		})
+		if err == nil {
+			for i := range pods.Items {
+				pod := &pods.Items[i]
+				for _, cond := range pod.Status.Conditions {
+					if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+						return pod.Status.PodIP
+					}
+				}
+			}
+		}
+		time.Sleep(3 * time.Second)
+	}
+	t.Fatalf("timeout waiting for chart-deployed snapshot-agent on node %s in namespace %s", h.Node, chartNamespace)
+	return ""
 }
 
 // pickGPUNode returns the first node with at least one FREE GPU
@@ -154,14 +224,70 @@ func (h *Harness) deployAgent(t *testing.T) {
 	t.Helper()
 	h.deletePodAndWait(t, agentPodName)
 
-	pod := agentPod(h.Image, h.Node, h.Mode)
+	pod := agentPod(h.Node)
 	if _, err := h.Client.CoreV1().Pods(namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("creating agent pod: %v", err)
 	}
 	t.Cleanup(func() { h.deletePodAndWait(t, agentPodName) })
 
 	h.AgentIP = h.waitPodReady(t, agentPodName)
-	t.Logf("agent ready at %s:%d", h.AgentIP, agentPort)
+	h.installAgentBinaries(t)
+	h.waitAgentUp(t)
+	t.Logf("agent (make-standalone artifacts) ready at %s:%d", h.AgentIP, h.AgentPort)
+}
+
+// standaloneBinDir is where run.sh builds the standalone artifacts in the
+// test-runner pod (`make standalone` → bin/), relative to this package's
+// directory (go test's working directory).
+const standaloneBinDir = "../../../bin"
+
+// installAgentBinaries streams the make-standalone artifacts into the waiting
+// agent pod and releases it (the container execs the agent once /opt/rlts is
+// populated and the .ready marker exists).
+func (h *Harness) installAgentBinaries(t *testing.T) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, name := range []string{"snapshot-agent", "cuda-checkpoint"} {
+		data, err := os.ReadFile(standaloneBinDir + "/" + name)
+		if err != nil {
+			t.Fatalf("reading make-standalone artifact (run.sh builds them with `make standalone`): %v", err)
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: "bin/" + name, Mode: 0o755, Size: int64(len(data))}); err != nil {
+			t.Fatalf("writing tar header for %s: %v", name, err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatalf("writing tar data for %s: %v", name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("closing tar stream: %v", err)
+	}
+
+	if _, err := h.execPodStdin(agentPodName, "snapshot-agent", &buf, "tar", "-xf", "-", "-C", "/opt/rlts"); err != nil {
+		t.Fatalf("copying standalone artifacts into agent pod: %v", err)
+	}
+	if _, err := h.execPod(agentPodName, "snapshot-agent", "touch", "/opt/rlts/.ready"); err != nil {
+		t.Fatalf("releasing agent pod: %v", err)
+	}
+}
+
+// waitAgentUp waits until the agent's gRPC port accepts connections; the
+// standalone agent starts only after its binaries are copied in.
+func (h *Harness) waitAgentUp(t *testing.T) {
+	t.Helper()
+	addr := net.JoinHostPort(h.AgentIP, strconv.Itoa(h.AgentPort))
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("timeout waiting for the standalone agent to listen on %s", addr)
 }
 
 // WithEngine deploys an inference engine, waits until its HTTP server has
@@ -272,6 +398,12 @@ func (h *Harness) waitHTTP(t *testing.T, url string) {
 
 // execPod runs a command in a pod container and returns stdout.
 func (h *Harness) execPod(pod, container string, command ...string) (string, error) {
+	return h.execPodStdin(pod, container, nil, command...)
+}
+
+// execPodStdin runs a command in a pod container, streaming stdin into it if
+// non-nil, and returns stdout.
+func (h *Harness) execPodStdin(pod, container string, stdin io.Reader, command ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
 	req := h.Client.CoreV1().RESTClient().Post().
@@ -279,6 +411,7 @@ func (h *Harness) execPod(pod, container string, command ...string) (string, err
 		VersionedParams(&corev1.PodExecOptions{
 			Container: container,
 			Command:   command,
+			Stdin:     stdin != nil,
 			Stdout:    true,
 			Stderr:    true,
 		}, scheme.ParameterCodec)
@@ -289,6 +422,7 @@ func (h *Harness) execPod(pod, container string, command ...string) (string, err
 	}
 	var stdout, stderr bytes.Buffer
 	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  stdin,
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})
@@ -384,7 +518,7 @@ func (h *Harness) agentctl(t *testing.T, action, jobID string, cfg BackendArgs) 
 
 	// go test runs with the package directory as the working directory.
 	args := []string{"agentctl.py", action,
-		"--agent", fmt.Sprintf("%s:%d", h.AgentIP, agentPort),
+		"--agent", fmt.Sprintf("%s:%d", h.AgentIP, h.AgentPort),
 		"--job-id", jobID}
 	args = append(args, cfg...)
 
