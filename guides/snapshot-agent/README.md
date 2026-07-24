@@ -33,9 +33,7 @@ docker run -d --name snapshot-agent \
 
 ### Starting the Agent
 
-By default, the agent starts in standalone mode on port `9001`. Run it as root
-(or as the same user as the workloads) — `cuda-checkpoint` toggles the CUDA
-state of other processes:
+By default, the agent starts in standalone mode on port `9001`:
 ```bash
 sudo env PATH="$PWD/bin:$PATH" ./bin/snapshot-agent
 
