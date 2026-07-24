@@ -27,7 +27,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
-	"github.com/llm-d-incubation/llm-d-rl-time-slicing/test/e2e/acceleratororchestrator"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/scenarios"
 )
 
 var testCmd = &cobra.Command{
@@ -163,7 +163,7 @@ var orchestratorTestCmd = &cobra.Command{
 
 		// Scenario 1: Single RL Job
 		fmt.Println("--- Running Scenario: Single RL Job ---")
-		err = acceleratororchestrator.RunSingleRLJobScenario(ctx, clientset, client, cliLogger, samplerTemplateKey, trainerTemplateKey)
+		err = scenarios.RunSingleRLJobScenario(ctx, clientset, client, cliLogger, samplerTemplateKey, trainerTemplateKey)
 		scenario1Passed := err == nil
 		if !scenario1Passed {
 			fmt.Printf("[FAIL] Single RL Job Scenario failed: %v\n\n", err)
@@ -173,7 +173,7 @@ var orchestratorTestCmd = &cobra.Command{
 
 		// Scenario 2: Queued RL Jobs
 		fmt.Println("--- Running Scenario: Queued RL Jobs ---")
-		err = acceleratororchestrator.RunQueuedRLJobsScenario(ctx, clientset, client, cliLogger, samplerTemplateKey, trainerTemplateKey)
+		err = scenarios.RunQueuedRLJobsScenario(ctx, clientset, client, cliLogger, samplerTemplateKey, trainerTemplateKey)
 		scenario2Passed := err == nil
 		if !scenario2Passed {
 			fmt.Printf("[FAIL] Queued RL Jobs Scenario failed: %v\n\n", err)
@@ -220,7 +220,7 @@ func init() {
 		"Name of the Kubernetes PodTemplate to use for trainer pods (blank for default pause pod)")
 }
 
-// cliLogger implements acceleratororchestrator.Logger interface to print to stdout.
+// cliLogger implements scenarios.Logger interface to print to stdout.
 type cliLogger struct{}
 
 func (c *cliLogger) Log(args ...interface{}) {

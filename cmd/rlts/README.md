@@ -89,3 +89,37 @@ Example:
 ```bash
 ./bin/rlts orchestrator yield my-time-slice-group job-123
 ```
+
+---
+
+## Testing the Orchestrator
+
+### `rlts test orchestrator`
+
+Runs the E2E orchestration scenarios (Single RL Job, Queued RL Jobs) against
+the active Kubernetes cluster and a deployed Accelerator Orchestrator:
+
+```bash
+./bin/rlts test orchestrator [--addr <address>] \
+  [--sampler-template-key <key>] [--trainer-template-key <key>]
+```
+
+The scenario implementations live in `pkg/accelerator-orchestrator/scenarios`
+— one shared package, exercised in two modes:
+
+- **In-process against fakes** — the scenario package's own tests
+  (`pkg/accelerator-orchestrator/scenarios/*_test.go`) wire the orchestrator
+  to a fake clientset, scheduler, and snapshot agents; they run as normal Go
+  tests in CI on every PR.
+- **Against a real deployment** — `rlts test orchestrator` for operator-side
+  smoke testing of your own cluster, and the gated integration suite
+  (`tests/integration`, orchestrator phase) which installs the official Helm
+  chart as its fixture. See `tests/integration/README.md`.
+
+The scenarios drive the fixed `samplers`/`trainers` groups, so the target
+cluster needs nodes labeled `group.timeslice.io/samplers=true` and
+`group.timeslice.io/trainers=true`. Jobs only pass agent-tracked lock
+handoffs when their pods do real GPU work (agents report idle jobs as not
+loaded), so on agent-equipped clusters use pod templates that occupy the
+GPU; without reachable agents the scenarios exercise the lock protocol
+itself.

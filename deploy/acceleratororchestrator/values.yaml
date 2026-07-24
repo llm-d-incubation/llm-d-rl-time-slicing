@@ -9,6 +9,10 @@ service:
   type: ClusterIP
   port: 50051
 
+# Port the orchestrator uses to reach the snapshot agents on group nodes
+# (hostNetwork). Must match the snapshot-agent chart's `port` value.
+snapshotAgentPort: 9001
+
 resources: {}
   # limits:
   #   cpu: 100m
