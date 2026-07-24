@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package acceleratororchestrator
+// Package scenarios contains the accelerator-orchestrator E2E scenario
+// drivers. It is the single implementation shared by the rlts CLI
+// (`rlts test orchestrator`) and the Go test suites: scenarios take a gRPC
+// client and a Kubernetes clientset, report progress through the Logger
+// interface, and return errors rather than printing or exiting.
+package scenarios
 
 import (
 	"context"
