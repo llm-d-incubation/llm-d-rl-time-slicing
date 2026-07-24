@@ -20,21 +20,16 @@ Two ways to get the agent onto a GPU host:
 ```bash
 git clone https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git
 cd llm-d-rl-time-slicing
-make standalone     # bin/snapshot-agent (CGO — links against NVML)
-                    # + bin/cuda-checkpoint (pinned NVIDIA binary the CUDA
-                    #   backend execs; found via PATH)
+make standalone
 ```
 
-**Or run the published container image** (self-contained: agent + `cuda-checkpoint`):
+**Or run the published container image:**
 ```bash
 docker run -d --name snapshot-agent \
   --privileged --pid=host --gpus all \
   -p 9001:9001 \
   ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/snapshot-agent:latest
 ```
-
-`--pid=host` is required: standalone mode targets host PIDs, so the agent must
-share the host PID namespace to checkpoint them.
 
 ### Starting the Agent
 
