@@ -18,6 +18,8 @@ LDFLAGS ?= -s -w -X main.version=$(VERSION)
 
 # Tools
 GOLANGCI_LINT_VERSION ?= v2.8.0
+# Pinned to the same commit the container images bundle.
+CUDA_CHECKPOINT_COMMIT ?= 00d5cce84c628088d6caa203fc4af40c1538b6f7
 
 .DEFAULT_GOAL := help
 
@@ -33,6 +35,17 @@ help: ## Show this help message
 build: ## Build the Go binary
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(PROJECT_NAME) ./cmd
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/snapshot-agent ./cmd/snapshot-agent
+
+.PHONY: cuda-checkpoint
+cuda-checkpoint: bin/cuda-checkpoint ## Fetch the pinned cuda-checkpoint binary into bin/ (x86_64)
+
+bin/cuda-checkpoint:
+	mkdir -p bin
+	curl -fsSL -o bin/cuda-checkpoint https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/$(CUDA_CHECKPOINT_COMMIT)/bin/x86_64_Linux/cuda-checkpoint
+	chmod +x bin/cuda-checkpoint
+
+.PHONY: standalone
+standalone: build cuda-checkpoint ## Build everything needed to run the agent in standalone mode
 .PHONY: test
 test: ## Run tests with race detection
 	go test -race -count=1 ./...

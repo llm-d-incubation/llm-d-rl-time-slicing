@@ -12,15 +12,33 @@ It can be deployed in two modes:
 
 In standalone mode, you run the `snapshot-agent` binary directly on your host machine (e.g., a GCE VM). Workloads are targeted by specifying their Process IDs (PIDs) directly in the client request.
 
+### Installing
+
+Two ways to get the agent onto a GPU host:
+
+**Build from source** (requires Go and the NVIDIA driver; x86_64 Linux):
+```bash
+git clone https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git
+cd llm-d-rl-time-slicing
+make standalone
+```
+
+**Or run the published container image:**
+```bash
+docker run -d --name snapshot-agent \
+  --privileged --pid=host --gpus all \
+  -p 9001:9001 \
+  ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/snapshot-agent:latest
+```
+
 ### Starting the Agent
 
 By default, the agent starts in standalone mode on port `9001`:
 ```bash
-# Run the binary
-./snapshot-agent-linux
+sudo env PATH="$PWD/bin:$PATH" ./bin/snapshot-agent
 
 # Or explicitly set the port and mode:
-./snapshot-agent-linux -deployment-mode=standalone -port=9001
+sudo env PATH="$PWD/bin:$PATH" ./bin/snapshot-agent -deployment-mode=standalone -port=9001
 ```
 
 ### Triggering a Snapshot (with PIDs)
