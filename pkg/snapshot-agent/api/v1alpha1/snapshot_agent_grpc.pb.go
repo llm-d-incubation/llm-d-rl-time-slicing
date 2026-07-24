@@ -19,10 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SnapshotAgentService_Snapshot_FullMethodName     = "/snapshot_agent.v1alpha1.SnapshotAgentService/Snapshot"
-	SnapshotAgentService_Restore_FullMethodName      = "/snapshot_agent.v1alpha1.SnapshotAgentService/Restore"
-	SnapshotAgentService_GetOperation_FullMethodName = "/snapshot_agent.v1alpha1.SnapshotAgentService/GetOperation"
-	SnapshotAgentService_Status_FullMethodName       = "/snapshot_agent.v1alpha1.SnapshotAgentService/Status"
+	SnapshotAgentService_Snapshot_FullMethodName        = "/snapshot_agent.v1alpha1.SnapshotAgentService/Snapshot"
+	SnapshotAgentService_Restore_FullMethodName         = "/snapshot_agent.v1alpha1.SnapshotAgentService/Restore"
+	SnapshotAgentService_GetOperation_FullMethodName    = "/snapshot_agent.v1alpha1.SnapshotAgentService/GetOperation"
+	SnapshotAgentService_Status_FullMethodName          = "/snapshot_agent.v1alpha1.SnapshotAgentService/Status"
+	SnapshotAgentService_WorkloadChannel_FullMethodName = "/snapshot_agent.v1alpha1.SnapshotAgentService/WorkloadChannel"
 )
 
 // SnapshotAgentServiceClient is the client API for SnapshotAgentService service.
@@ -39,6 +40,13 @@ type SnapshotAgentServiceClient interface {
 	GetOperation(ctx context.Context, in *GetOperationRequest, opts ...grpc.CallOption) (*GetOperationResponse, error)
 	// Status returns the current state of jobs and accelerators on the node.
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	// WorkloadChannel is a long-lived bidirectional stream through which an
+	// application-aware workload registers itself with the agent and receives
+	// snapshot/restore commands. Workloads that embed their engine in-process
+	// (no HTTP server) use this instead of AppEndpointConfig. The first message
+	// from the workload must be a RegisterWorkload; subsequent messages are
+	// CommandResults acknowledging AgentCommands.
+	WorkloadChannel(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WorkloadMessage, AgentCommand], error)
 }
 
 type snapshotAgentServiceClient struct {
@@ -89,6 +97,19 @@ func (c *snapshotAgentServiceClient) Status(ctx context.Context, in *StatusReque
 	return out, nil
 }
 
+func (c *snapshotAgentServiceClient) WorkloadChannel(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WorkloadMessage, AgentCommand], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &SnapshotAgentService_ServiceDesc.Streams[0], SnapshotAgentService_WorkloadChannel_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WorkloadMessage, AgentCommand]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SnapshotAgentService_WorkloadChannelClient = grpc.BidiStreamingClient[WorkloadMessage, AgentCommand]
+
 // SnapshotAgentServiceServer is the server API for SnapshotAgentService service.
 // All implementations must embed UnimplementedSnapshotAgentServiceServer
 // for forward compatibility.
@@ -103,6 +124,13 @@ type SnapshotAgentServiceServer interface {
 	GetOperation(context.Context, *GetOperationRequest) (*GetOperationResponse, error)
 	// Status returns the current state of jobs and accelerators on the node.
 	Status(context.Context, *StatusRequest) (*StatusResponse, error)
+	// WorkloadChannel is a long-lived bidirectional stream through which an
+	// application-aware workload registers itself with the agent and receives
+	// snapshot/restore commands. Workloads that embed their engine in-process
+	// (no HTTP server) use this instead of AppEndpointConfig. The first message
+	// from the workload must be a RegisterWorkload; subsequent messages are
+	// CommandResults acknowledging AgentCommands.
+	WorkloadChannel(grpc.BidiStreamingServer[WorkloadMessage, AgentCommand]) error
 	mustEmbedUnimplementedSnapshotAgentServiceServer()
 }
 
@@ -124,6 +152,9 @@ func (UnimplementedSnapshotAgentServiceServer) GetOperation(context.Context, *Ge
 }
 func (UnimplementedSnapshotAgentServiceServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Status not implemented")
+}
+func (UnimplementedSnapshotAgentServiceServer) WorkloadChannel(grpc.BidiStreamingServer[WorkloadMessage, AgentCommand]) error {
+	return status.Error(codes.Unimplemented, "method WorkloadChannel not implemented")
 }
 func (UnimplementedSnapshotAgentServiceServer) mustEmbedUnimplementedSnapshotAgentServiceServer() {}
 func (UnimplementedSnapshotAgentServiceServer) testEmbeddedByValue()                              {}
@@ -218,6 +249,13 @@ func _SnapshotAgentService_Status_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SnapshotAgentService_WorkloadChannel_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(SnapshotAgentServiceServer).WorkloadChannel(&grpc.GenericServerStream[WorkloadMessage, AgentCommand]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type SnapshotAgentService_WorkloadChannelServer = grpc.BidiStreamingServer[WorkloadMessage, AgentCommand]
+
 // SnapshotAgentService_ServiceDesc is the grpc.ServiceDesc for SnapshotAgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -242,6 +280,13 @@ var SnapshotAgentService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _SnapshotAgentService_Status_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "WorkloadChannel",
+			Handler:       _SnapshotAgentService_WorkloadChannel_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "snapshot_agent.proto",
 }

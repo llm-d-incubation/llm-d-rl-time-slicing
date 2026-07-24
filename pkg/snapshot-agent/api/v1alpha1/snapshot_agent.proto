@@ -17,6 +17,18 @@ service SnapshotAgentService {
 
   // Status returns the current state of jobs and accelerators on the node.
   rpc Status(StatusRequest) returns (StatusResponse);
+
+  // WorkloadChannel is a long-lived bidirectional stream through which an
+  // application-aware workload registers itself with the agent and receives
+  // snapshot/restore commands. Workloads that embed their engine in-process
+  // (no HTTP server) use this instead of AppEndpointConfig. The first message
+  // from the workload must be a RegisterWorkload; subsequent messages are
+  // CommandResults acknowledging AgentCommands.
+  //
+  // Registration is node-scoped: the workload registers with the agent on
+  // its own node, and Snapshot/Restore requests carrying an AppChannelConfig
+  // must be sent to that same agent.
+  rpc WorkloadChannel(stream WorkloadMessage) returns (stream AgentCommand);
 }
 
 enum Backend {
@@ -85,10 +97,89 @@ message AppEndpointConfig {
   repeated string tags = 4;
 }
 
+// AppChannelConfig suspends/resumes an application-aware workload through
+// its registered workload channel (see WorkloadChannel). The workload is
+// addressed by the request's job_id; callers need no endpoints and no
+// knowledge of which application is running.
+message AppChannelConfig {
+  // See SuspendMode. If unspecified, the workload's registered default mode
+  // is used (OFFLOAD if the workload did not declare one).
+  SuspendMode mode = 1;
+  // Region tags; see AppEndpointConfig.tags.
+  repeated string tags = 2;
+}
+
 message BackendConfig {
   oneof backend {
     CudaBackendConfig cuda = 1;
     AppEndpointConfig app_endpoint = 2;
+    AppChannelConfig app_channel = 3;
+  }
+}
+
+// WorkloadCapabilities is declared by a workload at registration and lets the
+// agent validate and resolve snapshot parameters without knowing the
+// application.
+message WorkloadCapabilities {
+  // Suspend modes the workload can execute. If empty, no validation is
+  // performed. A trainer that cannot reconstruct dropped state would
+  // advertise only SUSPEND_MODE_OFFLOAD.
+  repeated SuspendMode supported_modes = 1;
+  // Mode used when a snapshot request leaves the mode unspecified. If unset,
+  // SUSPEND_MODE_OFFLOAD is used.
+  SuspendMode default_mode = 2;
+  // Region tags the workload understands, e.g. "weights", "kv_cache".
+  repeated string tags = 3;
+}
+
+// RegisterWorkload is the first message a workload sends on a
+// WorkloadChannel stream. Re-registering a job_id replaces the previous
+// stream.
+message RegisterWorkload {
+  // job_id identifies the job this workload belongs to; Snapshot/Restore
+  // requests carrying an AppChannelConfig are routed to the stream registered
+  // under the same job_id.
+  string job_id = 1;
+  // group is an optional identifier for a set of related jobs.
+  string group = 2;
+  WorkloadCapabilities capabilities = 3;
+}
+
+// CommandResult acknowledges completion of an AgentCommand.
+message CommandResult {
+  string command_id = 1;
+  bool ok = 2;
+  // error is set when ok is false.
+  string error = 3;
+}
+
+message WorkloadMessage {
+  oneof message {
+    RegisterWorkload register = 1;
+    CommandResult result = 2;
+  }
+}
+
+// SnapshotCommand instructs the workload to suspend. The mode is fully
+// resolved by the agent (never SUSPEND_MODE_UNSPECIFIED on the wire).
+message SnapshotCommand {
+  SuspendMode mode = 1;
+  repeated string tags = 2;
+}
+
+// RestoreCommand instructs the workload to resume.
+message RestoreCommand {
+  repeated string tags = 1;
+}
+
+// AgentCommand is pushed by the agent to a registered workload. Each command
+// carries a unique command_id and is sent at most once; the workload replies
+// with a CommandResult bearing the same command_id.
+message AgentCommand {
+  string command_id = 1;
+  oneof command {
+    SnapshotCommand snapshot = 2;
+    RestoreCommand restore = 3;
   }
 }
 
