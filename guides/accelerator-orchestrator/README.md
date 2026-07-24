@@ -56,7 +56,7 @@ graph TD
 #### How it Works (End-to-End Flow)
 
 1.  **Acquire:** Job A reaches a work boundary (e.g., entering a training step, beginning rollout/sampling phase) and calls `acquire()`, blocking until granted.
-2.  **Wait:** If another job (Job B) holds the lock, Job A enters a FIFO queue and waits till it gets the lock.
+2.  **Wait:** If another job (Job B) holds the lock, Job A enters a FIFO queue and waits until it gets the lock.
 3.  **Evict (Snapshot):** When Job B calls `yield()`, the Orchestrator instructs the Snapshot Agent to save Job B's accelerator memory to host DRAM.
 4.  **Restore:** The Orchestrator instructs the Agent to restore Job A's saved state from host DRAM to accelerator memory.
 5.  **Resume:** The Orchestrator grants the lock, unblocking Job A to resume execution.
@@ -69,7 +69,7 @@ The Accelerator Orchestrator is deployed as a standard Kubernetes Deployment, ty
 
 ### Cluster Prerequisites
 To enable time-slicing, the cluster must be configured with:
-- **Kubernetes Version:** 1.32 or later (required for DRA).
+- **Kubernetes Version:** 1.34 or later (required for DRA v1).
 - **At least one GPU node with:**
   - **NVIDIA Driver:** 565 or later (required for DRA Driver).
   - **Labels & Taints:** `timeslice.io/enabled=true` and tainted with `timeslice.io/shared=true:NoSchedule` to isolate time-slicing workloads.
@@ -283,7 +283,7 @@ Use the `rlts` CLI to interact with and debug the Accelerator Orchestrator.
 #### Port-Forwarding to the Orchestrator
 Port-forward to the service (default port `50051`) if running locally:
 ```bash
-kubectl port-forward svc/acceleratororchestrator 50051:50051
+kubectl port-forward svc/timeslice-acceleratororchestrator 50051:50051 -n timeslice-system
 ```
 
 #### Common Commands
