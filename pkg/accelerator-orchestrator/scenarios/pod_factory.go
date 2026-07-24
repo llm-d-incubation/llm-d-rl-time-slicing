@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package acceleratororchestrator
+package scenarios
 
 import (
 	"sync"
@@ -57,6 +57,20 @@ func NewPodFactory() *PodFactory {
 							"while True:\n" +
 							"    time.sleep(1)\n",
 					},
+					ImagePullPolicy: corev1.PullIfNotPresent,
+				},
+			},
+		},
+	})
+	// "pause" runs no GPU work at all: for exercising the lock/scheduling
+	// protocol on clusters where the GPUs must stay untouched.
+	factory.Register("pause", &corev1.Pod{
+		Spec: corev1.PodSpec{
+			TerminationGracePeriodSeconds: &gracePeriodSec,
+			Containers: []corev1.Container{
+				{
+					Name:            "pause",
+					Image:           "registry.k8s.io/pause:3.10",
 					ImagePullPolicy: corev1.PullIfNotPresent,
 				},
 			},

@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Launcher for the snapshot-agent integration tests — the single entrypoint
-# (--phase both runs standalone + k8s).
+# Launcher for the integration tests — the single entrypoint for all of them
+# (--phase all runs standalone + k8s + orchestrator).
 #
 # Phases and their fixtures — each one a REAL install path:
 #   standalone    TestStandalone against the `make standalone` artifacts
 #                 (built in-cluster in the test-runner pod, run from a plain
 #                 Debian base — the chart has no standalone mode)
 #   k8s           TestK8s against the OFFICIAL snapshot-agent Helm chart
-#   both          both of the above
+#   orchestrator  TestOrchestrator (the shared rlts E2E scenarios) against
+#                 the OFFICIAL accelerator-orchestrator Helm chart
+#   both          standalone + k8s
+#   all           all of the above
 #
 # The test suite itself is written in Go (see *_test.go) and runs INSIDE the
-# cluster: this script installs the chart fixture, deploys the test-runner
+# cluster: this script installs the chart fixtures, deploys the test-runner
 # pod, copies the repo source into it, and executes `go test` there. The Go
 # harness deploys engine pods itself, one engine at a time, so a single free
 # GPU is enough.
@@ -18,27 +21,40 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 K="${KUBECTL:-kubectl}"
 HELM="${HELM:-helm}"
 
 AGENT_IMAGE=""
+ORCH_IMAGE=""
 PROJECT=""
 CLUSTER=""
 ZONE=""
 MODEL=""
-PHASE="both"
+PHASE="all"
 BUILD=false
 SKIP_CLEANUP=false
 NEED_STANDALONE=false
 NEED_SA_CHART=false
+NEED_ORCH_CHART=false
+# Group labels this run added to TEST_NODE (cleanup removes only these).
+ADDED_GROUP_LABELS=()
 # CHART_AGENT_PORT lets the chart-deployed agent bind a non-default port so
 # the suite can coexist with an unrelated agent on 9001 (hostNetwork).
 CHART_AGENT_PORT="${CHART_AGENT_PORT:-9001}"
+# The orchestrator phase points the chart at a port where no agent listens:
+# the shared scenarios run fake jobs with no GPU activity, and a real agent
+# would (correctly) report such jobs as idle-not-loaded, stalling the lock
+# handoff. With no agent reachable, job context stays unknown and the phase
+# exercises the full lock protocol — the same mode `rlts test orchestrator`
+# targets on orchestrator-only deployments. It also keeps the suite from
+# commandeering an unrelated agent on a shared node's default port.
+ORCH_AGENT_PORT="${ORCH_AGENT_PORT:-9003}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --agent-image)  AGENT_IMAGE="$2"; shift 2 ;;
+    --orch-image)   ORCH_IMAGE="$2"; shift 2 ;;
     --build)        BUILD=true; shift ;;
     --project)      PROJECT="$2"; shift 2 ;;
     --cluster)      CLUSTER="$2"; shift 2 ;;
@@ -51,14 +67,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 usage() {
-  echo "Usage: $0 [--agent-image IMAGE | --build --project PROJECT] [--cluster CLUSTER --zone ZONE] [--model MODEL] [--phase standalone|k8s|both]"
+  echo "Usage: $0 [--agent-image IMAGE] [--orch-image IMAGE] [--build --project PROJECT] [--cluster CLUSTER --zone ZONE] [--model MODEL] [--phase standalone|k8s|orchestrator|both|all]"
 }
 
 case "$PHASE" in
-  standalone) RUN_PATTERN='^TestStandalone$';         NEED_STANDALONE=true ;;
-  k8s)        RUN_PATTERN='^TestK8s$';                NEED_SA_CHART=true ;;
-  both)       RUN_PATTERN='^(TestStandalone|TestK8s)$'
-              NEED_STANDALONE=true; NEED_SA_CHART=true ;;
+  standalone)   RUN_PATTERN='^TestStandalone$';         NEED_STANDALONE=true ;;
+  k8s)          RUN_PATTERN='^TestK8s$';                NEED_SA_CHART=true ;;
+  orchestrator) RUN_PATTERN='^TestOrchestrator$';       NEED_ORCH_CHART=true ;;
+  both)         RUN_PATTERN='^(TestStandalone|TestK8s)$'
+                NEED_STANDALONE=true; NEED_SA_CHART=true ;;
+  all)          RUN_PATTERN='^(TestStandalone|TestK8s|TestOrchestrator)$'
+                NEED_STANDALONE=true; NEED_SA_CHART=true; NEED_ORCH_CHART=true ;;
   *) echo "Unknown phase: $PHASE"; usage; exit 1 ;;
 esac
 
@@ -81,9 +100,15 @@ if [[ "$NEED_SA_CHART" == "true" && -z "$AGENT_IMAGE" && "$BUILD" != "true" ]]; 
   usage
   exit 1
 fi
-if [[ "$NEED_SA_CHART" == "true" && -z "${TEST_NODE:-}" ]]; then
-  echo "Error: TEST_NODE must be set for the k8s phase: the chart is pinned to" \
-       "one node so the suite stays off other workloads on shared clusters"
+if [[ "$NEED_ORCH_CHART" == "true" && -z "$ORCH_IMAGE" && "$BUILD" != "true" ]]; then
+  echo "Error: --orch-image (or --build) is required for the orchestrator phase (the chart installs it)"
+  usage
+  exit 1
+fi
+if [[ ( "$NEED_SA_CHART" == "true" || "$NEED_ORCH_CHART" == "true" ) && -z "${TEST_NODE:-}" ]]; then
+  echo "Error: TEST_NODE must be set for the k8s and orchestrator phases: the" \
+       "fixtures pin to one node so the suite stays off other workloads on" \
+       "shared clusters"
   exit 1
 fi
 
@@ -96,6 +121,12 @@ cleanup() {
   $K delete -f "${SCRIPT_DIR}/runner.yaml" --force --grace-period=0 2>/dev/null || true
   if [[ "$NEED_SA_CHART" == "true" ]]; then
     $HELM uninstall sa-chart-test -n timeslice-system 2>/dev/null || true
+  fi
+  if [[ "$NEED_ORCH_CHART" == "true" ]]; then
+    $HELM uninstall orch-chart-test -n timeslice-system 2>/dev/null || true
+    for g in ${ADDED_GROUP_LABELS[@]+"${ADDED_GROUP_LABELS[@]}"}; do
+      $K label node "${TEST_NODE}" "group.timeslice.io/${g}-" 2>/dev/null || true
+    done
   fi
 }
 
@@ -143,10 +174,20 @@ if [[ "$BUILD" == "true" && "$NEED_SA_CHART" == "true" && -z "$AGENT_IMAGE" ]]; 
     --substitutions="_IMAGE=${AGENT_IMAGE},_DOCKERFILE=docker/snapshot-agent/Dockerfile" \
     "$REPO_ROOT"
 fi
+if [[ "$BUILD" == "true" && "$NEED_ORCH_CHART" == "true" && -z "$ORCH_IMAGE" ]]; then
+  ORCH_IMAGE="gcr.io/${PROJECT}/acceleratororchestrator:${BUILD_TAG}"
+  log "Building ${ORCH_IMAGE} from the working directory (Cloud Build)..."
+  gcloud builds submit --project "$PROJECT" --config="${REPO_ROOT}/cloudbuild-image.yaml" \
+    --substitutions="_IMAGE=${ORCH_IMAGE},_DOCKERFILE=docker/acceleratororchestrator/Dockerfile" \
+    "$REPO_ROOT"
+fi
 
-if [[ "$NEED_SA_CHART" == "true" ]]; then
+if [[ "$NEED_SA_CHART" == "true" || "$NEED_ORCH_CHART" == "true" ]]; then
   # The chart templates pin their namespace to timeslice-system.
   $K create namespace timeslice-system --dry-run=client -o yaml | $K apply -f -
+fi
+
+if [[ "$NEED_SA_CHART" == "true" ]]; then
   log "Installing the official snapshot-agent chart (node ${TEST_NODE}, port ${CHART_AGENT_PORT})..."
   $HELM upgrade --install sa-chart-test "${REPO_ROOT}/deploy/snapshot-agent" \
     -n timeslice-system \
@@ -159,6 +200,30 @@ if [[ "$NEED_SA_CHART" == "true" ]]; then
   SA_SELECTOR="app.kubernetes.io/name=snapshot-agent,app.kubernetes.io/instance=sa-chart-test"
   log "Waiting for the chart's DaemonSet pod to become Ready on ${TEST_NODE}..."
   wait_chart_pods_ready "$SA_SELECTOR" "$TEST_NODE" || chart_failure "snapshot-agent" "$SA_SELECTOR"
+fi
+
+if [[ "$NEED_ORCH_CHART" == "true" ]]; then
+  log "Installing the official accelerator-orchestrator chart..."
+  $HELM upgrade --install orch-chart-test "${REPO_ROOT}/deploy/acceleratororchestrator" \
+    -n timeslice-system \
+    --set fullnameOverride=orch-chart-test \
+    --set image.repository="${ORCH_IMAGE%:*}" \
+    --set image.tag="${ORCH_IMAGE##*:}" \
+    --set image.pullPolicy=IfNotPresent \
+    --set snapshotAgentPort="${ORCH_AGENT_PORT}"
+  # The orchestrator derives time-slice groups from node labels; the shared
+  # scenarios drive the fixed samplers/trainers groups. Remember which labels
+  # this run added so cleanup leaves pre-existing ones untouched.
+  for g in samplers trainers; do
+    cur=$($K get node "${TEST_NODE}" -o jsonpath="{.metadata.labels.group\.timeslice\.io/${g}}")
+    if [[ "$cur" != "true" ]]; then
+      $K label node "${TEST_NODE}" "group.timeslice.io/${g}=true"
+      ADDED_GROUP_LABELS+=("$g")
+    fi
+  done
+  ORCH_SELECTOR="app.kubernetes.io/name=acceleratororchestrator,app.kubernetes.io/instance=orch-chart-test"
+  log "Waiting for the orchestrator Deployment to become Ready..."
+  wait_chart_pods_ready "$ORCH_SELECTOR" || chart_failure "accelerator-orchestrator" "$ORCH_SELECTOR"
 fi
 
 log "Deploying test runner..."
@@ -180,11 +245,14 @@ fi
 log "Running Go test suite in-cluster (this deploys agent + engine pods)..."
 SA_CHART_DEPLOYED=""
 [[ "$NEED_SA_CHART" == "true" ]] && SA_CHART_DEPLOYED=1
+ORCH_CHART_DEPLOYED=""
+[[ "$NEED_ORCH_CHART" == "true" ]] && ORCH_CHART_DEPLOYED=1
 EXIT=0
 $K exec test-runner -- env "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
-  "SA_CHART_DEPLOYED=${SA_CHART_DEPLOYED}" \
+  "SA_CHART_DEPLOYED=${SA_CHART_DEPLOYED}" "ORCH_CHART_DEPLOYED=${ORCH_CHART_DEPLOYED}" \
+  "ORCH_ADDR=orch-chart-test.timeslice-system.svc.cluster.local:50051" \
   "CHART_AGENT_PORT=${CHART_AGENT_PORT}" \
-  sh -c "cd /workspace && go test -tags=integration -count=1 -v -timeout 40m -run '${RUN_PATTERN}' ./tests/integration/snapshot-agent/" \
+  sh -c "cd /workspace && go test -tags=integration -count=1 -v -timeout 40m -run '${RUN_PATTERN}' ./tests/integration/..." \
   || EXIT=$?
 
 cleanup
