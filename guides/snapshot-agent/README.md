@@ -19,7 +19,8 @@ By default, the agent starts in standalone mode on port `9001`:
 # Run the binary
 ./snapshot-agent-linux
 
-# Or explicitly set the port and mode:
+# Or explicitly set the port and mode (also settable via the AGENT_PORT and
+# DEPLOYMENT_MODE environment variables):
 ./snapshot-agent-linux -deployment-mode=standalone -port=9001
 ```
 
