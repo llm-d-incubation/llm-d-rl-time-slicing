@@ -12,15 +12,46 @@ It can be deployed in two modes:
 
 In standalone mode, you run the `snapshot-agent` binary directly on your host machine (e.g., a GCE VM). Workloads are targeted by specifying their Process IDs (PIDs) directly in the client request.
 
+### Installing
+
+Two ways to get the agent onto a GPU host:
+
+**Build from source** (requires Go and the NVIDIA driver; x86_64 Linux):
+```bash
+git clone https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git
+cd llm-d-rl-time-slicing
+make build          # produces bin/snapshot-agent (CGO — links against NVML)
+```
+
+The CUDA backend execs the `cuda-checkpoint` binary, which must be on `PATH`:
+```bash
+sudo wget -qO /usr/local/bin/cuda-checkpoint \
+  https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/00d5cce84c628088d6caa203fc4af40c1538b6f7/bin/x86_64_Linux/cuda-checkpoint
+sudo chmod +x /usr/local/bin/cuda-checkpoint
+```
+
+**Or run the published container image** (self-contained: agent + `cuda-checkpoint`):
+```bash
+docker run -d --name snapshot-agent \
+  --privileged --pid=host --gpus all \
+  -p 9001:9001 \
+  ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/snapshot-agent:latest
+```
+
+`--pid=host` is required: standalone mode targets host PIDs, so the agent must
+share the host PID namespace to checkpoint them.
+
 ### Starting the Agent
 
-By default, the agent starts in standalone mode on port `9001`:
+By default, the agent starts in standalone mode on port `9001`. Run it as root
+(or as the same user as the workloads) — `cuda-checkpoint` toggles the CUDA
+state of other processes:
 ```bash
-# Run the binary
-./snapshot-agent-linux
+sudo ./bin/snapshot-agent
 
-# Or explicitly set the port and mode:
-./snapshot-agent-linux -deployment-mode=standalone -port=9001
+# Or explicitly set the port and mode (also settable via the AGENT_PORT and
+# DEPLOYMENT_MODE environment variables):
+sudo ./bin/snapshot-agent -deployment-mode=standalone -port=9001
 ```
 
 ### Triggering a Snapshot (with PIDs)
