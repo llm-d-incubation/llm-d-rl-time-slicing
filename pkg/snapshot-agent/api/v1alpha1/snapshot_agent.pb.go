@@ -696,9 +696,10 @@ func (x *WorkloadCapabilities) GetTags() []string {
 // stream.
 type RegisterWorkload struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// job_id identifies the job this workload belongs to; Snapshot/Restore
-	// requests carrying an AppChannelConfig are routed to the stream registered
-	// under the same job_id.
+	// job_id identifies the job this workload belongs to and must be unique
+	// per agent (jobs are node-scoped; group does not namespace job IDs).
+	// Snapshot/Restore requests carrying an AppChannelConfig are routed to the
+	// stream registered under the same job_id.
 	JobId string `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	// group is an optional identifier for a set of related jobs.
 	Group         string                `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
@@ -1096,8 +1097,8 @@ func (*AgentCommand_Restore) isAgentCommand_Command() {}
 
 type SnapshotRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// job_id is the unique identifier for the job. If group is specified,
-	// job_id should be unique within that group.
+	// job_id is the unique identifier for the job, unique per agent
+	// (group does not namespace job IDs).
 	JobId string `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	// group is an optional identifier for a set of related jobs.
 	Group string `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`
@@ -1218,8 +1219,8 @@ func (x *SnapshotResponse) GetOperationId() string {
 
 type RestoreRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// job_id is the unique identifier for the job. If group is specified,
-	// job_id should be unique within that group.
+	// job_id is the unique identifier for the job, unique per agent
+	// (group does not namespace job IDs).
 	JobId string `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	// group is an optional identifier for a set of related jobs.
 	Group string `protobuf:"bytes,2,opt,name=group,proto3" json:"group,omitempty"`

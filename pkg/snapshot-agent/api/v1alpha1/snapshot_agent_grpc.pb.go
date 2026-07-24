@@ -46,6 +46,10 @@ type SnapshotAgentServiceClient interface {
 	// (no HTTP server) use this instead of AppEndpointConfig. The first message
 	// from the workload must be a RegisterWorkload; subsequent messages are
 	// CommandResults acknowledging AgentCommands.
+	//
+	// Registration is node-scoped: the workload registers with the agent on
+	// its own node, and Snapshot/Restore requests carrying an AppChannelConfig
+	// must be sent to that same agent.
 	WorkloadChannel(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WorkloadMessage, AgentCommand], error)
 }
 
@@ -130,6 +134,10 @@ type SnapshotAgentServiceServer interface {
 	// (no HTTP server) use this instead of AppEndpointConfig. The first message
 	// from the workload must be a RegisterWorkload; subsequent messages are
 	// CommandResults acknowledging AgentCommands.
+	//
+	// Registration is node-scoped: the workload registers with the agent on
+	// its own node, and Snapshot/Restore requests carrying an AppChannelConfig
+	// must be sent to that same agent.
 	WorkloadChannel(grpc.BidiStreamingServer[WorkloadMessage, AgentCommand]) error
 	mustEmbedUnimplementedSnapshotAgentServiceServer()
 }

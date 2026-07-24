@@ -136,9 +136,10 @@ message WorkloadCapabilities {
 // WorkloadChannel stream. Re-registering a job_id replaces the previous
 // stream.
 message RegisterWorkload {
-  // job_id identifies the job this workload belongs to; Snapshot/Restore
-  // requests carrying an AppChannelConfig are routed to the stream registered
-  // under the same job_id.
+  // job_id identifies the job this workload belongs to and must be unique
+  // per agent (jobs are node-scoped; group does not namespace job IDs).
+  // Snapshot/Restore requests carrying an AppChannelConfig are routed to the
+  // stream registered under the same job_id.
   string job_id = 1;
   // group is an optional identifier for a set of related jobs.
   string group = 2;
@@ -184,8 +185,8 @@ message AgentCommand {
 }
 
 message SnapshotRequest {
-  // job_id is the unique identifier for the job. If group is specified,
-  // job_id should be unique within that group.
+  // job_id is the unique identifier for the job, unique per agent
+  // (group does not namespace job IDs).
   string job_id = 1;
   // group is an optional identifier for a set of related jobs.
   string group = 2;
@@ -202,8 +203,8 @@ message SnapshotResponse {
 }
 
 message RestoreRequest {
-  // job_id is the unique identifier for the job. If group is specified,
-  // job_id should be unique within that group.
+  // job_id is the unique identifier for the job, unique per agent
+  // (group does not namespace job IDs).
   string job_id = 1;
   // group is an optional identifier for a set of related jobs.
   string group = 2;
