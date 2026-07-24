@@ -2,13 +2,24 @@
 
 package integration
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
-// TestK8s exercises all backends in k8s mode: the watcher registers jobs from
-// pod labels, CUDA PIDs are discovered from pods (no explicit target), and
-// inference engine configs pass through to the backend.
+// TestK8s exercises all backends in k8s mode against the agent deployed by
+// the OFFICIAL snapshot-agent Helm chart — the deployment path a user takes.
+// run.sh installs the chart for this phase, pinning its DaemonSet to
+// TEST_NODE, so every backend runs through the chart's wiring (privileged,
+// hostPID, hostNetwork, driver mounts, bundled cuda-checkpoint): the watcher
+// registers jobs from pod labels, CUDA PIDs are discovered from pods (no
+// explicit target), and inference engine configs pass through to the backend.
 func TestK8s(t *testing.T) {
-	h := NewHarness(t, "k8s")
+	if os.Getenv("SA_CHART_DEPLOYED") == "" {
+		t.Skip("requires the chart-deployed snapshot-agent (run.sh --phase k8s)")
+	}
+
+	h := NewChartHarness(t)
 
 	h.WithEngine(t, VLLM, func(t *testing.T, e *Engine) {
 		// All k8s-mode job IDs match the pod's timeslice.io/job-id label: the
