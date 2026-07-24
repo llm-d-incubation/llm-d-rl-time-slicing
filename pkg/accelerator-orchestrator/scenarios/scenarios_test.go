@@ -1,5 +1,4 @@
-//nolint:testpackage // Integration E2E tests require package-level access to unexported helper trackQueue
-package acceleratororchestrator
+package scenarios_test
 
 import (
 	"context"
@@ -11,6 +10,7 @@ import (
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/api/v1alpha1"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/infrastructure"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/scenarios"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	google_grpc "google.golang.org/grpc"
@@ -26,8 +26,9 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-// TestE2E_SingleRLJob tests a single RL job running to completion using FakeRLJob.
-func TestE2E_SingleRLJob(t *testing.T) {
+// TestSingleRLJobScenario runs the single RL job scenario in-process against
+// an orchestrator wired to fakes (clientset, scheduler, snapshot agents).
+func TestSingleRLJobScenario(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -152,13 +153,14 @@ func TestE2E_SingleRLJob(t *testing.T) {
 	t.Log("Store initialized with samplers and trainers groups")
 
 	// Run Scenario
-	if err := RunSingleRLJobScenario(ctx, clientset, client, t, "", ""); err != nil {
+	if err := scenarios.RunSingleRLJobScenario(ctx, clientset, client, t, "", ""); err != nil {
 		t.Fatalf("Scenario failed: %v", err)
 	}
 }
 
-// TestE2E_QueuedRLJobs tests multiple RL jobs contending for locks and queuing.
-func TestE2E_QueuedRLJobs(t *testing.T) {
+// TestQueuedRLJobsScenario runs the contention scenario in-process against
+// an orchestrator wired to fakes: multiple RL jobs queue for locks.
+func TestQueuedRLJobsScenario(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -283,7 +285,7 @@ func TestE2E_QueuedRLJobs(t *testing.T) {
 	t.Log("Store initialized with samplers and trainers groups")
 
 	// Run Scenario
-	if err := RunQueuedRLJobsScenario(ctx, clientset, client, t, "", ""); err != nil {
+	if err := scenarios.RunQueuedRLJobsScenario(ctx, clientset, client, t, "", ""); err != nil {
 		t.Fatalf("Scenario failed: %v", err)
 	}
 }
