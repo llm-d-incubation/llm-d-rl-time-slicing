@@ -18,7 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 K="${KUBECTL:-kubectl}"
 HELM="${HELM:-helm}"
 
@@ -184,7 +184,7 @@ EXIT=0
 $K exec test-runner -- env "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
   "SA_CHART_DEPLOYED=${SA_CHART_DEPLOYED}" \
   "CHART_AGENT_PORT=${CHART_AGENT_PORT}" \
-  sh -c "cd /workspace && go test -tags=integration -count=1 -v -timeout 40m -run '${RUN_PATTERN}' ./tests/integration/snapshot-agent/" \
+  sh -c "cd /workspace && go test -tags=integration -count=1 -v -timeout 40m -run '${RUN_PATTERN}' ./tests/integration/..." \
   || EXIT=$?
 
 cleanup

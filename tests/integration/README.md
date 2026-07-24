@@ -1,4 +1,4 @@
-# Snapshot Agent Integration Tests
+# Integration Tests
 
 End-to-end tests for snapshot-agent backends on real GPU hardware, in k8s and standalone modes, exercising the Helm chart and Makefile deployment paths respectively.
 
@@ -8,9 +8,8 @@ All snapshot/restore calls go through the **Python client** (`timeslice.snapshot
 
 - `run.sh` — launcher (build image, install chart fixture, deploy runner, copy source, build `make standalone`, install the Python client, `go test`, cleanup)
 - `runner.yaml` — test-runner pod + RBAC
-- `harness.go` / `engines.go` — harness: pod lifecycle, exec/HTTP helpers, pod specs
-- `agentctl.py` — thin CLI over the Python client; builds `BackendConfig` protos in Python from primitive flags
-- `standalone_test.go` / `k8s_test.go` — the test cases
+- `harness/` — shared framework: in-cluster client, node selection, pod lifecycle, exec/HTTP/VRAM helpers
+- `snapshot-agent/` — the agent suite: `standalone_test.go` / `k8s_test.go`, plus the agent specifics (`harness.go` agent deployment, `engines.go` engine specs, `agentctl.py` — a thin CLI over the Python client that builds `BackendConfig` protos from primitive flags)
 
 ## Adding a test
 
@@ -28,7 +27,7 @@ h.WithEngine(t, VLLM, func(t *testing.T, e *Engine) {
 })
 ```
 
-A new engine is an `EngineSpec` in `engines.go`.
+A new engine is an `EngineSpec` in `snapshot-agent/engines.go`.
 
 ## Prerequisites
 
@@ -49,7 +48,7 @@ Everything runs from your working directory — uncommitted changes included —
 so no commit or merge is needed at any layer:
 
 ```bash
-TEST_NODE=<gpu-node> ./tests/integration/snapshot-agent/run.sh \
+TEST_NODE=<gpu-node> ./tests/integration/run.sh \
   --build --project <gcp-project>
 ```
 
@@ -66,7 +65,7 @@ Alternative (pre-built image — any registry the cluster can pull from):
 gcloud builds submit --config=cloudbuild-image.yaml \
   --substitutions=_IMAGE=gcr.io/<project>/snapshot-agent:dev .
 
-TEST_NODE=<gpu-node> ./tests/integration/snapshot-agent/run.sh \
+TEST_NODE=<gpu-node> ./tests/integration/run.sh \
   --agent-image gcr.io/<project>/snapshot-agent:dev
 ```
 
