@@ -19,6 +19,7 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"strconv"
 
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
@@ -40,6 +41,18 @@ func main() {
 		depMode = envDepMode
 	}
 
+	// AGENT_PORT overrides the flag, mirroring DEPLOYMENT_MODE: the Helm
+	// chart configures the agent through env vars, not flags.
+	listenPort := *port
+	if envPort := os.Getenv("AGENT_PORT"); envPort != "" {
+		p, err := strconv.Atoi(envPort)
+		if err != nil {
+			slog.Error("Invalid AGENT_PORT", "value", envPort, "error", err)
+			os.Exit(1)
+		}
+		listenPort = p
+	}
+
 	if depMode != "standalone" && depMode != "k8s" {
 		slog.Error("Invalid deployment mode, must be 'standalone' or 'k8s'", "mode", depMode)
 		os.Exit(1)
@@ -52,8 +65,8 @@ func main() {
 		backends.BackendAppEndpoint: backends.NewAppEndpointBackend(),
 	}
 
-	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", *port, "deploymentMode", depMode)
-	if err := server.StartServer(ctx, *port, registeredBackends, backends.BackendCuda, depMode); err != nil {
+	slog.InfoContext(ctx, "Starting Snapshot Agent", "port", listenPort, "deploymentMode", depMode)
+	if err := server.StartServer(ctx, listenPort, registeredBackends, backends.BackendCuda, depMode); err != nil {
 		slog.ErrorContext(ctx, "Failed to start server", "error", err)
 		os.Exit(1)
 	}
