@@ -37,7 +37,8 @@ By default, the agent starts in standalone mode on port `9001`:
 ```bash
 sudo env PATH="$PWD/bin:$PATH" ./bin/snapshot-agent
 
-# Or explicitly set the port and mode:
+# Or explicitly set the port and mode (also settable via the AGENT_PORT and
+# DEPLOYMENT_MODE environment variables):
 sudo env PATH="$PWD/bin:$PATH" ./bin/snapshot-agent -deployment-mode=standalone -port=9001
 ```
 
