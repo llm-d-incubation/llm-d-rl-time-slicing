@@ -76,5 +76,4 @@ For step-by-step instructions, installation walkthroughs, and API references, ex
 
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines, and
-[DEVELOPMENT.md](./DEVELOPMENT.md) for building, testing, and working with the codebase.
+Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
