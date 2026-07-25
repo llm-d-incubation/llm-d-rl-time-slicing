@@ -20,6 +20,18 @@
 
 For the full design rationale and preliminary benchmark results, see the [Platform-Native Time-Slicing proposal](https://github.com/llm-d/llm-d/blob/main/docs/proposals/rl-time-slicing-platform.md).
 
+## See Time-Slicing in Action
+
+![Time-slicing replay: two veRL jobs sharing a 2xH100 node](docs/diagrams/verl-timeslice-demo.gif)
+
+A replay of two independent veRL GRPO jobs cooperatively sharing one 2&times;H100 node, reconstructed
+entirely from recorded run telemetry: GPU duty cycle rises from **56% to 87%**, two jobs complete in
+**189 minutes** instead of 274 back-to-back (**1.45&times; throughput, ~31% fewer GPU-hours per job**), with
+reward curves matching the dedicated-GPU baseline step for step.
+
+&#9654; **[Open the interactive replay](docs/diagrams/timeslice-replay.html)** — play the run, inspect every
+lock handoff and snapshot/restore, and switch between recorded runs as more are added.
+
 ## Architecture
 
 ![Architecture](https://github.com/llm-d-incubation/llm-d-rl-time-slicing/blob/main/docs/diagrams/time-slicing-architecture-diagram.png?raw=true)

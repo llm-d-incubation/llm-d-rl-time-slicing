@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>See Time-Slicing in Action</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb; --page: #f9f9f7;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --job-a: #2a78d6; --job-b: #eb6834; --both: #1baf7a; --idle: #c3c2b7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19; --page: #0d0d0d;
+      --text-primary: #ffffff; --text-secondary: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+      --job-a: #3987e5; --job-b: #d95926; --both: #199e70; --idle: #383835;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body.viz-root { background: var(--page); color: var(--text-primary);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 20px; }
+  .wrap { max-width: 1320px; margin: 0 auto; }
+  header { margin-bottom: 10px; }
+  h1 { font-size: 21px; font-weight: 650; }
+  .sub { color: var(--text-secondary); font-size: 13px; margin-top: 3px; }
+  .runbar { display: flex; align-items: center; gap: 12px; margin: 12px 0 4px; flex-wrap: wrap; }
+  .runbar label { color: var(--text-secondary); font-size: 13px; }
+  .meta { color: var(--text-secondary); font-size: 13px; }
+  .meta b { color: var(--text-primary); font-weight: 600; }
+  .meta .dot { color: var(--muted); margin: 0 6px; }
+  .controls { display: flex; align-items: center; gap: 10px; margin: 10px 0 12px; flex-wrap: wrap; }
+  button.play { width: 92px; padding: 7px 0; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface-1); color: var(--text-primary); font: inherit; font-weight: 600; cursor: pointer; }
+  button.play:hover { border-color: var(--muted); }
+  select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface-1); color: var(--text-primary); font: inherit; }
+  .clock { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .legend { display: flex; gap: 16px; margin-left: auto; align-items: center; font-size: 13px; flex-wrap: wrap; }
+  .key { display: inline-block; width: 14px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr 280px; gap: 14px; align-items: start; }
+  .cols.pools { grid-template-columns: 1fr 280px; }
+  .colhead { font-size: 14px; font-weight: 650; margin-bottom: 8px; }
+  .colhead .tag { font-weight: 400; color: var(--text-secondary); }
+  .panelcard, .side { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .panelcard { margin-bottom: 12px; }
+  .panelcard h2 { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
+  canvas { display: block; width: 100%; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 2px; }
+  .tiles.two { grid-template-columns: repeat(2, 1fr); }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; min-height: 74px; display: flex; flex-direction: column; justify-content: center; }
+  .tile .lbl { font-size: 11.5px; color: var(--muted); }
+  .tile .val { font-size: 20px; font-weight: 650; }
+  .side h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
+  .side .hint { font-size: 11.5px; color: var(--muted); margin-bottom: 8px; }
+  .feed { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+  .feed li { padding: 6px 10px; border-left: 3px solid var(--baseline);
+    background: color-mix(in srgb, var(--surface-1) 88%, var(--page));
+    border-radius: 0 8px 8px 0; font-size: 12.5px; opacity: 0; transform: translateY(-4px); transition: opacity .25s, transform .25s; }
+  .feed li.show { opacity: 1; transform: none; }
+  .feed li .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .feed li.jobA { border-left-color: var(--job-a); }
+  .feed li.jobB { border-left-color: var(--job-b); }
+  .feed li.pending { font-style: italic; }
+  .bottomrow { display: flex; gap: 14px; align-items: stretch; flex-wrap: wrap; margin-top: 20px; }
+  #summary { display: none; flex: 1; min-width: 380px; }
+  #summary .lbl { font-size: 11.5px; color: var(--muted); }
+  #summary .big { font-size: 32px; font-weight: 650; margin: 2px 0 8px; }
+  #summary p.l1 { color: var(--text-primary); font-weight: 600; font-size: 13.5px; }
+  #summary p { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+  details.tbl { margin-top: 14px; color: var(--text-secondary); font-size: 13px; }
+  details.tbl table { border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  details.tbl th, details.tbl td { text-align: left; padding: 3px 12px 3px 0; border-bottom: 1px solid var(--grid); }
+  .foot { margin-top: 14px; color: var(--muted); font-size: 12px; max-width: 110ch; }
+  .tip { position: fixed; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 9px; font-size: 12px; display: none; box-shadow: 0 2px 10px rgba(0,0,0,.12); z-index: 11; }
+  #convsec { flex: 0 1 720px; min-width: 420px; }
+  #convsec h2 { font-size: 14px; font-weight: 650; margin-bottom: 3px; }
+  #convsec .hint { color: var(--text-secondary); font-size: 12.5px; margin-bottom: 8px; }
+  #convsec .legend2 { display: flex; gap: 14px; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  @media (max-width: 1000px) { .cols, .cols.pools { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body class="viz-root">
+<div class="wrap">
+  <header>
+    <h1>See Time-Slicing in Action</h1>
+    <div class="sub">Replays of real recorded runs — every curve, lock handoff, and snapshot/restore duration
+      comes from actual run telemetry.</div>
+  </header>
+
+  <div class="runbar">
+    <label for="runsel">Run</label>
+    <select id="runsel"></select>
+    <span class="meta" id="runmeta"></span>
+  </div>
+
+  <div class="controls" id="controls">
+    <button class="play" id="btn">&#9654; Play</button>
+    <label class="sub">Speed <select id="speed"></select></label>
+    <span class="clock" id="clock"></span>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="cols" id="cols"></div>
+
+  <div class="bottomrow">
+    <div id="convsec"></div>
+    <div class="panelcard" id="summary" style="margin-bottom:12px;">
+      <h2 style="font-size:14px; color:var(--text-primary); margin-bottom:2px;">Result</h2>
+      <div class="lbl" id="sum_lbl"></div>
+      <div class="big" id="sum_big"></div>
+      <p class="l1" id="sum_l1"></p>
+      <p id="sum_l2"></p>
+      <p id="sum_l3"></p>
+      <button class="play" id="replay" style="margin-top:12px;">&#8635; Replay</button>
+    </div>
+  </div>
+
+  <details class="tbl"><summary>All time-slice events (table view)</summary><div id="tblwrap"></div></details>
+  <p class="foot" id="foot"></p>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = {"runs":[{"mode":"race","label":"veRL \u00b7 sync disaggregated \u00b7 2 RL jobs vs baseline","meta":{"framework":"veRL","mode":"sync disaggregated","algo":"GRPO","model":"Qwen2.5-0.5B-Instruct (GSM8K)","hardware":"2\u00d7H100 80GB"},"pool_map":{"0":"sampler","1":"trainer"},"baseline":{"duration_s":8222,"duty_gpus":{"0":[[10.799999999999955,0.0],[70.79999999999995,0.0],[130.79999999999995,0.0],[190.79999999999995,0.0],[250.79999999999995,35.7],[310.79999999999995,53.9],[370.79999999999995,23.7],[430.79999999999995,69.7],[490.79999999999995,69.0],[550.8,69.5],[610.8,26.4],[670.8,0.0],[730.8,0.0],[790.8,0.0],[850.8,0.0],[910.8,0.0],[970.8,0.0],[1030.8,33.9],[1090.8,69.9],[1150.8,70.7],[1210.8,71.4],[1270.8,69.5],[1330.8,69.6],[1390.8,15.8],[1450.8,0.0],[1510.8,0.0],[1570.8,0.0],[1630.8,0.0],[1690.8,0.0],[1750.8,0.0],[1810.8,35.9],[1870.8,73.8],[1930.8,73.1],[1990.8,71.2],[2050.8,70.6],[2110.8,72.0],[2170.8,72.6],[2230.8,71.3],[2290.8,0.0],[2350.8,0.0],[2410.8,0.0],[2470.8,0.0],[2530.8,0.0],[2590.8,0.0],[2650.8,0.0],[2710.8,51.8],[2770.8,68.8],[2830.8,71.6],[2890.8,71.6],[2950.8,72.2],[3010.8,70.3],[3070.8,25.5],[3130.8,0.0],[3190.8,0.0],[3250.8,0.0],[3310.8,0.0],[3370.8,0.0],[3430.8,0.0],[3490.8,26.6],[3550.8,69.6],[3610.8,72.6],[3670.8,69.5],[3730.8,69.8],[3790.8,69.3],[3850.8,44.9],[3910.8,0.0],[3970.8,0.0],[4030.8,0.0],[4090.8,0.0],[4150.8,0.0],[4210.8,0.0],[4270.8,0.0],[4330.8,72.3],[4390.8,70.0],[4450.8,71.3],[4510.8,70.7],[4570.8,68.9],[4630.8,57.4],[4690.8,0.0],[4750.8,0.0],[4810.8,0.0],[4870.8,0.0],[4930.8,0.0],[4990.8,0.0],[5050.8,0.0],[5110.8,59.8],[5170.8,71.9],[5230.8,69.2],[5290.8,69.4],[5350.8,69.7],[5410.8,69.7],[5470.8,0.0],[5530.8,0.0],[5590.8,0.0],[5650.8,0.0],[5710.8,0.0],[5770.8,0.0],[5830.8,0.0],[5890.8,49.5],[5950.8,70.5],[6010.8,69.9],[6070.8,70.1],[6130.8,70.3],[6190.8,67.2],[6250.8,0.0],[6310.8,0.0],[6370.8,0.0],[6430.8,0.0],[6490.8,0.0],[6550.8,0.0],[6610.8,0.0],[6670.8,59.3],[6730.8,68.9],[6790.8,72.6],[6850.8,70.8],[6910.8,70.9],[6970.8,69.2],[7030.8,0.0],[7090.8,0.0],[7150.8,0.0],[7210.8,0.0],[7270.8,0.0],[7330.8,0.0],[7390.8,0.0],[7450.8,53.1],[7510.8,69.0],[7570.8,70.9],[7630.8,68.8],[7690.8,69.9],[7750.8,63.4],[7810.8,0.0],[7870.8,0.0],[7930.8,0.0],[7990.8,0.0],[8050.8,0.0],[8110.8,0.0],[8170.8,0.0],[8230.8,0.0]],"1":[[10.799999999999955,64.3],[70.79999999999995,0.0],[130.79999999999995,0.0],[190.79999999999995,0.0],[250.79999999999995,0.0],[310.79999999999995,0.0],[370.79999999999995,0.0],[430.79999999999995,0.0],[490.79999999999995,0.0],[550.8,0.0],[610.8,8.6],[670.8,22.9],[730.8,23.9],[790.8,21.2],[850.8,24.2],[910.8,24.9],[970.8,22.8],[1030.8,7.7],[1090.8,0.0],[1150.8,0.0],[1210.8,0.0],[1270.8,0.0],[1330.8,0.0],[1390.8,12.4],[1450.8,25.2],[1510.8,26.2],[1570.8,25.0],[1630.8,25.2],[1690.8,23.8],[1750.8,23.3],[1810.8,10.7],[1870.8,0.0],[1930.8,0.0],[1990.8,0.0],[2050.8,0.0],[2110.8,0.0],[2170.8,0.0],[2230.8,0.0],[2290.8,23.4],[2350.8,26.4],[2410.8,26.7],[2470.8,23.6],[2530.8,27.1],[2590.8,26.2],[2650.8,27.9],[2710.8,7.5],[2770.8,0.0],[2830.8,0.0],[2890.8,0.0],[2950.8,0.0],[3010.8,0.0],[3070.8,13.4],[3130.8,25.3],[3190.8,26.6],[3250.8,22.2],[3310.8,25.3],[3370.8,25.0],[3430.8,25.3],[3490.8,14.2],[3550.8,0.0],[3610.8,0.0],[3670.8,0.0],[3730.8,0.0],[3790.8,0.0],[3850.8,2.6],[3910.8,24.8],[3970.8,25.7],[4030.8,23.8],[4090.8,23.5],[4150.8,25.2],[4210.8,23.5],[4270.8,24.4],[4330.8,0.0],[4390.8,0.0],[4450.8,0.0],[4510.8,0.0],[4570.8,0.0],[4630.8,0.0],[4690.8,23.5],[4750.8,26.4],[4810.8,24.5],[4870.8,23.2],[4930.8,22.6],[4990.8,27.5],[5050.8,23.1],[5110.8,6.2],[5170.8,0.0],[5230.8,0.0],[5290.8,0.0],[5350.8,0.0],[5410.8,0.0],[5470.8,21.1],[5530.8,23.4],[5590.8,25.9],[5650.8,25.0],[5710.8,25.6],[5770.8,23.8],[5830.8,24.7],[5890.8,1.4],[5950.8,0.0],[6010.8,0.0],[6070.8,0.0],[6130.8,0.0],[6190.8,0.0],[6250.8,19.0],[6310.8,23.7],[6370.8,24.8],[6430.8,22.5],[6490.8,24.5],[6550.8,22.9],[6610.8,23.6],[6670.8,6.7],[6730.8,0.0],[6790.8,0.0],[6850.8,0.0],[6910.8,0.0],[6970.8,0.0],[7030.8,18.0],[7090.8,22.6],[7150.8,24.6],[7210.8,24.4],[7270.8,22.8],[7330.8,27.5],[7390.8,26.3],[7450.8,8.9],[7510.8,0.0],[7570.8,0.0],[7630.8,0.0],[7690.8,0.0],[7750.8,0.0],[7810.8,22.2],[7870.8,23.9],[7930.8,25.4],[7990.8,22.9],[8050.8,23.3],[8110.8,24.8],[8170.8,24.0],[8230.8,0.0]]},"windows":{},"events":[]},"timeslice":{"duration_s":11330,"duty_gpus":{"0":[[12.299999999999955,0.0],[72.29999999999995,1.5],[132.29999999999995,0.0],[192.29999999999995,0.0],[252.29999999999995,0.0],[312.29999999999995,43.0],[372.29999999999995,45.5],[432.29999999999995,44.8],[492.29999999999995,71.2],[552.3,70.0],[612.3,68.8],[672.3,13.7],[732.3,0.0],[792.3,0.0],[852.3,0.0],[912.3,0.0],[972.3,0.0],[1032.3,0.0],[1092.3,0.0],[1152.3,0.0],[1212.3,0.0],[1272.3,0.0],[1332.3,0.0],[1392.3,0.0],[1452.3,0.0],[1512.3,0.0],[1572.3,0.8],[1632.3,0.0],[1692.3,0.0],[1752.3,0.0],[1812.3,0.0],[1872.3,0.0],[1932.3,63.4],[1992.3,68.9],[2052.3,69.7],[2112.3,70.4],[2172.3,70.7],[2232.3,24.7],[2292.3,65.4],[2352.3,70.7],[2412.3,68.1],[2472.3,69.8],[2532.3,67.7],[2592.3,65.3],[2652.3,5.6],[2712.3,42.4],[2772.3,70.1],[2832.3,69.1],[2892.3,68.9],[2952.3,69.3],[3012.3,69.3],[3072.3,22.9],[3132.3,2.7],[3192.3,55.3],[3252.3,71.5],[3312.3,70.3],[3372.3,70.6],[3432.3,70.8],[3492.3,70.4],[3552.3,68.9],[3612.3,71.3],[3672.3,16.2],[3732.3,70.1],[3792.3,68.9],[3852.3,68.7],[3912.3,66.8],[3972.3,70.4],[4032.3,70.8],[4092.3,71.9],[4152.3,34.5],[4212.3,60.2],[4272.3,71.3],[4332.3,70.5],[4392.3,71.4],[4452.3,71.9],[4512.3,67.9],[4572.3,69.4],[4632.3,46.9],[4692.3,34.4],[4752.3,68.6],[4812.3,71.8],[4872.3,69.8],[4932.3,69.8],[4992.3,71.9],[5052.3,72.4],[5112.3,71.2],[5172.3,30.4],[5232.3,57.6],[5292.3,70.3],[5352.3,70.8],[5412.3,68.8],[5472.3,68.8],[5532.3,69.0],[5592.3,68.7],[5652.3,30.2],[5712.3,63.3],[5772.3,70.8],[5832.3,69.5],[5892.3,70.5],[5952.3,69.9],[6012.3,69.8],[6072.3,71.6],[6132.3,41.2],[6192.3,47.6],[6252.3,71.4],[6312.3,70.2],[6372.3,69.6],[6432.3,70.2],[6492.3,69.0],[6552.3,70.0],[6612.3,33.9],[6672.3,48.3],[6732.3,70.3],[6792.3,70.4],[6852.3,70.0],[6912.3,71.7],[6972.3,69.9],[7032.3,69.5],[7092.3,43.4],[7152.3,46.8],[7212.3,68.0],[7272.3,70.7],[7332.3,70.2],[7392.3,70.5],[7452.3,69.5],[7512.3,71.2],[7572.3,13.6],[7632.3,61.6],[7692.3,69.0],[7752.3,70.4],[7812.3,70.7],[7872.3,68.8],[7932.3,68.8],[7992.3,64.8],[8052.3,14.8],[8112.3,70.6],[8172.3,69.2],[8232.3,70.9],[8292.3,71.6],[8352.3,69.8],[8412.3,70.9],[8472.3,30.5],[8532.3,34.9],[8592.3,70.7],[8652.3,70.1],[8712.3,67.7],[8772.3,67.3],[8832.3,68.3],[8892.3,69.6],[8952.3,21.1],[9012.3,50.2],[9072.3,72.6],[9132.3,70.9],[9192.3,66.4],[9252.3,70.4],[9312.3,67.7],[9372.3,57.6],[9432.3,10.4],[9492.3,66.4],[9552.3,69.3],[9612.3,68.9],[9672.3,69.5],[9732.3,70.1],[9792.3,70.8],[9852.3,36.4],[9912.3,28.2],[9972.3,72.2],[10032.3,68.3],[10092.3,69.4],[10152.3,67.1],[10212.3,73.0],[10272.3,70.4],[10332.3,5.3],[10392.3,47.5],[10452.3,70.6],[10512.3,69.6],[10572.3,70.2],[10632.3,71.3],[10692.3,70.1],[10752.3,55.1],[10812.3,2.5],[10872.3,0.0],[10932.3,0.0],[10992.3,0.0],[11052.3,0.0],[11112.3,0.0],[11172.3,0.0],[11232.3,0.0],[11292.3,0.0],[11352.3,0.0]],"1":[[12.299999999999955,95.0],[72.29999999999995,41.2],[132.29999999999995,0.0],[192.29999999999995,0.0],[252.29999999999995,0.0],[312.29999999999995,0.0],[372.29999999999995,0.0],[432.29999999999995,0.0],[492.29999999999995,0.0],[552.3,0.0],[612.3,0.0],[672.3,0.0],[732.3,0.0],[792.3,0.0],[852.3,0.0],[912.3,0.0],[972.3,0.0],[1032.3,0.0],[1092.3,0.0],[1152.3,0.0],[1212.3,0.0],[1272.3,0.0],[1332.3,0.0],[1392.3,0.0],[1452.3,0.0],[1512.3,0.0],[1572.3,21.9],[1632.3,88.9],[1692.3,13.5],[1752.3,25.1],[1812.3,23.1],[1872.3,22.4],[1932.3,24.1],[1992.3,22.5],[2052.3,22.1],[2112.3,6.6],[2172.3,0.0],[2232.3,7.4],[2292.3,16.8],[2352.3,22.9],[2412.3,22.1],[2472.3,21.1],[2532.3,24.2],[2592.3,21.4],[2652.3,23.0],[2712.3,10.6],[2772.3,25.5],[2832.3,22.9],[2892.3,24.5],[2952.3,22.0],[3012.3,25.8],[3072.3,24.5],[3132.3,16.2],[3192.3,17.1],[3252.3,24.9],[3312.3,25.0],[3372.3,24.6],[3432.3,24.2],[3492.3,23.3],[3552.3,25.8],[3612.3,8.2],[3672.3,4.9],[3732.3,28.2],[3792.3,27.3],[3852.3,27.3],[3912.3,27.8],[3972.3,27.7],[4032.3,26.1],[4092.3,25.7],[4152.3,2.6],[4212.3,17.7],[4272.3,25.0],[4332.3,23.4],[4392.3,22.5],[4452.3,27.8],[4512.3,24.6],[4572.3,24.8],[4632.3,14.1],[4692.3,14.5],[4752.3,26.9],[4812.3,28.8],[4872.3,26.2],[4932.3,23.8],[4992.3,27.2],[5052.3,26.2],[5112.3,20.4],[5172.3,5.9],[5232.3,20.1],[5292.3,24.2],[5352.3,24.7],[5412.3,25.6],[5472.3,27.6],[5532.3,27.8],[5592.3,27.3],[5652.3,12.6],[5712.3,19.4],[5772.3,25.0],[5832.3,23.5],[5892.3,25.2],[5952.3,29.4],[6012.3,26.6],[6072.3,24.1],[6132.3,10.2],[6192.3,20.0],[6252.3,23.8],[6312.3,23.8],[6372.3,21.9],[6432.3,23.1],[6492.3,23.6],[6552.3,27.3],[6612.3,13.0],[6672.3,14.0],[6732.3,26.3],[6792.3,27.8],[6852.3,29.9],[6912.3,26.7],[6972.3,26.4],[7032.3,24.1],[7092.3,15.1],[7152.3,13.4],[7212.3,28.0],[7272.3,26.6],[7332.3,23.1],[7392.3,24.1],[7452.3,26.2],[7512.3,27.1],[7572.3,24.0],[7632.3,21.8],[7692.3,24.2],[7752.3,24.2],[7812.3,21.9],[7872.3,25.9],[7932.3,25.0],[7992.3,25.3],[8052.3,12.7],[8112.3,22.5],[8172.3,27.6],[8232.3,24.6],[8292.3,22.0],[8352.3,25.5],[8412.3,25.3],[8472.3,25.5],[8532.3,10.1],[8592.3,23.7],[8652.3,26.0],[8712.3,24.6],[8772.3,24.3],[8832.3,25.7],[8892.3,23.7],[8952.3,18.0],[9012.3,17.4],[9072.3,24.3],[9132.3,25.5],[9192.3,23.3],[9252.3,24.9],[9312.3,25.3],[9372.3,23.8],[9432.3,12.6],[9492.3,21.6],[9552.3,23.5],[9612.3,24.1],[9672.3,23.4],[9732.3,26.0],[9792.3,28.3],[9852.3,25.1],[9912.3,15.9],[9972.3,25.7],[10032.3,25.9],[10092.3,24.6],[10152.3,25.1],[10212.3,24.3],[10272.3,25.3],[10332.3,19.4],[10392.3,16.1],[10452.3,21.5],[10512.3,24.6],[10572.3,23.9],[10632.3,23.1],[10692.3,24.5],[10752.3,23.7],[10812.3,16.7],[10872.3,26.7],[10932.3,25.7],[10992.3,25.9],[11052.3,24.2],[11112.3,26.2],[11172.3,27.4],[11232.3,25.6],[11292.3,6.7],[11352.3,0.0]]},"windows":{"trainer":[{"t0":-936.3,"t1":105.7,"job":"B"},{"t0":107.5,"t1":1693.5,"job":"A"},{"t0":1699.4,"t1":2291.6,"job":"B"},{"t0":2296.3,"t1":2741.7,"job":"A"},{"t0":2747.3,"t1":3200.7,"job":"B"},{"t0":3206.1,"t1":3722.8,"job":"A"},{"t0":3728.0,"t1":4222.7,"job":"B"},{"t0":4228.1,"t1":4717.9,"job":"A"},{"t0":4723.2,"t1":5242.0,"job":"B"},{"t0":5247.3,"t1":5719.7,"job":"A"},{"t0":5725.2,"t1":6207.1,"job":"B"},{"t0":6212.5,"t1":6687.1,"job":"A"},{"t0":6692.3,"t1":7172.9,"job":"B"},{"t0":7178.3,"t1":7637.6,"job":"A"},{"t0":7642.8,"t1":8103.0,"job":"B"},{"t0":8108.3,"t1":8564.0,"job":"A"},{"t0":8569.3,"t1":9025.3,"job":"B"},{"t0":9030.7,"t1":9485.5,"job":"A"},{"t0":9490.7,"t1":9947.8,"job":"B"},{"t0":9953.2,"t1":10409.6,"job":"A"},{"t0":10415.0,"t1":10878.9,"job":"B"},{"t0":10884.3,"t1":11329.5,"job":"A"}],"sampler":[{"t0":-933.5,"t1":704.9,"job":"B"},{"t0":709.4,"t1":2267.3,"job":"A"},{"t0":2279.1,"t1":2672.4,"job":"B"},{"t0":2729.2,"t1":3116.7,"job":"A"},{"t0":3187.0,"t1":3699.0,"job":"B"},{"t0":3710.5,"t1":4198.6,"job":"A"},{"t0":4210.3,"t1":4694.0,"job":"B"},{"t0":4705.6,"t1":5217.7,"job":"A"},{"t0":5229.6,"t1":5695.3,"job":"B"},{"t0":5707.2,"t1":6183.1,"job":"A"},{"t0":6194.8,"t1":6659.8,"job":"B"},{"t0":6674.3,"t1":7148.7,"job":"A"},{"t0":7160.4,"t1":7603.4,"job":"B"},{"t0":7625.2,"t1":8071.7,"job":"A"},{"t0":8090.6,"t1":8524.4,"job":"B"},{"t0":8552.3,"t1":8985.0,"job":"A"},{"t0":9012.8,"t1":9445.3,"job":"B"},{"t0":9472.9,"t1":9906.3,"job":"A"},{"t0":9935.9,"t1":10355.7,"job":"B"},{"t0":10397.3,"t1":10824.0,"job":"A"}]},"events":[{"t":-936.3,"kind":"acquired","job":"B","pool":"trainer","wait_ms":0,"restore_ms":0,"step":0},{"t":-933.5,"kind":"acquired","job":"B","pool":"sampler","wait_ms":0,"restore_ms":0,"step":0},{"t":105.7,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":5057},{"t":105.7,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":107.5,"kind":"acquired","job":"A","pool":"trainer","wait_ms":1041014,"restore_ms":0,"step":0},{"t":110.7,"kind":"ckpt_done","job":"B","pool":"trainer","ms":5057},{"t":704.9,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":22686},{"t":704.9,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":709.4,"kind":"acquired","job":"A","pool":"sampler","wait_ms":600863,"restore_ms":0,"step":0},{"t":727.6,"kind":"ckpt_done","job":"B","pool":"sampler","ms":22686},{"t":1693.5,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":5019},{"t":1693.5,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":1697.6,"kind":"restoring","job":"B","pool":"trainer"},{"t":1698.5,"kind":"ckpt_done","job":"A","pool":"trainer","ms":5019},{"t":1699.4,"kind":"restore_done","job":"B","pool":"trainer","ms":1839},{"t":1699.4,"kind":"acquired","job":"B","pool":"trainer","wait_ms":985315,"restore_ms":1839,"step":1},{"t":2267.3,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":21750},{"t":2267.3,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":2271.9,"kind":"restoring","job":"B","pool":"sampler"},{"t":2279.1,"kind":"restore_done","job":"B","pool":"sampler","ms":7259},{"t":2279.1,"kind":"acquired","job":"B","pool":"sampler","wait_ms":140502,"restore_ms":7259,"step":1},{"t":2289.1,"kind":"ckpt_done","job":"A","pool":"sampler","ms":21750},{"t":2291.6,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6855},{"t":2291.6,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":2294.4,"kind":"restoring","job":"A","pool":"trainer"},{"t":2296.3,"kind":"restore_done","job":"A","pool":"trainer","ms":1826},{"t":2296.3,"kind":"acquired","job":"A","pool":"trainer","wait_ms":22536,"restore_ms":1826,"step":1},{"t":2298.5,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6855},{"t":2672.4,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":22202},{"t":2672.4,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":2694.6,"kind":"ckpt_done","job":"B","pool":"sampler","ms":22202},{"t":2722.0,"kind":"restoring","job":"A","pool":"sampler"},{"t":2729.2,"kind":"restore_done","job":"A","pool":"sampler","ms":7159},{"t":2729.2,"kind":"acquired","job":"A","pool":"sampler","wait_ms":0,"restore_ms":7159,"step":1},{"t":2741.7,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6927},{"t":2741.7,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":2744.9,"kind":"restoring","job":"B","pool":"trainer"},{"t":2747.3,"kind":"restore_done","job":"B","pool":"trainer","ms":2457},{"t":2747.3,"kind":"acquired","job":"B","pool":"trainer","wait_ms":68044,"restore_ms":2457,"step":2},{"t":2748.6,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6927},{"t":3116.7,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":22248},{"t":3116.7,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":3138.9,"kind":"ckpt_done","job":"A","pool":"sampler","ms":22248},{"t":3179.7,"kind":"restoring","job":"B","pool":"sampler"},{"t":3187.0,"kind":"restore_done","job":"B","pool":"sampler","ms":7321},{"t":3187.0,"kind":"acquired","job":"B","pool":"sampler","wait_ms":0,"restore_ms":7321,"step":2},{"t":3200.7,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6786},{"t":3200.7,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":3203.6,"kind":"restoring","job":"A","pool":"trainer"},{"t":3206.1,"kind":"restore_done","job":"A","pool":"trainer","ms":2488},{"t":3206.1,"kind":"acquired","job":"A","pool":"trainer","wait_ms":83323,"restore_ms":2488,"step":2},{"t":3207.5,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6786},{"t":3699.0,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":22083},{"t":3699.0,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":3703.2,"kind":"restoring","job":"A","pool":"sampler"},{"t":3710.5,"kind":"restore_done","job":"A","pool":"sampler","ms":7350},{"t":3710.5,"kind":"acquired","job":"A","pool":"sampler","wait_ms":63273,"restore_ms":7350,"step":2},{"t":3721.1,"kind":"ckpt_done","job":"B","pool":"sampler","ms":22083},{"t":3722.8,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6801},{"t":3722.8,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":3725.5,"kind":"restoring","job":"B","pool":"trainer"},{"t":3728.0,"kind":"restore_done","job":"B","pool":"trainer","ms":2488},{"t":3728.0,"kind":"acquired","job":"B","pool":"trainer","wait_ms":22332,"restore_ms":2488,"step":3},{"t":3729.6,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6801},{"t":4198.6,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":22131},{"t":4198.6,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":4203.1,"kind":"restoring","job":"B","pool":"sampler"},{"t":4210.3,"kind":"restore_done","job":"B","pool":"sampler","ms":7284},{"t":4210.3,"kind":"acquired","job":"B","pool":"sampler","wait_ms":36574,"restore_ms":7284,"step":3},{"t":4220.7,"kind":"ckpt_done","job":"A","pool":"sampler","ms":22131},{"t":4222.7,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6833},{"t":4222.7,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":4225.6,"kind":"restoring","job":"A","pool":"trainer"},{"t":4228.1,"kind":"restore_done","job":"A","pool":"trainer","ms":2503},{"t":4228.1,"kind":"acquired","job":"A","pool":"trainer","wait_ms":22486,"restore_ms":2503,"step":3},{"t":4229.5,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6833},{"t":4694.0,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":22027},{"t":4694.0,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":4698.3,"kind":"restoring","job":"A","pool":"sampler"},{"t":4705.6,"kind":"restore_done","job":"A","pool":"sampler","ms":7246},{"t":4705.6,"kind":"acquired","job":"A","pool":"sampler","wait_ms":33849,"restore_ms":7246,"step":3},{"t":4716.0,"kind":"ckpt_done","job":"B","pool":"sampler","ms":22027},{"t":4717.9,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6799},{"t":4717.9,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":4720.7,"kind":"restoring","job":"B","pool":"trainer"},{"t":4723.2,"kind":"restore_done","job":"B","pool":"trainer","ms":2493},{"t":4723.2,"kind":"acquired","job":"B","pool":"trainer","wait_ms":22366,"restore_ms":2493,"step":4},{"t":4724.7,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6799},{"t":5217.7,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":21803},{"t":5217.7,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":5222.3,"kind":"restoring","job":"B","pool":"sampler"},{"t":5229.6,"kind":"restore_done","job":"B","pool":"sampler","ms":7283},{"t":5229.6,"kind":"acquired","job":"B","pool":"sampler","wait_ms":58866,"restore_ms":7283,"step":4},{"t":5239.5,"kind":"ckpt_done","job":"A","pool":"sampler","ms":21803},{"t":5242.0,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6787},{"t":5242.0,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":5244.8,"kind":"restoring","job":"A","pool":"trainer"},{"t":5247.3,"kind":"restore_done","job":"A","pool":"trainer","ms":2477},{"t":5247.3,"kind":"acquired","job":"A","pool":"trainer","wait_ms":22545,"restore_ms":2477,"step":4},{"t":5248.7,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6787},{"t":5695.3,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":21889},{"t":5695.3,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":5700.0,"kind":"restoring","job":"A","pool":"sampler"},{"t":5707.2,"kind":"restore_done","job":"A","pool":"sampler","ms":7220},{"t":5707.2,"kind":"acquired","job":"A","pool":"sampler","wait_ms":12760,"restore_ms":7220,"step":4},{"t":5717.2,"kind":"ckpt_done","job":"B","pool":"sampler","ms":21889},{"t":5719.7,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6784},{"t":5719.7,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":5722.7,"kind":"restoring","job":"B","pool":"trainer"},{"t":5725.2,"kind":"restore_done","job":"B","pool":"trainer","ms":2511},{"t":5725.2,"kind":"acquired","job":"B","pool":"trainer","wait_ms":22701,"restore_ms":2511,"step":5},{"t":5726.5,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6784},{"t":6183.1,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":21936},{"t":6183.1,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":6187.5,"kind":"restoring","job":"B","pool":"sampler"},{"t":6194.8,"kind":"restore_done","job":"B","pool":"sampler","ms":7303},{"t":6194.8,"kind":"acquired","job":"B","pool":"sampler","wait_ms":23126,"restore_ms":7303,"step":5},{"t":6205.1,"kind":"ckpt_done","job":"A","pool":"sampler","ms":21936},{"t":6207.1,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6841},{"t":6207.1,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":6210.0,"kind":"restoring","job":"A","pool":"trainer"},{"t":6212.5,"kind":"restore_done","job":"A","pool":"trainer","ms":2490},{"t":6212.5,"kind":"acquired","job":"A","pool":"trainer","wait_ms":22449,"restore_ms":2490,"step":5},{"t":6214.0,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6841},{"t":6659.8,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":21934},{"t":6659.8,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":6667.1,"kind":"restoring","job":"A","pool":"sampler"},{"t":6674.3,"kind":"restore_done","job":"A","pool":"sampler","ms":7203},{"t":6674.3,"kind":"acquired","job":"A","pool":"sampler","wait_ms":16720,"restore_ms":7203,"step":5},{"t":6681.7,"kind":"ckpt_done","job":"B","pool":"sampler","ms":21934},{"t":6687.1,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6846},{"t":6687.1,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":6689.9,"kind":"restoring","job":"B","pool":"trainer"},{"t":6692.3,"kind":"restore_done","job":"B","pool":"trainer","ms":2456},{"t":6692.3,"kind":"acquired","job":"B","pool":"trainer","wait_ms":22752,"restore_ms":2456,"step":6},{"t":6694.0,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6846},{"t":7148.7,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":21859},{"t":7148.7,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":7153.2,"kind":"restoring","job":"B","pool":"sampler"},{"t":7160.4,"kind":"restore_done","job":"B","pool":"sampler","ms":7176},{"t":7160.4,"kind":"acquired","job":"B","pool":"sampler","wait_ms":20446,"restore_ms":7176,"step":6},{"t":7170.6,"kind":"ckpt_done","job":"A","pool":"sampler","ms":21859},{"t":7172.9,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6844},{"t":7172.9,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":7175.8,"kind":"restoring","job":"A","pool":"trainer"},{"t":7178.3,"kind":"restore_done","job":"A","pool":"trainer","ms":2496},{"t":7178.3,"kind":"acquired","job":"A","pool":"trainer","wait_ms":22579,"restore_ms":2496,"step":6},{"t":7179.7,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6844},{"t":7603.4,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":22070},{"t":7603.4,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":7617.8,"kind":"restoring","job":"A","pool":"sampler"},{"t":7625.2,"kind":"restore_done","job":"A","pool":"sampler","ms":7307},{"t":7625.2,"kind":"acquired","job":"A","pool":"sampler","wait_ms":0,"restore_ms":7307,"step":6},{"t":7625.5,"kind":"ckpt_done","job":"B","pool":"sampler","ms":22070},{"t":7637.6,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6800},{"t":7637.6,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":7640.3,"kind":"restoring","job":"B","pool":"trainer"},{"t":7642.8,"kind":"restore_done","job":"B","pool":"trainer","ms":2499},{"t":7642.8,"kind":"acquired","job":"B","pool":"trainer","wait_ms":32296,"restore_ms":2499,"step":7},{"t":7644.4,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6800},{"t":8071.7,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":21840},{"t":8071.7,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":8083.4,"kind":"restoring","job":"B","pool":"sampler"},{"t":8090.6,"kind":"restore_done","job":"B","pool":"sampler","ms":7255},{"t":8090.6,"kind":"acquired","job":"B","pool":"sampler","wait_ms":0,"restore_ms":7255,"step":7},{"t":8093.6,"kind":"ckpt_done","job":"A","pool":"sampler","ms":21840},{"t":8103.0,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6826},{"t":8103.0,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":8105.8,"kind":"restoring","job":"A","pool":"trainer"},{"t":8108.3,"kind":"restore_done","job":"A","pool":"trainer","ms":2464},{"t":8108.3,"kind":"acquired","job":"A","pool":"trainer","wait_ms":29730,"restore_ms":2464,"step":7},{"t":8109.8,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6826},{"t":8524.4,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":22177},{"t":8524.4,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":8544.9,"kind":"restoring","job":"A","pool":"sampler"},{"t":8546.6,"kind":"ckpt_done","job":"B","pool":"sampler","ms":22177},{"t":8552.3,"kind":"restore_done","job":"A","pool":"sampler","ms":7391},{"t":8552.3,"kind":"acquired","job":"A","pool":"sampler","wait_ms":0,"restore_ms":7391,"step":7},{"t":8564.0,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6798},{"t":8564.0,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":8566.8,"kind":"restoring","job":"B","pool":"trainer"},{"t":8569.3,"kind":"restore_done","job":"B","pool":"trainer","ms":2471},{"t":8569.3,"kind":"acquired","job":"B","pool":"trainer","wait_ms":37809,"restore_ms":2471,"step":8},{"t":8570.8,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6798},{"t":8985.0,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":21821},{"t":8985.0,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":9005.5,"kind":"restoring","job":"B","pool":"sampler"},{"t":9006.9,"kind":"ckpt_done","job":"A","pool":"sampler","ms":21821},{"t":9012.8,"kind":"restore_done","job":"B","pool":"sampler","ms":7249},{"t":9012.8,"kind":"acquired","job":"B","pool":"sampler","wait_ms":0,"restore_ms":7249,"step":8},{"t":9025.3,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6804},{"t":9025.3,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":9028.2,"kind":"restoring","job":"A","pool":"trainer"},{"t":9030.7,"kind":"restore_done","job":"A","pool":"trainer","ms":2472},{"t":9030.7,"kind":"acquired","job":"A","pool":"trainer","wait_ms":38483,"restore_ms":2472,"step":8},{"t":9032.1,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6804},{"t":9445.3,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":22057},{"t":9445.3,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":9465.7,"kind":"restoring","job":"A","pool":"sampler"},{"t":9467.4,"kind":"ckpt_done","job":"B","pool":"sampler","ms":22057},{"t":9472.9,"kind":"restore_done","job":"A","pool":"sampler","ms":7159},{"t":9472.9,"kind":"acquired","job":"A","pool":"sampler","wait_ms":0,"restore_ms":7159,"step":8},{"t":9485.5,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6840},{"t":9485.5,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":9488.2,"kind":"restoring","job":"B","pool":"trainer"},{"t":9490.7,"kind":"restore_done","job":"B","pool":"trainer","ms":2452},{"t":9490.7,"kind":"acquired","job":"B","pool":"trainer","wait_ms":38540,"restore_ms":2452,"step":9},{"t":9492.3,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6840},{"t":9906.3,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":21900},{"t":9906.3,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":9928.2,"kind":"ckpt_done","job":"A","pool":"sampler","ms":21900},{"t":9928.7,"kind":"restoring","job":"B","pool":"sampler"},{"t":9935.9,"kind":"restore_done","job":"B","pool":"sampler","ms":7199},{"t":9935.9,"kind":"acquired","job":"B","pool":"sampler","wait_ms":0,"restore_ms":7199,"step":9},{"t":9947.8,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":6767},{"t":9947.8,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":9950.7,"kind":"restoring","job":"A","pool":"trainer"},{"t":9953.2,"kind":"restore_done","job":"A","pool":"trainer","ms":2495},{"t":9953.2,"kind":"acquired","job":"A","pool":"trainer","wait_ms":39914,"restore_ms":2495,"step":9},{"t":9954.5,"kind":"ckpt_done","job":"B","pool":"trainer","ms":6767},{"t":10355.7,"kind":"yielded","job":"B","pool":"sampler","ckpt_ms":21978},{"t":10355.7,"kind":"checkpointing","job":"B","pool":"sampler"},{"t":10377.7,"kind":"ckpt_done","job":"B","pool":"sampler","ms":21978},{"t":10390.1,"kind":"restoring","job":"A","pool":"sampler"},{"t":10397.3,"kind":"restore_done","job":"A","pool":"sampler","ms":7196},{"t":10397.3,"kind":"acquired","job":"A","pool":"sampler","wait_ms":0,"restore_ms":7196,"step":9},{"t":10409.6,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":6797},{"t":10409.6,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":10412.5,"kind":"restoring","job":"B","pool":"trainer"},{"t":10415.0,"kind":"restore_done","job":"B","pool":"trainer","ms":2502},{"t":10415.0,"kind":"acquired","job":"B","pool":"trainer","wait_ms":52154,"restore_ms":2502,"step":10},{"t":10416.4,"kind":"ckpt_done","job":"A","pool":"trainer","ms":6797},{"t":10824.0,"kind":"yielded","job":"A","pool":"sampler","ckpt_ms":21884},{"t":10824.0,"kind":"checkpointing","job":"A","pool":"sampler"},{"t":10845.9,"kind":"ckpt_done","job":"A","pool":"sampler","ms":21884},{"t":10878.9,"kind":"yielded","job":"B","pool":"trainer","ckpt_ms":21754},{"t":10878.9,"kind":"checkpointing","job":"B","pool":"trainer"},{"t":10881.8,"kind":"restoring","job":"A","pool":"trainer"},{"t":10884.3,"kind":"restore_done","job":"A","pool":"trainer","ms":2561},{"t":10884.3,"kind":"acquired","job":"A","pool":"trainer","wait_ms":53408,"restore_ms":2561,"step":10},{"t":10900.7,"kind":"ckpt_done","job":"B","pool":"trainer","ms":21754},{"t":11329.5,"kind":"yielded","job":"A","pool":"trainer","ckpt_ms":20785},{"t":11329.5,"kind":"checkpointing","job":"A","pool":"trainer"},{"t":11330,"kind":"ckpt_done","job":"A","pool":"trainer","ms":20785}]},"rewards":{"job-a":[{"step":1,"reward":0.011},{"step":2,"reward":0.1792},{"step":3,"reward":0.4644},{"step":4,"reward":0.4153},{"step":5,"reward":0.4463},{"step":6,"reward":0.4878},{"step":7,"reward":0.5217},{"step":8,"reward":0.5315},{"step":9,"reward":0.5701},{"step":10,"reward":0.5508}],"job-b":[{"step":1,"reward":0.0129},{"step":2,"reward":0.2092},{"step":3,"reward":0.4553},{"step":4,"reward":0.4763},{"step":5,"reward":0.49},{"step":6,"reward":0.5024},{"step":7,"reward":0.5334},{"step":8,"reward":0.5549},{"step":9,"reward":0.5964},{"step":10,"reward":0.564}],"baseline":[{"step":1,"reward":0.0144},{"step":2,"reward":0.1416},{"step":3,"reward":0.4465},{"step":4,"reward":0.5071},{"step":5,"reward":0.5144},{"step":6,"reward":0.5327},{"step":7,"reward":0.5608},{"step":8,"reward":0.5818},{"step":9,"reward":0.6052},{"step":10,"reward":0.585}]},"summary":{"duty_base":55.5,"duty_ts":87.1,"duty_gpu":{"0":[52.4,87.4],"1":[58.7,86.8]},"swaps":42,"med_ckpt_ms":21268,"med_restore_ms":2536,"base_min":137,"ts_min":189,"speedup":1.45,"cost_saving_pct":31},"foot":"All series and events reconstructed from recorded run telemetry: per-GPU utilization samples (both runs), orchestrator acquire/yield events, and measured evict/restore durations. Duty cycle = share of minutes with GPU activity (util >5%) within each run's active window; curves show per-minute mean utilization. t=0 is each run's first GPU activity; the replay ends at the final lock yield."}]};   // { runs: [ {label, meta:{...}, mode, ...} ] }
+
+const css = n => getComputedStyle(document.body).getPropertyValue(n).trim();
+const jobColor = j => j === 'A' ? css('--job-a') : j === 'B' ? css('--job-b') : css('--both');
+const fmtT = s => { s = Math.max(0, s|0); const m = (s/60)|0; return m + ':' + String(s%60).padStart(2,'0'); };
+const fmtMs = ms => ms >= 1000 ? (ms/1000).toFixed(1) + 's' : ms + 'ms';
+const tip = document.getElementById('tip');
+const $ = id => document.getElementById(id);
+
+// ---------- panel constructors ----------
+function ownerAt(windows, t) {
+  const holders = [];
+  for (const pool in windows)
+    for (const w of windows[pool])
+      if (t >= w.t0 && t < w.t1) { holders.push(w.job); break; }
+  if (!holders.length) return null;
+  return holders.every(j => j === holders[0]) ? holders[0] : 'BOTH';
+}
+
+function utilPanel(R, canvas, side, series, opts) {
+  const ctx = canvas.getContext('2d');
+  const nStrips = opts.strips ? Object.keys(side.windows).length : 0;
+  const reserved = nStrips || opts.reserve || 0;
+  const P = { l: (nStrips || opts.reserve) ? 58 : 34, r: 8, t: 8, b: 18, strip: 9 };
+  let W, H;
+  function size() {
+    const dpr = window.devicePixelRatio || 1;
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  size();
+  addEventListener('resize', () => { if (canvas.isConnected) { size(); draw(lastNow); } });
+  const X = t => P.l + (t / R.DUR) * (W - P.l - P.r);
+  const plotH = () => H - P.t - P.b - reserved * (P.strip + 3);
+  const Y = v => P.t + (1 - v / 105) * plotH();
+
+  let lastNow = 0;
+  function draw(now) {
+    lastNow = now;
+    const local = Math.min(now, side.duration_s);
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1;
+    for (const g of [0, 50, 100]) {
+      ctx.beginPath(); ctx.moveTo(P.l, Y(g)); ctx.lineTo(W - P.r, Y(g)); ctx.stroke();
+      ctx.fillStyle = css('--muted'); ctx.font = '10px system-ui'; ctx.textAlign = 'right';
+      ctx.fillText(g, P.l - 5, Y(g) + 3);
+    }
+    ctx.textAlign = 'center';
+    const tick = R.DUR > 7200 ? 1800 : 600;
+    for (let m = 0; m * tick <= R.DUR; m++)
+      ctx.fillText((m * tick / 60) + 'm', X(m * tick), H - P.b + 12);
+
+    let seg = [], segO;
+    const flush = () => {
+      if (seg.length < 2) { seg = []; return; }
+      const col = segO === null ? css('--idle') : segO === 'BOTH' ? css('--both') : jobColor(segO);
+      ctx.beginPath(); ctx.moveTo(seg[0][0], Y(0));
+      for (const [x, y] of seg) ctx.lineTo(x, y);
+      ctx.lineTo(seg[seg.length-1][0], Y(0)); ctx.closePath();
+      ctx.globalAlpha = 0.10; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      seg.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+      ctx.stroke();
+      seg = [];
+    };
+    let lastPt = null;
+    for (const [t, v] of series) {
+      if (t > local) break;
+      const o = opts.fixedOwner !== undefined ? opts.fixedOwner : ownerAt(side.windows, t);
+      if (seg.length && o !== segO) { seg.push([X(t), Y(v)]); flush(); }
+      if (!seg.length) segO = o;
+      seg.push([X(t), Y(v)]);
+      lastPt = [X(t), Y(v), o];
+    }
+    flush();
+    if (lastPt && local < side.duration_s) {
+      ctx.beginPath(); ctx.arc(lastPt[0], lastPt[1], 6, 0, 7); ctx.fillStyle = css('--surface-1'); ctx.fill();
+      ctx.beginPath(); ctx.arc(lastPt[0], lastPt[1], 4, 0, 7);
+      ctx.fillStyle = lastPt[2] === null ? css('--idle') : lastPt[2] === 'BOTH' ? css('--both') : jobColor(lastPt[2]);
+      ctx.fill();
+    }
+    if (nStrips) {
+      let sy = P.t + plotH() + 3;
+      for (const pool of Object.keys(side.windows)) {
+        for (const w of side.windows[pool]) {
+          if (w.t0 > local) break;
+          ctx.fillStyle = jobColor(w.job);
+          ctx.beginPath();
+          ctx.roundRect(X(w.t0), sy, Math.max(1, X(Math.min(w.t1, local)) - X(w.t0)), P.strip, 2);
+          ctx.fill();
+        }
+        if (nStrips > 1) {
+          ctx.fillStyle = css('--muted'); ctx.font = '10px system-ui'; ctx.textAlign = 'right';
+          ctx.fillText(pool, P.l - 6, sy + P.strip - 2);
+        }
+        sy += P.strip + 3;
+      }
+    }
+    if (local >= side.duration_s && side.duration_s < R.DUR) {
+      const x = X(side.duration_s);
+      ctx.strokeStyle = css('--muted'); ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(x, P.t); ctx.lineTo(x, H - P.b); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = css('--muted'); ctx.textAlign = 'left'; ctx.font = '11px system-ui';
+      ctx.fillText('done', x + 5, P.t + 12);
+    } else {
+      const px = X(local);
+      ctx.strokeStyle = css('--baseline'); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(px, P.t); ctx.lineTo(px, H - P.b); ctx.stroke();
+    }
+  }
+  canvas.addEventListener('mousemove', ev => {
+    const r = canvas.getBoundingClientRect();
+    const t = (ev.clientX - r.left - P.l) / (W - P.l - P.r) * R.DUR;
+    if (t < 0 || t > Math.min(lastNow, side.duration_s)) { tip.style.display = 'none'; return; }
+    let best = null;
+    for (const [ts, v] of series) { if (ts > t) break; best = [ts, v]; }
+    if (!best) return;
+    const o = opts.fixedOwner !== undefined ? opts.fixedOwner : ownerAt(side.windows, best[0]);
+    tip.style.display = 'block';
+    tip.style.left = (ev.clientX + 14) + 'px'; tip.style.top = (ev.clientY + 10) + 'px';
+    tip.innerHTML = `<b>${fmtT(best[0])}</b> &middot; util ${best[1]}%` +
+      (o === null ? ' &middot; no lock held' : o === 'BOTH' ? ' &middot; pipelined: A + B' : ` &middot; Job ${o}`);
+  });
+  canvas.addEventListener('mouseleave', () => tip.style.display = 'none');
+  return { draw };
+}
+
+function poolPanel(R, canvas, side, pool) {
+  const ctx = canvas.getContext('2d');
+  const wins = side.windows[pool] || [];
+  const P = { l: 34, r: 8, t: 10, b: 18 };
+  let W, H;
+  function size() {
+    const dpr = window.devicePixelRatio || 1;
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  size();
+  addEventListener('resize', () => { if (canvas.isConnected) { size(); draw(lastNow); } });
+  const X = t => P.l + (t / R.DUR) * (W - P.l - P.r);
+  const barY = () => P.t + 14;
+  const barH = () => H - P.t - P.b - 24;
+
+  let lastNow = 0;
+  function draw(now) {
+    lastNow = now;
+    ctx.clearRect(0, 0, W, H);
+    ctx.textAlign = 'center'; ctx.fillStyle = css('--muted'); ctx.font = '10px system-ui';
+    for (let m = 0; m * 60 <= R.DUR; m++)
+      ctx.fillText(m + 'm', X(m * 60), H - 5);
+    ctx.fillStyle = css('--page');
+    ctx.beginPath(); ctx.roundRect(P.l, barY(), W - P.l - P.r, barH(), 5); ctx.fill();
+    for (const w of wins) {
+      if (w.t0 > now) break;
+      ctx.fillStyle = jobColor(w.job);
+      ctx.beginPath();
+      ctx.roundRect(X(w.t0) + 1, barY() + 2, Math.max(1.5, X(Math.min(w.t1, now)) - X(w.t0) - 2), barH() - 4, 3);
+      ctx.fill();
+    }
+    for (const e of side.events) {
+      if (e.t > now) break;
+      if (e.pool !== pool || (e.kind !== 'ckpt_done' && e.kind !== 'restore_done')) continue;
+      const x = X(e.t);
+      ctx.fillStyle = jobColor(e.job);
+      ctx.beginPath();
+      if (e.kind === 'ckpt_done') { ctx.moveTo(x-4, barY()-10); ctx.lineTo(x+4, barY()-10); ctx.lineTo(x, barY()-3); }
+      else { ctx.moveTo(x-4, barY()-3); ctx.lineTo(x+4, barY()-3); ctx.lineTo(x, barY()-10); }
+      ctx.closePath(); ctx.fill();
+    }
+    const px = X(Math.min(now, R.DUR));
+    ctx.strokeStyle = css('--baseline'); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(px, P.t); ctx.lineTo(px, H - P.b); ctx.stroke();
+  }
+  canvas.addEventListener('mousemove', ev => {
+    const r = canvas.getBoundingClientRect();
+    const t = (ev.clientX - r.left - P.l) / (W - P.l - P.r) * R.DUR;
+    if (t < 0 || t > lastNow) { tip.style.display = 'none'; return; }
+    const w = wins.find(w => t >= w.t0 && t < Math.min(w.t1, lastNow));
+    tip.style.display = 'block';
+    tip.style.left = (ev.clientX + 14) + 'px'; tip.style.top = (ev.clientY + 10) + 'px';
+    tip.innerHTML = w
+      ? `<b>${pool}</b> &middot; Job ${w.job} holds lock &middot; ${fmtT(w.t0)} &rarr; ${fmtT(Math.min(w.t1, lastNow))}`
+      : `<b>${pool}</b> &middot; no holder at ${fmtT(t)}`;
+  });
+  canvas.addEventListener('mouseleave', () => tip.style.display = 'none');
+  return { draw };
+}
+
+// ---------- run lifecycle ----------
+let R = null;
+
+function initRun(run) {
+  const RACE = run.mode === 'race';
+  R = { run, RACE,
+        DUR: RACE ? Math.max(run.baseline.duration_s, run.timeslice.duration_s) : run.timeslice.duration_s,
+        now: 0, playing: false, evIdx: 0, ckN: 0, opsN: 0, handoffs: 0, baseDone: false,
+        pending: {}, panels: [] };
+
+  $('runmeta').innerHTML = Object.values(run.meta).map(v => `<b>${v}</b>`).join('<span class="dot">&middot;</span>');
+
+  const speeds = RACE ? [120, 240, 360, 600] : [6, 12, 24, 48];
+  const def = RACE ? 240 : 12;
+  $('speed').innerHTML = speeds.map(s => `<option value="${s}" ${s===def?'selected':''}>${s}&times;</option>`).join('');
+
+  const legendHTML =
+    `<span><span class="key" style="background:var(--job-a)"></span>Job A</span>
+     <span style="margin-left:14px"><span class="key" style="background:var(--job-b)"></span>Job B</span>
+     <span style="margin-left:14px"><span class="key" style="background:var(--idle)"></span>no lock held</span>`;
+  $('legend').innerHTML = RACE ? '' : legendHTML;
+
+  const cols = $('cols');
+  if (RACE) {
+    const pm = run.pool_map || { '0': 'pool 0', '1': 'pool 1' };
+    const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+    cols.className = 'cols';
+    cols.innerHTML = `
+      <div>
+        <div class="colhead">Baseline <span class="tag">— 1 job, dedicated node</span></div>
+        <div class="panelcard"><h2>GPU 0 &middot; ${cap(pm['0'])} — utilization %</h2><canvas id="pb0" height="146"></canvas></div>
+        <div class="panelcard"><h2>GPU 1 &middot; ${cap(pm['1'])} — utilization %</h2><canvas id="pb1" height="146"></canvas></div>
+        <div class="tiles two">
+          <div class="tile"><div class="lbl" id="b_done_lbl">Job A running&hellip;</div><div class="val" id="b_done">0:00</div></div>
+          <div class="tile"><div class="lbl">2 jobs back-to-back would take</div><div class="val" id="b_proj">&ndash;</div></div>
+        </div>
+      </div>
+      <div>
+        <div class="colhead">Time-sliced <span class="tag">— 2 jobs share it via checkpoint/restore</span></div>
+        <div class="panelcard"><h2>GPU 0 &middot; ${cap(pm['0'])} — utilization %</h2><canvas id="pt0" height="146"></canvas></div>
+        <div class="panelcard"><h2>GPU 1 &middot; ${cap(pm['1'])} — utilization %</h2><canvas id="pt1" height="146"></canvas></div>
+        <div class="tiles">
+          <div class="tile"><div class="lbl">Elapsed</div><div class="val" id="t_el">0:00</div></div>
+          <div class="tile"><div class="lbl">C/R swaps</div><div class="val" id="t_sw">0</div></div>
+          <div class="tile"><div class="lbl">Median snapshot</div><div class="val" id="t_ck">&ndash;</div></div>
+          <div class="tile"><div class="lbl">Median restore</div><div class="val" id="t_rs">&ndash;</div></div>
+        </div>
+      </div>
+      <div>
+        <div class="colhead" id="asidehead"></div>
+        <aside class="side">
+          <h2>Orchestrator events</h2>
+          <div class="hint">Lock queue: which job is granted / yields each pool.</div>
+          <ul class="feed" id="feed_orch"></ul>
+          <h2 style="margin-top:14px">Snapshot agent events</h2>
+          <div class="hint">C/R execution with real measured durations.</div>
+          <ul class="feed" id="feed_agent"></ul>
+        </aside>
+      </div>`;
+    const poolSide = pool => ({ ...run.timeslice, windows: { [pool]: run.timeslice.windows[pool] || [] } });
+    R.panels = [
+      utilPanel(R, $('pb0'), run.baseline, run.baseline.duty_gpus['0'], { fixedOwner: 'A', strips: false, reserve: 1 }),
+      utilPanel(R, $('pb1'), run.baseline, run.baseline.duty_gpus['1'], { fixedOwner: 'A', strips: false, reserve: 1 }),
+      utilPanel(R, $('pt0'), poolSide(pm['0']), run.timeslice.duty_gpus['0'], { strips: true }),
+      utilPanel(R, $('pt1'), poolSide(pm['1']), run.timeslice.duty_gpus['1'], { strips: true }),
+    ];
+  } else {
+    cols.className = 'cols pools';
+    cols.innerHTML = `
+      <div>
+        <div class="colhead">Time-sliced node <span class="tag">— 2 jobs, dual-pool alternation</span></div>
+        <div class="panelcard"><h2>Trainer pool — lock ownership</h2><canvas id="pool0" height="120"></canvas></div>
+        <div class="panelcard"><h2>Sampler pool — lock ownership</h2><canvas id="pool1" height="120"></canvas></div>
+        <div class="tiles">
+          <div class="tile"><div class="lbl">Elapsed</div><div class="val" id="t_el">0:00</div></div>
+          <div class="tile"><div class="lbl">Lock handoffs</div><div class="val" id="t_sw">0</div></div>
+          <div class="tile"><div class="lbl">Agent ops</div><div class="val" id="t_ops">0</div></div>
+          <div class="tile"><div class="lbl">Jobs completed</div><div class="val" id="t_done">0 / 2</div></div>
+        </div>
+      </div>
+      <aside class="side">
+        <h2>Orchestrator events</h2>
+        <div class="hint">Lock queue: grants and yields per pool.</div>
+        <ul class="feed" id="feed_orch"></ul>
+        <h2 style="margin-top:14px">Snapshot agent events</h2>
+        <div class="hint">Snapshot/restore directives (no-ops in this run &mdash; see footnote).</div>
+        <ul class="feed" id="feed_agent"></ul>
+      </aside>`;
+    R.panels = [
+      poolPanel(R, $('pool0'), run.timeslice, 'trainers'),
+      poolPanel(R, $('pool1'), run.timeslice, 'samplers'),
+    ];
+  }
+
+  if (RACE) { const ah = $('asidehead'); if (ah) ah.innerHTML = legendHTML; }
+
+  // compact convergence chart (race only)
+  const sec = $('convsec');
+  if (RACE && run.rewards) {
+    sec.innerHTML = `
+      <div class="panelcard" style="height:100%;">
+        <h2 style="font-size:14px; color:var(--text-primary); margin-bottom:2px;">Convergence</h2>
+        <div class="hint">Mean reward per training step — both time-sliced jobs track the dedicated-GPU baseline.</div>
+        <div class="legend2">
+          <span><span class="key" style="background:var(--job-a)"></span>Job A</span>
+          <span><span class="key" style="background:var(--job-b)"></span>Job B</span>
+          <span><span class="key" style="background:var(--idle)"></span>Baseline</span>
+        </div>
+        <canvas id="conv" height="120"></canvas>
+      </div>`;
+    const canvas = $('conv'), ctx = canvas.getContext('2d');
+    function drawConv() {
+      if (!canvas.isConnected) return;
+      const dpr = window.devicePixelRatio || 1;
+      const W = canvas.clientWidth, H = canvas.clientHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      const P = { l: 34, r: 12, t: 8, b: 20 };
+      const X = s => P.l + (s - 1) / 9 * (W - P.l - P.r);
+      const Y = v => P.t + (1 - v / 0.8) * (H - P.t - P.b);
+      ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1; ctx.font = '10px system-ui';
+      for (let v = 0; v <= 0.8; v += 0.4) {
+        ctx.beginPath(); ctx.moveTo(P.l, Y(v)); ctx.lineTo(W - P.r, Y(v)); ctx.stroke();
+        ctx.fillStyle = css('--muted'); ctx.textAlign = 'right'; ctx.fillText(v.toFixed(1), P.l - 5, Y(v) + 3);
+      }
+      ctx.textAlign = 'center';
+      for (let s = 1; s <= 10; s++) ctx.fillText(s, X(s), H - 6);
+      for (const [k, col] of [['job-a', css('--job-a')], ['job-b', css('--job-b')], ['baseline', css('--idle')]]) {
+        const pts = run.rewards[k];
+        ctx.beginPath(); ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+        pts.forEach((p, i) => i ? ctx.lineTo(X(p.step), Y(p.reward)) : ctx.moveTo(X(p.step), Y(p.reward)));
+        ctx.stroke();
+        for (const p of pts) {
+          ctx.beginPath(); ctx.arc(X(p.step), Y(p.reward), 4.5, 0, 7); ctx.fillStyle = css('--surface-1'); ctx.fill();
+          ctx.beginPath(); ctx.arc(X(p.step), Y(p.reward), 3, 0, 7); ctx.fillStyle = col; ctx.fill();
+        }
+      }
+    }
+    drawConv(); addEventListener('resize', drawConv);
+  } else {
+    sec.innerHTML = '';
+  }
+
+  // table view
+  const rows = run.timeslice.events
+    .filter(e => ['acquired','yielded','ckpt_done','restore_done'].includes(e.kind))
+    .map(e => `<tr><td>${fmtT(e.t)}</td><td>Job ${e.job}</td><td>${e.pool}</td><td>${e.kind}</td>` +
+      `<td>${e.ms ? fmtMs(e.ms) : e.ckpt_ms ? fmtMs(e.ckpt_ms) : e.restore_ms ? fmtMs(e.restore_ms) : ''}</td></tr>`).join('');
+  $('tblwrap').innerHTML =
+    `<table><tr><th>t</th><th>job</th><th>pool</th><th>event</th><th>C/R time</th></tr>${rows}</table>`;
+
+  $('foot').textContent = run.foot;
+  $('btn').innerHTML = '&#9654; Play';
+  resetRun();
+}
+
+function addEntry(feed, e, txt, cls) {
+  const li = document.createElement('li');
+  li.className = 'job' + e.job + (cls ? ' ' + cls : '');
+  li.innerHTML = `<span class="t">${fmtT(e.t)}</span>${txt}`;
+  feed.prepend(li);
+  requestAnimationFrame(() => li.classList.add('show'));
+  while (feed.children.length > 40) feed.lastChild.remove();
+  return li;
+}
+
+function pushFeed(e) {
+  const feedOrch = $('feed_orch'), feedAgent = $('feed_agent');
+  const key = e.job + ':' + e.pool;
+  switch (e.kind) {
+    case 'acquired':
+      R.handoffs++;
+      addEntry(feedOrch, e, `Acquired: Job ${e.job} &middot; ${e.pool}` +
+        (e.wait_ms > 0 ? ` (waited ${fmtMs(e.wait_ms)})` : ''));
+      break;
+    case 'yielded':
+      addEntry(feedOrch, e, `Yielded: Job ${e.job} &middot; ${e.pool}`);
+      break;
+    case 'checkpointing':
+      R.pending[key] = addEntry(feedAgent, e, `&#9208; Snapshotting Job ${e.job} ${e.pool}&hellip;`, 'pending');
+      break;
+    case 'restoring':
+      R.pending[key] = addEntry(feedAgent, e, `&#9654; Restoring Job ${e.job} ${e.pool}&hellip;`, 'pending');
+      break;
+    case 'ckpt_done':
+      R.ckN++; R.opsN++;
+      if (R.pending[key]) {
+        const li = R.pending[key]; delete R.pending[key]; li.classList.remove('pending');
+        li.innerHTML = `<span class="t">${fmtT(e.t)}</span>&#10003; Snapshot Job ${e.job} ${e.pool}: ${fmtMs(e.ms)} &mdash; accelerators released`;
+      } else addEntry(feedAgent, e, `&#10003; Snapshot Job ${e.job} ${e.pool}` + (e.ms ? `: ${fmtMs(e.ms)}` : ' (no-op)'));
+      break;
+    case 'restore_done':
+      R.opsN++;
+      if (R.pending[key]) {
+        const li = R.pending[key]; delete R.pending[key]; li.classList.remove('pending');
+        li.innerHTML = `<span class="t">${fmtT(e.t)}</span>&#10003; Restore Job ${e.job} ${e.pool}: ${fmtMs(e.ms)} &mdash; state back on GPU`;
+      } else addEntry(feedAgent, e, `&#10003; Restore Job ${e.job} ${e.pool}` + (e.ms ? `: ${fmtMs(e.ms)}` : ' (no-op)'));
+      break;
+  }
+}
+
+function tiles() {
+  const S = R.run.summary;
+  $('t_el').textContent = fmtT(Math.min(R.now, R.run.timeslice.duration_s));
+  $('t_sw').textContent = R.RACE ? R.ckN : R.handoffs;
+  if (R.RACE) {
+    $('t_ck').textContent = R.ckN ? fmtMs(S.med_ckpt_ms) : '–';
+    $('t_rs').textContent = R.ckN ? fmtMs(S.med_restore_ms) : '–';
+    if (R.now >= R.run.baseline.duration_s) {
+      if (!R.baseDone) {
+        R.baseDone = true;
+        $('b_done_lbl').textContent = 'Job finished in';
+        $('b_done').textContent = S.base_min + ' min';
+        $('b_proj').textContent = (2 * S.base_min) + ' min';
+      }
+    } else {
+      $('b_done').textContent = fmtT(R.now);
+    }
+  } else {
+    $('t_ops').textContent = R.opsN;
+    $('t_done').textContent = (R.now >= R.DUR ? 2 : 0) + ' / 2';
+  }
+  $('clock').textContent = `${fmtT(R.now)} / ${fmtT(R.DUR)} run time`;
+}
+
+function frame(tsNow) {
+  if (!R.playing) return;
+  const dt = (tsNow - R.lastFrame) / 1000; R.lastFrame = tsNow;
+  R.now = Math.min(R.now + dt * +$('speed').value, R.DUR);
+  const evs = R.run.timeslice.events;
+  while (R.evIdx < evs.length && evs[R.evIdx].t <= R.now) pushFeed(evs[R.evIdx++]);
+  for (const p of R.panels) p.draw(R.now);
+  tiles();
+  if (R.now >= R.DUR) { R.playing = false; $('btn').innerHTML = '&#9654; Play'; finish(); return; }
+  requestAnimationFrame(frame);
+}
+
+function finish() {
+  const S = R.run.summary;
+  if (R.RACE) {
+    $('sum_lbl').textContent = 'GPU duty cycle, baseline → time-sliced';
+    $('sum_big').textContent = `${Math.round(S.duty_base)}% → ${Math.round(S.duty_ts)}%`;
+    $('sum_l1').textContent =
+      Object.entries(S.duty_gpu).map(([g, d]) => `GPU ${g}: ${Math.round(d[0])}% → ${Math.round(d[1])}%`).join('   ·   ');
+    $('sum_l2').textContent =
+      `Throughput ${S.speedup}× — 2 jobs in ${S.ts_min} min vs ${2*S.base_min} min back-to-back ` +
+      `(${S.swaps} C/R swaps · median snapshot ${fmtMs(S.med_ckpt_ms)} · median restore ${fmtMs(S.med_restore_ms)})`;
+    $('sum_l3').textContent =
+      `${S.cost_saving_pct}% fewer GPU-hours per job on the same hardware — reward curves match the baseline step for step.`;
+  } else {
+    $('sum_lbl').textContent = 'Run result';
+    $('sum_big').textContent = '2 / 2 jobs succeeded';
+    $('sum_l1').textContent =
+      `${S.handoffs} lock handoffs · ${S.snapshots + S.restores} agent operations · ${S.wall_min} min total`;
+    $('sum_l2').textContent =
+      'Clean alternation on both pools for the full run — the orchestrator promoted the waiting job on every yield.';
+    $('sum_l3').textContent = '';
+  }
+  $('summary').style.display = 'block';
+}
+
+function resetRun() {
+  R.now = 0; R.evIdx = 0; R.ckN = 0; R.opsN = 0; R.handoffs = 0; R.baseDone = false;
+  for (const k in R.pending) delete R.pending[k];
+  $('feed_orch').innerHTML = ''; $('feed_agent').innerHTML = '';
+  $('summary').style.display = 'none';
+  if (R.RACE) {
+    $('b_done_lbl').textContent = 'Job A running…';
+    $('b_done').textContent = '0:00';
+    $('b_proj').textContent = '–';
+  }
+  for (const p of R.panels) p.draw(0);
+  tiles();
+}
+
+$('btn').onclick = () => {
+  if (R.now >= R.DUR) resetRun();
+  R.playing = !R.playing;
+  $('btn').innerHTML = R.playing ? '&#9646;&#9646; Pause' : '&#9654; Play';
+  if (R.playing) { R.lastFrame = performance.now(); requestAnimationFrame(frame); }
+};
+$('replay').onclick = () => { resetRun(); $('btn').click(); };
+
+// ---------- run selector ----------
+const sel = $('runsel');
+sel.innerHTML = DATA.runs.map((r, i) => `<option value="${i}">${r.label}</option>`).join('');
+sel.onchange = () => { if (R) R.playing = false; initRun(DATA.runs[+sel.value]); };
+initRun(DATA.runs[0]);
+
+// ---------- capture hook (?run=IDX&t=SEC&end=1) ----------
+const qs = new URLSearchParams(location.search);
+if (qs.get('run')) { sel.value = qs.get('run'); initRun(DATA.runs[+sel.value]); }
+if (qs.get('t')) {
+  R.now = Math.min(parseFloat(qs.get('t')), R.DUR);
+  const evs = R.run.timeslice.events;
+  while (R.evIdx < evs.length && evs[R.evIdx].t <= R.now) pushFeed(evs[R.evIdx++]);
+  document.querySelectorAll('.feed li').forEach(li => li.classList.add('show'));
+  for (const p of R.panels) p.draw(R.now);
+  tiles();
+  if (qs.get('end')) finish();
+}
+</script>
+</body>
+</html>
