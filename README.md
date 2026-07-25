@@ -25,7 +25,7 @@
   * **Co-operative Scheduling:** Schedules accelerator access in co-operation with the application — jobs signal their execution phase boundaries, and the platform grants and reclaims the hardware around them.
   * **Fast Context Switching:** Performs fast, transparent state checkpointing and restoration under the hood.
 
-For the full design rationale and preliminary benchmark results, see the [Platform-Native Time-Slicing proposal](https://github.com/llm-d/llm-d/blob/main/docs/proposals/rl-time-slicing-platform.md).
+For the full design rationale and preliminary benchmark results, see the [Platform-Native Time-Slicing proposal](https://github.com/llm-d/llm-d/blob/main/proposals/rl-time-slicing-platform.md).
 
 ## Architecture
 
