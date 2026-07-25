@@ -6,12 +6,6 @@
   > **Current Project Status:**
   > * **Snapshot Agent:** Available, with pluggable snapshot backends — see the [user guide](./guides/snapshot-agent/).
   > * **Accelerator Orchestrator:** Available — see the [user guide](./guides/accelerator-orchestrator/).
-## See Time-Slicing in Action
-
-![Time-slicing replay](docs/diagrams/verl-sync-rl-timeslice-replay.gif)
-
-&#9654; **[Open the interactive replay](https://llm-d-incubation.github.io/llm-d-rl-time-slicing/diagrams/verl-sync-rl-timeslice-replay.html)** — play recorded runs, inspect every lock handoff and snapshot/restore, and select between runs as more are added.
-
 ## The Problem: Accelerator Underutilization
   Reinforcement learning (RL) workloads spend a significant fraction of their lifecycle idle—waiting on reward evaluation, generation stragglers, or synchronization steps. Across large-scale fleets, this leaves expensive accelerator hardware **underutilized 45–66% of the time**, even though the underlying RL math doesn't require it.
   
@@ -20,7 +14,13 @@
   
   **Your training loop stays exactly the same — no algorithmic rewrites required.**
   
-  ## How It Works
+  ## See Time-Slicing in Action
+
+![Time-slicing replay](docs/diagrams/verl-sync-rl-timeslice-replay.gif)
+
+&#9654; **[Open the interactive replay](https://llm-d-incubation.github.io/llm-d-rl-time-slicing/diagrams/verl-sync-rl-timeslice-replay.html)** — play recorded runs, inspect every lock handoff and snapshot/restore, and select between runs as more are added.
+
+## How It Works
   We introduce **collaborative, application-aware time-slicing**. Using a lightweight client library that pairs seamlessly with your existing training and inference frameworks, the system delivers two core capabilities:
   * **Co-operative Scheduling:** Schedules accelerator access in co-operation with the application — jobs signal their execution phase boundaries, and the platform grants and reclaims the hardware around them.
   * **Fast Context Switching:** Performs fast, transparent state checkpointing and restoration under the hood.
