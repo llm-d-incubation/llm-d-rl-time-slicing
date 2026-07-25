@@ -1,6 +1,6 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/llm-d-incubation/llm-d-rl-time-slicing/blob/main/LICENSE)
 [![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://llm-d.ai/slack)
-[![Google Cloud Blog](https://img.shields.io/badge/Google_Cloud_Blog-Read_the_announcement-4285F4?style=for-the-badge&logo=googlecloud&logoColor=white)](https://cloud.google.com/blog/products/containers-kubernetes/introducing-co-operative-time-slicing-for-rl-in-llm-d)
+[![Google Cloud Blog](https://img.shields.io/badge/Google_Cloud_Blog-Read_the_announcement-34A853?labelColor=4285F4&logo=googlecloud&logoColor=white)](https://cloud.google.com/blog/products/containers-kubernetes/introducing-co-operative-time-slicing-for-rl-in-llm-d)
 
 # Time-Slicing for Reinforcement Learning Workloads
   > **Current Project Status:**
