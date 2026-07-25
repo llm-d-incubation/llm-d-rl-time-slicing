@@ -278,8 +278,9 @@ function poolPanel(R, canvas, side, pool) {
     lastNow = now;
     ctx.clearRect(0, 0, W, H);
     ctx.textAlign = 'center'; ctx.fillStyle = css('--muted'); ctx.font = '10px system-ui';
-    for (let m = 0; m * 60 <= R.DUR; m++)
-      ctx.fillText(m + 'm', X(m * 60), H - 5);
+    const tick = R.DUR > 7200 ? 1800 : R.DUR > 1800 ? 600 : 60;
+    for (let m = 0; m * tick <= R.DUR; m++)
+      ctx.fillText((m * tick / 60) + 'm', X(m * tick), H - 5);
     ctx.fillStyle = css('--page');
     ctx.beginPath(); ctx.roundRect(P.l, barY(), W - P.l - P.r, barH(), 5); ctx.fill();
     for (const w of wins) {
@@ -386,11 +387,13 @@ function initRun(run) {
     ];
   } else {
     cols.className = 'cols pools';
+    const pools = Object.keys(run.timeslice.windows).sort();
+    const cap2 = s => s.charAt(0).toUpperCase() + s.slice(1);
     cols.innerHTML = `
       <div>
-        <div class="colhead">Time-sliced node <span class="tag">— 2 jobs, dual-pool alternation</span></div>
-        <div class="panelcard"><h2>Trainer pool — lock ownership</h2><canvas id="pool0" height="120"></canvas></div>
-        <div class="panelcard"><h2>Sampler pool — lock ownership</h2><canvas id="pool1" height="120"></canvas></div>
+        <div class="colhead">Time-sliced node <span class="tag">— 2 jobs, ${pools.length}-pool alternation</span></div>
+        ${pools.map((p, i) =>
+          `<div class="panelcard"><h2>${cap2(p)} pool — lock ownership</h2><canvas id="pool${i}" height="120"></canvas></div>`).join('')}
         <div class="tiles">
           <div class="tile"><div class="lbl">Elapsed</div><div class="val" id="t_el">0:00</div></div>
           <div class="tile"><div class="lbl">Lock handoffs</div><div class="val" id="t_sw">0</div></div>
@@ -403,13 +406,10 @@ function initRun(run) {
         <div class="hint">Lock queue: grants and yields per pool.</div>
         <ul class="feed" id="feed_orch"></ul>
         <h2 style="margin-top:14px">Snapshot agent events</h2>
-        <div class="hint">Snapshot/restore directives (no-ops in this run &mdash; see footnote).</div>
+        <div class="hint">Snapshot/restore directives issued by the orchestrator.</div>
         <ul class="feed" id="feed_agent"></ul>
       </aside>`;
-    R.panels = [
-      poolPanel(R, $('pool0'), run.timeslice, 'trainers'),
-      poolPanel(R, $('pool1'), run.timeslice, 'samplers'),
-    ];
+    R.panels = pools.map((p, i) => poolPanel(R, $('pool' + i), run.timeslice, p));
   }
 
   if (RACE) { const ah = $('asidehead'); if (ah) ah.innerHTML = legendHTML; }
@@ -572,9 +572,9 @@ function finish() {
     $('sum_lbl').textContent = 'Run result';
     $('sum_big').textContent = '2 / 2 jobs succeeded';
     $('sum_l1').textContent =
-      `${S.handoffs} lock handoffs · ${S.snapshots + S.restores} agent operations · ${S.wall_min} min total`;
+      `${R.handoffs} lock handoffs · ${R.opsN} agent operations · ${(R.DUR / 60).toFixed(1)} min total`;
     $('sum_l2').textContent =
-      'Clean alternation on both pools for the full run — the orchestrator promoted the waiting job on every yield.';
+      'Clean alternation on every pool for the full run — the orchestrator promoted the waiting job on every yield.';
     $('sum_l3').textContent = '';
   }
   $('summary').style.display = 'block';
@@ -602,17 +602,19 @@ $('btn').onclick = () => {
 };
 $('replay').onclick = () => { resetRun(); $('btn').click(); };
 
-// ---------- run selector ----------
+// ---------- run selector + capture hook (?run=IDX&t=SEC&end=1) ----------
+const qs = new URLSearchParams(location.search);
 const sel = $('runsel');
 sel.innerHTML = DATA.runs.map((r, i) => `<option value="${i}">${r.label}</option>`).join('');
 sel.onchange = () => { if (R) R.playing = false; initRun(DATA.runs[+sel.value]); };
-initRun(DATA.runs[0]);
 
-// ---------- capture hook (?run=IDX&t=SEC&end=1) ----------
-const qs = new URLSearchParams(location.search);
-if (qs.get('run')) { sel.value = qs.get('run'); initRun(DATA.runs[+sel.value]); }
-if (qs.get('t')) {
-  R.now = Math.min(parseFloat(qs.get('t')), R.DUR);
+const runIdx = Math.min(Math.max(parseInt(qs.get('run'), 10) || 0, 0), DATA.runs.length - 1);
+sel.value = runIdx;
+initRun(DATA.runs[runIdx]);
+
+const tq = parseFloat(qs.get('t'));
+if (Number.isFinite(tq)) {
+  R.now = Math.min(Math.max(tq, 0), R.DUR);
   const evs = R.run.timeslice.events;
   while (R.evIdx < evs.length && evs[R.evIdx].t <= R.now) pushFeed(evs[R.evIdx++]);
   document.querySelectorAll('.feed li').forEach(li => li.classList.add('show'));
