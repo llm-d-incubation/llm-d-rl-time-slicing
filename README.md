@@ -1,10 +1,17 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/llm-d-incubation/llm-d-rl-time-slicing/blob/main/LICENSE)
 [![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://llm-d.ai/slack)
+[![Google Cloud Blog](https://img.shields.io/badge/Google_Cloud_Blog-Read_the_announcement-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/blog/products/containers-kubernetes/introducing-co-operative-time-slicing-for-rl-in-llm-d)
 
 # Time-Slicing for Reinforcement Learning Workloads
-  > **Current Project Status & Roadmap:**
-  > * **Snapshot Agent (GPU):** Available today for standalone integration.
-  > * **Accelerator Orchestrator:** In active development.
+  > **Current Project Status:**
+  > * **Snapshot Agent:** Available, with pluggable snapshot backends — see the [user guide](./guides/snapshot-agent/).
+  > * **Accelerator Orchestrator:** Available — see the [user guide](./guides/accelerator-orchestrator/).
+## See Time-Slicing in Action
+
+![Time-slicing replay](docs/diagrams/verl-sync-rl-timeslice-replay.gif)
+
+&#9654; **[Open the interactive replay](https://llm-d-incubation.github.io/llm-d-rl-time-slicing/diagrams/verl-sync-rl-timeslice-replay.html)** — play recorded runs, inspect every lock handoff and snapshot/restore, and select between runs as more are added.
+
 ## The Problem: Accelerator Underutilization
   Reinforcement learning (RL) workloads spend a significant fraction of their lifecycle idle—waiting on reward evaluation, generation stragglers, or synchronization steps. Across large-scale fleets, this leaves expensive accelerator hardware **underutilized 45–66% of the time**, even though the underlying RL math doesn't require it.
   
@@ -15,16 +22,10 @@
   
   ## How It Works
   We introduce **collaborative, application-aware time-slicing**. Using a lightweight client library that pairs seamlessly with your existing training and inference frameworks, the system delivers two core capabilities:
-  * **Intelligent Scheduling:** Dynamically coordinates accelerator access across concurrent jobs based on their execution phases.
+  * **Co-operative Scheduling:** Schedules accelerator access in co-operation with the application — jobs signal their execution phase boundaries, and the platform grants and reclaims the hardware around them.
   * **Fast Context Switching:** Performs fast, transparent state checkpointing and restoration under the hood.
 
 For the full design rationale and preliminary benchmark results, see the [Platform-Native Time-Slicing proposal](https://github.com/llm-d/llm-d/blob/main/docs/proposals/rl-time-slicing-platform.md).
-
-## See Time-Slicing in Action
-
-![Time-slicing replay](docs/diagrams/verl-sync-rl-timeslice-replay.gif)
-
-&#9654; **[Open the interactive replay](https://llm-d-incubation.github.io/llm-d-rl-time-slicing/diagrams/verl-sync-rl-timeslice-replay.html)** — play recorded runs, inspect every lock handoff and snapshot/restore, and select between runs as more are added.
 
 ## Architecture
 
@@ -38,10 +39,40 @@ This architecture consists of the following foundational components:
 
 ## Modes of Operation
 
-- **Cooperative Accelerator Time-Slicing**: The Accelerator Orchestrator coordinates multiple jobs sharing a cluster of accelerator nodes, granting and reclaiming hardware access at each job's natural yield points.
-- **Standalone Snapshot Agent Integration**: Training services that already implement their own scheduling (e.g., tinker-style architectures) can interface directly with the Snapshot Agent's checkpoint/restore primitives, bypassing the orchestrator entirely.
+**Cooperative Accelerator Time-Slicing** — the Accelerator Orchestrator coordinates multiple jobs sharing a cluster of accelerator nodes, granting and reclaiming hardware access at each job's natural yield points:
+
+```python
+from timeslice import OrchestratorClient
+
+client = OrchestratorClient(target="timeslice-acceleratororchestrator.timeslice-system:50051",
+                            job_id="my-job", group_id="trainer-group")
+
+@client.on_accelerators()
+def train_phase(trainer, batch):
+    return trainer.update(batch)   # exclusive accelerator access inside
+```
+
+**Standalone Snapshot Agent Integration** — training services that already implement their own scheduling (e.g., tinker-style architectures) can call the Snapshot Agent's checkpoint/restore primitives directly, bypassing the orchestrator entirely:
+
+```python
+from timeslice.snapshot_agent import SnapshotAgentClient
+
+with SnapshotAgentClient(endpoint="localhost:9001") as client:
+    client.snapshot_and_wait(job_id="my-job")   # GPU state -> host memory
+    ...
+    client.restore_and_wait(job_id="my-job")    # host memory -> GPU
+```
 
 For step-by-step instructions, installation walkthroughs, and API references, explore our [Documentation & Guides](./guides).
+
+## Roadmap
+
+- **Framework integrations** — OpenRL (Snapshot Agent) in progress; Slime or veRL orchestrator integration next
+- **Snapshot backend expansion** — faster snapshot mechanisms and selective offload (e.g., specific memory regions such as LoRA adapters)
+- **User onboarding** — simplified deployment and onboarding flows
+- **Multi-host support** — distributed multi-node time-slicing
+- **TPU support** — snapshot/restore for TPU accelerators
+- **Non-Kubernetes support** — Slurm and bare-metal environments
 
 ## Contributing
 
