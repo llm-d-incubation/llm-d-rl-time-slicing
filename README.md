@@ -76,20 +76,5 @@ For step-by-step instructions, installation walkthroughs, and API references, ex
 
 ## Contributing
 
-Start with the [llm-d organization contributing guide](https://github.com/llm-d/llm-d/blob/main/CONTRIBUTING.md) for project-wide guidelines, code of conduct, and community resources.
-
-We currently use the llm-d Slack workspace for communication — join via [llm-d.ai/slack](https://llm-d.ai/slack).
-
-For large changes, please [open an issue](https://github.com/llm-d-incubation/llm-d-rl-time-slicing/issues/new) first describing the change so maintainers can do an assessment. See [DEVELOPMENT.md](./DEVELOPMENT.md) for details on building, testing, and working with the codebase.
-
-All commits must be signed off (DCO) — see [PR_SIGNOFF.md](./PR_SIGNOFF.md) for instructions.
-
-Contributions are welcome!
-
-## Security
-
-To report a security vulnerability, please see [SECURITY.md](./SECURITY.md).
-
-## License
-
-This project is licensed under the Apache License 2.0 - see [LICENSE](./LICENSE) for details.
+Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines, and
+[DEVELOPMENT.md](./DEVELOPMENT.md) for building, testing, and working with the codebase.
