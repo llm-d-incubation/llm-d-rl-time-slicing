@@ -1,4 +1,4 @@
-package acceleratororchestrator
+package scenarios
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package acceleratororchestrator
+package simulate
 
 import (
 	"context"
@@ -10,34 +10,34 @@ import (
 )
 
 // trackQueue wraps a rate limiting queue and tracks Done() and AddRateLimited() calls.
-type trackQueue struct {
+type TrackQueue struct {
 	workqueue.TypedRateLimitingInterface[string]
 	mu                  sync.Mutex
 	doneCount           int
 	addRateLimitedCount int
 }
 
-func (t *trackQueue) Done(item string) {
+func (t *TrackQueue) Done(item string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.doneCount++
 	t.TypedRateLimitingInterface.Done(item)
 }
 
-func (t *trackQueue) AddRateLimited(item string) {
+func (t *TrackQueue) AddRateLimited(item string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.addRateLimitedCount++
 	t.TypedRateLimitingInterface.AddRateLimited(item)
 }
 
-func (t *trackQueue) getDoneCount() int {
+func (t *TrackQueue) getDoneCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.doneCount
 }
 
-func (t *trackQueue) getAddRateLimitedCount() int {
+func (t *TrackQueue) getAddRateLimitedCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.addRateLimitedCount

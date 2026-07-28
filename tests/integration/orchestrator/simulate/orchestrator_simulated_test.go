@@ -1,5 +1,4 @@
-//nolint:testpackage // Integration E2E tests require package-level access to unexported helper trackQueue
-package acceleratororchestrator
+package simulate_test
 
 import (
 	"context"
@@ -13,6 +12,8 @@ import (
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/infrastructure"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/server"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/tests/integration/orchestrator/scenarios"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/tests/integration/orchestrator/simulate"
 	google_grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -68,10 +69,10 @@ func TestE2E_SingleRLJob(t *testing.T) {
 	jobStore := store.NewJobStore()
 
 	// 3. Setup Agent State Simulator (Fake)
-	fakeAgentStore := NewFakeSnapshotAgentStore()
+	fakeAgentStore := simulate.NewFakeSnapshotAgentStore()
 
 	// 4. Initialize Infrastructure Orchestrator and Controller
-	testQueue := &trackQueue{
+	testQueue := &simulate.TrackQueue{
 		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test-e2e-single-job"},
@@ -152,7 +153,7 @@ func TestE2E_SingleRLJob(t *testing.T) {
 	t.Log("Store initialized with samplers and trainers groups")
 
 	// Run Scenario
-	if err := RunSingleRLJobScenario(ctx, clientset, client, t, "", ""); err != nil {
+	if err := scenarios.RunSingleRLJobScenario(ctx, clientset, client, t, "", ""); err != nil {
 		t.Fatalf("Scenario failed: %v", err)
 	}
 }
@@ -199,10 +200,10 @@ func TestE2E_QueuedRLJobs(t *testing.T) {
 	jobStore := store.NewJobStore()
 
 	// 3. Setup Agent State Simulator (Fake)
-	fakeAgentStore := NewFakeSnapshotAgentStore()
+	fakeAgentStore := simulate.NewFakeSnapshotAgentStore()
 
 	// 4. Initialize Infrastructure Orchestrator and Controller
-	testQueue := &trackQueue{
+	testQueue := &simulate.TrackQueue{
 		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test-e2e-queued-jobs"},
@@ -283,7 +284,7 @@ func TestE2E_QueuedRLJobs(t *testing.T) {
 	t.Log("Store initialized with samplers and trainers groups")
 
 	// Run Scenario
-	if err := RunQueuedRLJobsScenario(ctx, clientset, client, t, "", ""); err != nil {
+	if err := scenarios.RunQueuedRLJobsScenario(ctx, clientset, client, t, "", ""); err != nil {
 		t.Fatalf("Scenario failed: %v", err)
 	}
 }
