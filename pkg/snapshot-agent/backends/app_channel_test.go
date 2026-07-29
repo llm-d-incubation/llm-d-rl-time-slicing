@@ -72,71 +72,90 @@ func TestAppChannelSnapshotAndRestore(t *testing.T) {
 	}
 }
 
-func TestAppChannelUnregisteredJobFailsFast(t *testing.T) {
-	backend := backends.NewAppChannelBackend(backends.NewChannelRegistry())
-	err := backend.Snapshot(context.Background(),
-		channelReq("ghost", pb.SuspendMode_SUSPEND_MODE_UNSPECIFIED))
-	if err == nil || !strings.Contains(err.Error(), "no workload channel registered") {
-		t.Errorf("Expected unregistered-job error, got: %v", err)
+func TestAppChannelSnapshotErrors(t *testing.T) {
+	tests := []struct {
+		name         string
+		setup        func(*backends.ChannelRegistry, *backends.AppChannelBackend) chan *pb.AgentCommand
+		req          backends.Request
+		wantErr      string
+		wantDispatch int // expected commands dispatched; -1 = don't check
+	}{
+		{
+			name:    "unregistered job fails fast",
+			setup:   func(*backends.ChannelRegistry, *backends.AppChannelBackend) chan *pb.AgentCommand { return nil },
+			req:     channelReq("ghost", pb.SuspendMode_SUSPEND_MODE_UNSPECIFIED),
+			wantErr: "no workload channel registered",
+		},
+		{
+			name: "missing app_channel config",
+			setup: func(r *backends.ChannelRegistry, _ *backends.AppChannelBackend) chan *pb.AgentCommand {
+				echoWorkload(r, "job-1", nil)
+				return nil
+			},
+			req:     backends.Request{JobID: "job-1", Config: &pb.BackendConfig{}},
+			wantErr: "app_channel config is required",
+		},
+		{
+			name: "workload failure propagates",
+			setup: func(r *backends.ChannelRegistry, _ *backends.AppChannelBackend) chan *pb.AgentCommand {
+				var session *backends.WorkloadSession
+				session = r.Register("job-1", nil, func(cmd *pb.AgentCommand) error {
+					go session.HandleResult(&pb.CommandResult{CommandId: cmd.GetCommandId(), Ok: false, Error: "engine exploded"})
+					return nil
+				})
+				return nil
+			},
+			req:     channelReq("job-1", pb.SuspendMode_SUSPEND_MODE_OFFLOAD),
+			wantErr: "engine exploded",
+		},
+		{
+			name: "command timeout",
+			setup: func(r *backends.ChannelRegistry, b *backends.AppChannelBackend) chan *pb.AgentCommand {
+				b.SetCommandTimeout(50 * time.Millisecond)
+				r.Register("job-1", nil, func(*pb.AgentCommand) error { return nil })
+				return nil
+			},
+			req:     channelReq("job-1", pb.SuspendMode_SUSPEND_MODE_OFFLOAD),
+			wantErr: "timed out",
+		},
+		{
+			name: "disconnect fails inflight command",
+			setup: func(r *backends.ChannelRegistry, _ *backends.AppChannelBackend) chan *pb.AgentCommand {
+				var session *backends.WorkloadSession
+				session = r.Register("job-1", nil, func(*pb.AgentCommand) error {
+					go r.Unregister(session)
+					return nil
+				})
+				return nil
+			},
+			req:     channelReq("job-1", pb.SuspendMode_SUSPEND_MODE_OFFLOAD),
+			wantErr: "disconnected",
+		},
+		{
+			name: "unsupported mode rejected before dispatch",
+			setup: func(r *backends.ChannelRegistry, _ *backends.AppChannelBackend) chan *pb.AgentCommand {
+				return echoWorkload(r, "trainer-1", &pb.WorkloadCapabilities{
+					SupportedModes: []pb.SuspendMode{pb.SuspendMode_SUSPEND_MODE_OFFLOAD},
+				})
+			},
+			req:          channelReq("trainer-1", pb.SuspendMode_SUSPEND_MODE_DISCARD),
+			wantErr:      "does not support suspend mode",
+			wantDispatch: 0,
+		},
 	}
-}
-
-func TestAppChannelMissingConfig(t *testing.T) {
-	backend := backends.NewAppChannelBackend(backends.NewChannelRegistry())
-	err := backend.Snapshot(context.Background(), backends.Request{JobID: "job-1", Config: &pb.BackendConfig{}})
-	if err == nil || !strings.Contains(err.Error(), "app_channel config is required") {
-		t.Errorf("Expected missing-config error, got: %v", err)
-	}
-}
-
-func TestAppChannelWorkloadFailurePropagates(t *testing.T) {
-	registry := backends.NewChannelRegistry()
-	backend := backends.NewAppChannelBackend(registry)
-	var session *backends.WorkloadSession
-	session = registry.Register("job-1", nil, func(cmd *pb.AgentCommand) error {
-		go session.HandleResult(&pb.CommandResult{
-			CommandId: cmd.GetCommandId(),
-			Ok:        false,
-			Error:     "engine exploded",
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry := backends.NewChannelRegistry()
+			backend := backends.NewAppChannelBackend(registry)
+			commands := tt.setup(registry, backend)
+			err := backend.Snapshot(context.Background(), tt.req)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Expected error containing %q, got: %v", tt.wantErr, err)
+			}
+			if tt.wantDispatch >= 0 && commands != nil && len(commands) != tt.wantDispatch {
+				t.Errorf("Expected %d dispatched commands, got %d", tt.wantDispatch, len(commands))
+			}
 		})
-		return nil
-	})
-
-	err := backend.Snapshot(context.Background(),
-		channelReq("job-1", pb.SuspendMode_SUSPEND_MODE_OFFLOAD))
-	if err == nil || !strings.Contains(err.Error(), "engine exploded") {
-		t.Errorf("Expected workload error to propagate, got: %v", err)
-	}
-}
-
-func TestAppChannelCommandTimeout(t *testing.T) {
-	registry := backends.NewChannelRegistry()
-	backend := backends.NewAppChannelBackend(registry)
-	backend.SetCommandTimeout(50 * time.Millisecond)
-	// Workload accepts commands but never replies.
-	registry.Register("job-1", nil, func(*pb.AgentCommand) error { return nil })
-
-	err := backend.Snapshot(context.Background(),
-		channelReq("job-1", pb.SuspendMode_SUSPEND_MODE_OFFLOAD))
-	if err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("Expected timeout error, got: %v", err)
-	}
-}
-
-func TestAppChannelDisconnectFailsInflightCommand(t *testing.T) {
-	registry := backends.NewChannelRegistry()
-	backend := backends.NewAppChannelBackend(registry)
-	var session *backends.WorkloadSession
-	// Workload drops the connection right after receiving the command.
-	session = registry.Register("job-1", nil, func(*pb.AgentCommand) error {
-		go registry.Unregister(session)
-		return nil
-	})
-
-	err := backend.Snapshot(context.Background(),
-		channelReq("job-1", pb.SuspendMode_SUSPEND_MODE_OFFLOAD))
-	if err == nil || !strings.Contains(err.Error(), "disconnected") {
-		t.Errorf("Expected disconnect error, got: %v", err)
 	}
 }
 
@@ -212,24 +231,5 @@ func TestAppChannelModeResolution(t *testing.T) {
 				t.Errorf("ResolveSuspendMode() = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-// TestAppChannelUnsupportedModeFailsBeforeDispatch verifies capability
-// validation happens before any command reaches the workload.
-func TestAppChannelUnsupportedModeFailsBeforeDispatch(t *testing.T) {
-	registry := backends.NewChannelRegistry()
-	backend := backends.NewAppChannelBackend(registry)
-	commands := echoWorkload(registry, "trainer-1", &pb.WorkloadCapabilities{
-		SupportedModes: []pb.SuspendMode{pb.SuspendMode_SUSPEND_MODE_OFFLOAD},
-	})
-
-	err := backend.Snapshot(context.Background(),
-		channelReq("trainer-1", pb.SuspendMode_SUSPEND_MODE_DISCARD))
-	if err == nil || !strings.Contains(err.Error(), "does not support suspend mode") {
-		t.Errorf("Expected unsupported-mode error, got: %v", err)
-	}
-	if len(commands) != 0 {
-		t.Errorf("Expected no command to be dispatched, got %d", len(commands))
 	}
 }

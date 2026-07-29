@@ -189,38 +189,40 @@ func TestServer_WorkloadChannel_UnregisteredJobFails(t *testing.T) {
 }
 
 func TestServer_WorkloadChannel_RegistrationValidation(t *testing.T) {
-	_, _, client := newChannelTestServer(t)
-	ctx := context.Background()
-
-	// First message must be a registration.
-	stream, err := client.WorkloadChannel(ctx)
-	if err != nil {
-		t.Fatalf("Failed to open workload channel: %v", err)
+	tests := []struct {
+		name    string
+		msg     *pb.WorkloadMessage
+		wantMsg string
+	}{
+		{
+			name:    "first message must be a registration",
+			msg:     &pb.WorkloadMessage{Message: &pb.WorkloadMessage_Result{Result: &pb.CommandResult{CommandId: "x"}}},
+			wantMsg: "first message on the workload channel must be a RegisterWorkload",
+		},
+		{
+			name:    "job_id is required",
+			msg:     &pb.WorkloadMessage{Message: &pb.WorkloadMessage_Register{Register: &pb.RegisterWorkload{}}},
+			wantMsg: "job_id is required",
+		},
 	}
-	err = stream.Send(&pb.WorkloadMessage{
-		Message: &pb.WorkloadMessage_Result{Result: &pb.CommandResult{CommandId: "x"}},
-	})
-	if err != nil {
-		t.Fatalf("Send failed: %v", err)
-	}
-	_, err = stream.Recv()
-	if status.Code(err) != codes.InvalidArgument {
-		t.Errorf("Expected InvalidArgument for non-registration first message, got: %v", err)
-	}
-
-	// job_id is required.
-	stream, err = client.WorkloadChannel(ctx)
-	if err != nil {
-		t.Fatalf("Failed to open workload channel: %v", err)
-	}
-	err = stream.Send(&pb.WorkloadMessage{
-		Message: &pb.WorkloadMessage_Register{Register: &pb.RegisterWorkload{}},
-	})
-	if err != nil {
-		t.Fatalf("Send failed: %v", err)
-	}
-	_, err = stream.Recv()
-	if status.Code(err) != codes.InvalidArgument {
-		t.Errorf("Expected InvalidArgument for missing job_id, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, client := newChannelTestServer(t)
+			ctx := context.Background()
+			stream, err := client.WorkloadChannel(ctx)
+			if err != nil {
+				t.Fatalf("Failed to open workload channel: %v", err)
+			}
+			if err := stream.Send(tt.msg); err != nil {
+				t.Fatalf("Send failed: %v", err)
+			}
+			_, err = stream.Recv()
+			if status.Code(err) != codes.InvalidArgument {
+				t.Errorf("Expected InvalidArgument, got: %v", err)
+			}
+			if !strings.Contains(status.Convert(err).Message(), tt.wantMsg) {
+				t.Errorf("Expected error containing %q, got: %v", tt.wantMsg, err)
+			}
+		})
 	}
 }
