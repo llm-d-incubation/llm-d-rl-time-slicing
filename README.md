@@ -16,9 +16,13 @@
   
   ## See Time-Slicing in Action
 
-![Time-slicing replay](docs/diagrams/verl-sync-rl-timeslice-replay.gif)
+  ### Sync RL — veRL GRPO · Qwen2.5-0.5B-Instruct (GSM8K) · 2×H100 80GB
+  ![Sync RL time-slicing replay](docs/diagrams/verl-sync-rl-timeslice-replay.gif)
 
-&#9654; **[Open the interactive replay](https://llm-d-incubation.github.io/llm-d-rl-time-slicing/diagrams/verl-sync-rl-timeslice-replay.html)** — play recorded runs, inspect every lock handoff and snapshot/restore, and select between runs as more are added.
+  ### Async RL — veRL fully-async GRPO · DeepSeek-R1-1.5B (DAPO-Math + Eurus-Code) · 3×H100 80GB · staleness=8
+  ![Async RL time-slicing replay](docs/diagrams/verl-async-rl-timeslice-replay.gif)
+
+  &#9654; **[Open the interactive replay](https://llm-d-incubation.github.io/llm-d-rl-time-slicing/diagrams/rl-timeslice-replay.html)** — play recorded runs, inspect every lock handoff and snapshot/restore, and select between runs.
 
 ## How It Works
   We introduce **collaborative, application-aware time-slicing**. Using a lightweight client library that pairs seamlessly with your existing training and inference frameworks, the system delivers two core capabilities:
