@@ -77,10 +77,11 @@ TEST_NODE=<gpu-node> ./tests/integration/run.sh \
 --build              Build the agent image from the working directory via
                      Cloud Build (requires --project); explicit
                      --agent-image overrides
---project PROJECT    GCP project (image pushes with --build; also used by
-                     gcloud get-credentials with --cluster)
---cluster CLUSTER    GKE cluster name
---zone ZONE          GKE cluster zone
+--project PROJECT    GCP project (required with --build for image pushes;
+                     also used by gcloud get-credentials with --cluster)
+--cluster CLUSTER    GKE cluster name (optional; omit to use current
+                     kubectl context)
+--zone ZONE          GKE cluster zone (optional)
 --model MODEL        Model to load (default: Qwen/Qwen2.5-0.5B)
 --phase PHASE        "standalone", "k8s", or "both" (default)
 --skip-cleanup       Leave the test-runner pod and chart fixture running
