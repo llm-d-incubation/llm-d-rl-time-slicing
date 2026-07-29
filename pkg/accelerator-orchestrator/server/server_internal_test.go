@@ -14,7 +14,6 @@ import (
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/accelerator-orchestrator/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -139,14 +138,15 @@ func (m *MockGroupLockStore) Unlock(ctx context.Context, jobID string) error {
 
 func TestServer_Acquire_Whitebox(t *testing.T) {
 	tests := []struct {
-		name          string
-		setupStores   func(t *testing.T, ctx context.Context) (GroupStore, JobStore)
-		groupID       string
-		jobID         string
-		expectedCode  codes.Code
-		verify        func(t *testing.T, resp *pb.AcquireResponse, err error)
-		expectEnqueue bool
-		hook          func(t *testing.T, srv *Server, gs GroupStore, js JobStore, cancel context.CancelFunc)
+		name         string
+		setupStores  func(t *testing.T, ctx context.Context) (GroupStore, JobStore)
+		groupID      string
+		jobID        string
+		expectedCode codes.Code
+		verify       func(t *testing.T, resp *pb.AcquireResponse, err error)
+		wantEnqueues int
+		hook         func(t *testing.T, srv *Server, gs GroupStore, js JobStore, cancel context.CancelFunc)
+		verifyAfter  func(t *testing.T, gs GroupStore)
 	}{
 		{
 			name: "block when it has not yet reconciled but another job requesting lock",
@@ -168,10 +168,10 @@ func TestServer_Acquire_Whitebox(t *testing.T) {
 				g.Status().SetLoadedJob("job-1")
 				return gs, store.NewJobStore()
 			},
-			groupID:       "group-1",
-			jobID:         "job-1",        // job-1 tries to acquire, should block because lock is for job-2
-			expectedCode:  codes.Canceled, // We expect Canceled because we will cancel it manually
-			expectEnqueue: true,
+			groupID:      "group-1",
+			jobID:        "job-1",        // job-1 tries to acquire, should block because lock is for job-2
+			expectedCode: codes.Canceled, // We expect Canceled because we will cancel it manually
+			wantEnqueues: 1,
 			hook: func(t *testing.T, srv *Server, gs GroupStore, js JobStore, cancel context.CancelFunc) {
 				t.Helper()
 				tickCalled := make(chan struct{}, 1)
@@ -191,6 +191,77 @@ func TestServer_Acquire_Whitebox(t *testing.T) {
 					}
 					cancel()
 				}()
+			},
+			verifyAfter: func(t *testing.T, gs GroupStore) {
+				t.Helper()
+				g, err := gs.Get(context.Background(), "group-1")
+				if err != nil {
+					t.Fatalf("failed to get group: %v", err)
+				}
+				// Cancelled acquire must remove job-1 from the waiting queue
+				// without touching job-2's lock.
+				if g.Spec().GetWaitingJobQueue().Exists("job-1") {
+					t.Errorf("expected job-1 to be removed from waiting queue")
+				}
+				if got := g.Spec().LockingJob(); got != "job-2" {
+					t.Errorf("LockingJob() = %q, want %q", got, "job-2")
+				}
+			},
+		},
+		{
+			name: "release lock when acquire is cancelled after lock granted",
+			setupStores: func(t *testing.T, ctx context.Context) (GroupStore, JobStore) {
+				t.Helper()
+				lockStore := store.NewMemLockStore()
+				// job-1 already holds the lock (promoted while its Acquire was
+				// waiting), but its context has not been loaded yet, so the
+				// acquire keeps blocking.
+				if err := lockStore.Lock(ctx, "group-1", "job-1"); err != nil {
+					t.Fatalf("failed to lock: %v", err)
+				}
+				gs := store.NewGroupStore(lockStore)
+				g, _, err := gs.GetOrCreate(ctx, "group-1")
+				if err != nil {
+					t.Fatalf("failed to create group: %v", err)
+				}
+				g.Status().SetLoadedJob("job-2")
+				return gs, store.NewJobStore()
+			},
+			groupID:      "group-1",
+			jobID:        "job-1",
+			expectedCode: codes.Canceled,
+			// One enqueue from the lock request, one from releasing the lock
+			// so the controller can promote the next waiter.
+			wantEnqueues: 2,
+			hook: func(t *testing.T, srv *Server, gs GroupStore, js JobStore, cancel context.CancelFunc) {
+				t.Helper()
+				tickCalled := make(chan struct{}, 1)
+				origCheck := srv.checkAcquire
+				srv.checkAcquire = func(ctx context.Context, groupID, jobID string, startTime time.Time) (*pb.AcquireResponse, error, bool) {
+					resp, err, done := origCheck(ctx, groupID, jobID, startTime)
+					select {
+					case tickCalled <- struct{}{}:
+					default:
+					}
+					return resp, err, done
+				}
+				// Wait for 5 ticks to be sure it is blocked, then cancel
+				go func() {
+					for i := 0; i < 5; i++ {
+						<-tickCalled
+					}
+					cancel()
+				}()
+			},
+			verifyAfter: func(t *testing.T, gs GroupStore) {
+				t.Helper()
+				g, err := gs.Get(context.Background(), "group-1")
+				if err != nil {
+					t.Fatalf("failed to get group: %v", err)
+				}
+				if got := g.Spec().LockingJob(); got != "" {
+					t.Errorf("LockingJob() = %q, want empty (lock released)", got)
+				}
 			},
 		},
 		{
@@ -222,10 +293,10 @@ func TestServer_Acquire_Whitebox(t *testing.T) {
 				}
 				return gs, store.NewJobStore()
 			},
-			groupID:       "group-1",
-			jobID:         "job-2", // job-2 tries to acquire, should succeed after job-2 is loaded
-			expectedCode:  codes.OK,
-			expectEnqueue: true,
+			groupID:      "group-1",
+			jobID:        "job-2", // job-2 tries to acquire, should succeed after job-2 is loaded
+			expectedCode: codes.OK,
+			wantEnqueues: 1,
 			hook: func(t *testing.T, srv *Server, gs GroupStore, js JobStore, cancel context.CancelFunc) {
 				t.Helper()
 				mGS, ok := gs.(*MockGroupStore)
@@ -274,39 +345,23 @@ func TestServer_Acquire_Whitebox(t *testing.T) {
 			defer cancel()
 			gs, js := tc.setupStores(t, serverCtx)
 
-			srv, mq, cleanup := InitGRPCServer(gs, js)
-			defer cleanup()
+			mq := &MockWorkQueue{}
+			ctrl := controller.NewController(nil, nil, mq, nil, nil)
+			srv := NewServer(ctrl, gs, js)
+			srv.acquirePollInterval = 1 * time.Millisecond
 
 			if tc.hook != nil {
 				tc.hook(t, srv, gs, js, cancel)
 			}
 
-			conn, err := grpc.NewClient(
-				"passthrough:///bufnet",
-				grpc.WithContextDialer(BufDialer),
-				grpc.WithTransportCredentials(insecure.NewCredentials()),
-			)
-			if err != nil {
-				t.Fatalf("Failed to dial bufnet: %v", err)
-			}
-			defer conn.Close()
-			client := pb.NewAcceleratorOrchestratorServiceClient(conn)
-
-			resp, err := client.Acquire(clientCtx, &pb.AcquireRequest{
+			// Call the handler directly (not through gRPC) so that when it
+			// returns, all of its side effects — including lock-request
+			// cleanup on cancellation — have completed and can be asserted
+			// synchronously.
+			resp, err := srv.Acquire(clientCtx, &pb.AcquireRequest{
 				GroupId: tc.groupID,
 				JobId:   tc.jobID,
 			})
-
-			added := mq.GetAdded()
-			if tc.expectEnqueue {
-				if len(added) != 1 || added[0] != tc.groupID {
-					t.Errorf("expected group %s to be enqueued, got %v", tc.groupID, added)
-				}
-			} else {
-				if len(added) != 0 {
-					t.Errorf("expected no enqueue, got %v", added)
-				}
-			}
 
 			if tc.expectedCode != codes.OK {
 				if err == nil {
@@ -319,11 +374,22 @@ func TestServer_Acquire_Whitebox(t *testing.T) {
 				if st.Code() != tc.expectedCode {
 					t.Errorf("Expected code %v, got %v", tc.expectedCode, st.Code())
 				}
-				return
+			} else if tc.verify != nil {
+				tc.verify(t, resp, err)
 			}
 
-			if tc.verify != nil {
-				tc.verify(t, resp, err)
+			if tc.verifyAfter != nil {
+				tc.verifyAfter(t, gs)
+			}
+
+			added := mq.GetAdded()
+			if len(added) != tc.wantEnqueues {
+				t.Errorf("expected %d enqueues, got %v", tc.wantEnqueues, added)
+			}
+			for _, id := range added {
+				if id != tc.groupID {
+					t.Errorf("expected only group %s to be enqueued, got %v", tc.groupID, added)
+				}
 			}
 		})
 	}

@@ -269,6 +269,27 @@ func (s *GroupSpec) Yield(ctx context.Context, jobID string) error {
 	// to yield their job if there is a temporary issue locking for next job.
 }
 
+// CancelLockRequest undoes a previous RequestLock for the given job when the
+// caller stops waiting for the lock (e.g. the acquire was cancelled or timed out).
+// If the job is still waiting in the queue it is removed. If the job has already
+// been promoted to be the locking job, the lock is released so the group is not
+// left locked for a job that believes it failed to acquire.
+// Returns true if the lock was released, meaning the next waiter can be promoted.
+func (s *GroupSpec) CancelLockRequest(ctx context.Context, jobID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lockingJob == jobID {
+		if err := s.unlock(ctx, jobID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	s.queue.Remove(jobID)
+	return false, nil
+}
+
 // RequestLock requests a lock for the given job.
 // If the job already holds the lock, it returns immediately.
 // Otherwise, it enqueues the job in the waiting queue.
