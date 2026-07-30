@@ -597,12 +597,7 @@ function finish() {
       $('sum_lbl').textContent = 'GPU duty cycle, baseline → time-sliced';
       $('sum_big').textContent = Math.round(S.duty_base) + '% → ' + Math.round(S.duty_ts) + '%';
     }
-    $('sum_l1').textContent =
-      Object.entries(S.duty_gpu).map(function(e) {
-        var g = e[0], d = e[1];
-        return 'GPU ' + g + ': ' + (d[0] == null ? '–' : Math.round(d[0]) + '%') +
-               ' → ' + (d[1] == null ? '–' : Math.round(d[1]) + '%');
-      }).join('   ·   ');
+    $('sum_l1').textContent = '';
     var stats = S.swaps + ' C/R swaps · median snapshot ' + fmtMs(S.med_ckpt_ms) +
                 ' · median restore ' + fmtMs(S.med_restore_ms);
     if (S.speedup) {
