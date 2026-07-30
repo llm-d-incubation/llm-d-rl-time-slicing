@@ -11,6 +11,8 @@ All snapshot/restore calls go through the **Python client** (`timeslice.snapshot
 - `harness/` — shared framework: in-cluster client, node selection, pod lifecycle, exec/HTTP/VRAM helpers
 - `snapshot-agent/` — the agent suite: `standalone_test.go` / `k8s_test.go`, plus the agent specifics (`harness.go` agent deployment, `engines.go` engine specs, `agentctl.py` — a thin CLI over the Python client that builds `BackendConfig` protos from primitive flags)
 
+**How the standalone mode for snapshot-agent works:** since the test suite runs inside a GKE cluster, standalone mode is simulated by deploying a privileged pod with `hostPID` and `hostNetwork` on the test node. The `make standalone` artifacts are built in the test runner and copied into this pod, which then runs the agent binary with the same GPU and PID namespace access as a host process. Long-term, standalone tests will run on an actual GPU VM.
+
 ## Adding a test
 
 Add a `t.Run(...)` inside the engine group that provides the pods it needs, using the harness helpers:

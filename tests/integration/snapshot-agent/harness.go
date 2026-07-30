@@ -91,7 +91,7 @@ func NewHarness(t *testing.T) *Harness {
 	h.Node = h.PickNode(t)
 	t.Logf("using node %s, mode %s", h.Node, h.Mode)
 
-	h.deployAgent(t)
+	h.deployStandaloneAgent(t)
 	return h
 }
 
@@ -131,7 +131,7 @@ func NewChartHarness(t *testing.T) *Harness {
 	return h
 }
 
-func (h *Harness) deployAgent(t *testing.T) {
+func (h *Harness) deployStandaloneAgent(t *testing.T) {
 	t.Helper()
 	h.DeletePodAndWait(t, agentPodName)
 
