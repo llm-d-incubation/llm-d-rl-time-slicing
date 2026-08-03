@@ -20,6 +20,8 @@ const (
 	// BackendAppChannel suspends/resumes application-aware workloads through
 	// their registered workload channels (see the WorkloadChannel RPC).
 	BackendAppChannel BackendType = "app-channel"
+	// BackendDirectMemory is the Direct Memory (process-level) checkpointing backend.
+	BackendDirectMemory BackendType = "direct-memory"
 )
 
 // Request carries one backend invocation: the job it targets and the

@@ -55,10 +55,11 @@ func initGRPCServer() {
 	noopBackend := backends.NewNoopBackend()
 	failingBackend := &FailingBackend{}
 	backendsMap := map[backends.BackendType]backends.Backend{
-		backends.BackendNoop:        noopBackend,
-		backends.BackendCuda:        noopBackend,
-		backends.BackendAppEndpoint: noopBackend,
-		"failing":                   failingBackend,
+		backends.BackendNoop:         noopBackend,
+		backends.BackendCuda:         noopBackend,
+		backends.BackendDirectMemory: noopBackend,
+		backends.BackendAppEndpoint:  noopBackend,
+		"failing":                    failingBackend,
 	}
 
 	// Default to BackendCuda (matching production) so that requests without a
@@ -746,5 +747,127 @@ func TestServer_Snapshot_StandaloneMode_BackendValidation(t *testing.T) {
 	}
 	if !strings.Contains(opResp.GetError(), "PID") {
 		t.Errorf("Expected backend PID validation error, got: %q", opResp.GetError())
+	}
+}
+
+type mockDirectMemoryBackend struct {
+	backends.NoopBackend
+	mu       sync.Mutex
+	lastReq  backends.Request
+	snapped  bool
+	restored bool
+}
+
+func (m *mockDirectMemoryBackend) Snapshot(ctx context.Context, req backends.Request) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastReq = req
+	m.snapped = true
+	return nil
+}
+
+func (m *mockDirectMemoryBackend) Restore(ctx context.Context, req backends.Request) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastReq = req
+	m.restored = true
+	return nil
+}
+
+func TestServer_GetSnapshotBackendType_DirectMemory(t *testing.T) {
+	srv := NewServer(nil, backends.BackendCuda, "k8s", backends.NewChannelRegistry())
+	cfg := &pb.BackendConfig{
+		Backend: &pb.BackendConfig_DirectMemory{
+			DirectMemory: &pb.DirectMemoryBackendConfig{},
+		},
+	}
+	got := srv.getSnapshotBackendType(cfg)
+	if got != backends.BackendDirectMemory {
+		t.Errorf("getSnapshotBackendType() = %v, want %v", got, backends.BackendDirectMemory)
+	}
+}
+
+func TestServer_DirectMemory_StandaloneMode(t *testing.T) {
+	mock := &mockDirectMemoryBackend{}
+	backendsMap := map[backends.BackendType]backends.Backend{
+		backends.BackendDirectMemory: mock,
+	}
+	srv := NewServer(backendsMap, backends.BackendDirectMemory, "standalone", backends.NewChannelRegistry())
+
+	cfg := &pb.BackendConfig{
+		Backend: &pb.BackendConfig_DirectMemory{
+			DirectMemory: &pb.DirectMemoryBackendConfig{
+				ExplicitTarget: &pb.ProcessTarget{Pids: []int32{123, 456}},
+			},
+		},
+	}
+
+	fn, err := srv.buildSnapshotFn(context.Background(), "job-standalone", backends.BackendDirectMemory, mock, cfg)
+	if err != nil {
+		t.Fatalf("buildSnapshotFn error: %v", err)
+	}
+	if err := fn(); err != nil {
+		t.Fatalf("snapshot fn error: %v", err)
+	}
+	if !mock.snapped || mock.lastReq.JobID != "job-standalone" {
+		t.Errorf("Expected snapshot call on job-standalone, got %v", mock.lastReq)
+	}
+
+	rfn, err := srv.buildRestoreFn(context.Background(), "job-standalone", backends.BackendDirectMemory, mock, cfg)
+	if err != nil {
+		t.Fatalf("buildRestoreFn error: %v", err)
+	}
+	if err := rfn(); err != nil {
+		t.Fatalf("restore fn error: %v", err)
+	}
+	if !mock.restored || mock.lastReq.JobID != "job-standalone" {
+		t.Errorf("Expected restore call on job-standalone, got %v", mock.lastReq)
+	}
+}
+
+func TestServer_DirectMemory_K8sMode(t *testing.T) {
+	initGRPCServer()
+	mock := &mockDirectMemoryBackend{}
+	backendsMap := map[backends.BackendType]backends.Backend{
+		backends.BackendDirectMemory: mock,
+	}
+	srv := NewServer(backendsMap, backends.BackendDirectMemory, "k8s", backends.NewChannelRegistry())
+
+	jobID := "test-job-dm-k8s"
+	podName := "pod-dm-k8s"
+	createFakePod(context.Background(), t, jobID, podName)
+	mockedPIDsMu.Lock()
+	mockedPIDs[podName] = []int{101, 102}
+	mockedPIDsMu.Unlock()
+
+	srv.state.RegisterJob(jobID, "")
+	if err := srv.state.TransitionToRunning(jobID, []int{101, 102}); err != nil {
+		t.Fatalf("TransitionToRunning error: %v", err)
+	}
+
+	fn, err := srv.buildSnapshotFn(context.Background(), jobID, backends.BackendDirectMemory, mock, nil)
+	if err != nil {
+		t.Fatalf("buildSnapshotFn error: %v", err)
+	}
+	if err := fn(); err != nil {
+		t.Fatalf("snapshot fn error: %v", err)
+	}
+
+	pids := backends.ExtractDirectMemoryPIDStrings(mock.lastReq.Config)
+	if len(pids) != 2 || pids[0] != "101" || pids[1] != "102" {
+		t.Errorf("Expected discovered PIDs [101, 102], got %v", pids)
+	}
+
+	rfn, err := srv.buildRestoreFn(context.Background(), jobID, backends.BackendDirectMemory, mock, nil)
+	if err != nil {
+		t.Fatalf("buildRestoreFn error: %v", err)
+	}
+	if err := rfn(); err != nil {
+		t.Fatalf("restore fn error: %v", err)
+	}
+
+	rpids := backends.ExtractDirectMemoryPIDStrings(mock.lastReq.Config)
+	if len(rpids) != 2 || rpids[0] != "101" || rpids[1] != "102" {
+		t.Errorf("Expected restored PIDs [101, 102], got %v", rpids)
 	}
 }

@@ -88,6 +88,9 @@ func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.Backe
 	if config.GetCuda() != nil {
 		return backends.BackendCuda
 	}
+	if config.GetDirectMemory() != nil {
+		return backends.BackendDirectMemory
+	}
 	if config.GetAppEndpoint() != nil {
 		return backends.BackendAppEndpoint
 	}
@@ -150,7 +153,7 @@ func (s *Server) buildSnapshotFn(
 		}, nil
 	case "k8s":
 		switch backendType {
-		case backends.BackendCuda:
+		case backends.BackendCuda, backends.BackendDirectMemory:
 			explicitPIDs := extractExplicitPIDs(config)
 			return func() error {
 				slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
@@ -158,8 +161,18 @@ func (s *Server) buildSnapshotFn(
 				if pidErr != nil {
 					return pidErr
 				}
-				cudaReq := backends.Request{JobID: jobID, Config: backends.BuildCudaConfig(allPIDStrings)}
-				if err := backend.Snapshot(bgCtx, cudaReq); err != nil {
+				var reqConfig *pb.BackendConfig
+				var cfgErr error
+				if backendType == backends.BackendDirectMemory {
+					reqConfig, cfgErr = backends.BuildDirectMemoryConfig(allPIDStrings)
+				} else {
+					reqConfig = backends.BuildCudaConfig(allPIDStrings)
+				}
+				if cfgErr != nil {
+					return fmt.Errorf("failed to build backend config for job %s: %w", jobID, cfgErr)
+				}
+				req := backends.Request{JobID: jobID, Config: reqConfig}
+				if err := backend.Snapshot(bgCtx, req); err != nil {
 					return fmt.Errorf("failed to snapshot job %s: %w", jobID, err)
 				}
 				s.state.UpdateJobPIDs(jobID, allPIDs)
@@ -179,17 +192,22 @@ func (s *Server) buildSnapshotFn(
 }
 
 // extractExplicitPIDs returns the explicitly targeted PIDs from a CUDA
-// BackendConfig, or nil if none were provided.
+// or DirectMemory BackendConfig, or nil if none were provided.
 func extractExplicitPIDs(config *pb.BackendConfig) []int32 {
-	cuda := config.GetCuda()
-	if cuda == nil {
+	if config == nil {
 		return nil
 	}
-	target := cuda.GetExplicitTarget()
-	if target == nil {
-		return nil
+	if cuda := config.GetCuda(); cuda != nil {
+		if target := cuda.GetExplicitTarget(); target != nil {
+			return target.GetPids()
+		}
 	}
-	return target.GetPids()
+	if dm := config.GetDirectMemory(); dm != nil {
+		if target := dm.GetExplicitTarget(); target != nil {
+			return target.GetPids()
+		}
+	}
+	return nil
 }
 
 // buildRestoreFn returns the background restore function for the given
@@ -214,7 +232,7 @@ func (s *Server) buildRestoreFn(
 		}, nil
 	case "k8s":
 		switch backendType {
-		case backends.BackendCuda:
+		case backends.BackendCuda, backends.BackendDirectMemory:
 			return func() error {
 				slog.InfoContext(bgCtx, "Background: Starting restore", "backend", backendType)
 				pids, pidErr := s.state.GetJobPIDs(jobID)
@@ -226,7 +244,17 @@ func (s *Server) buildRestoreFn(
 					pidStrings = append(pidStrings, strconv.Itoa(pid))
 				}
 				slog.InfoContext(bgCtx, "Restoring PIDs", "pids", pidStrings, "backend", backendType)
-				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: backends.BuildCudaConfig(pidStrings)})
+				var reqConfig *pb.BackendConfig
+				var cfgErr error
+				if backendType == backends.BackendDirectMemory {
+					reqConfig, cfgErr = backends.BuildDirectMemoryConfig(pidStrings)
+				} else {
+					reqConfig = backends.BuildCudaConfig(pidStrings)
+				}
+				if cfgErr != nil {
+					return fmt.Errorf("failed to build backend config for job %s: %w", jobID, cfgErr)
+				}
+				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: reqConfig})
 			}, nil
 		case backends.BackendAppEndpoint, backends.BackendAppChannel:
 			return func() error {
