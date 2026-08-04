@@ -152,16 +152,18 @@ func (c *Cluster) WaitPodReady(t *testing.T, name string, timeout time.Duration)
 }
 
 // WaitPodReadyByLabel waits for a Ready pod matching labelSelector on the
-// given node in the given namespace and returns its IP. It attaches to pods
-// deployed by something other than the suite (e.g. a Helm chart DaemonSet).
+// given node in the given namespace and returns its IP. If node is empty,
+// any node is accepted. It attaches to pods deployed by something other
+// than the suite (e.g. a Helm chart DaemonSet or Deployment).
 func (c *Cluster) WaitPodReadyByLabel(t *testing.T, namespace, labelSelector, node string, timeout time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		pods, err := c.Client.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{
-			LabelSelector: labelSelector,
-			FieldSelector: "spec.nodeName=" + node,
-		})
+		opts := metav1.ListOptions{LabelSelector: labelSelector}
+		if node != "" {
+			opts.FieldSelector = "spec.nodeName=" + node
+		}
+		pods, err := c.Client.CoreV1().Pods(namespace).List(context.Background(), opts)
 		if err == nil {
 			for i := range pods.Items {
 				pod := &pods.Items[i]
