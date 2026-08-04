@@ -9,6 +9,8 @@ service:
   type: ClusterIP
   port: 50051
 
+snapshotAgentPort: 9001
+
 resources: {}
   # limits:
   #   cpu: 100m

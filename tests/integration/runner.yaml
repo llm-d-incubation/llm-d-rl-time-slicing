@@ -28,8 +28,9 @@ metadata:
   name: snapshot-agent-test-runner
   namespace: default
 ---
-# Cluster-wide read-only: node discovery and the all-namespaces pod listing
-# used to find a free GPU. Pod CRUD/exec stays namespace-local below.
+# Cluster-wide: node discovery (+ label updates for orchestrator groups),
+# all-namespaces pod listing for free GPU detection. Pod CRUD/exec stays
+# namespace-local below.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -37,7 +38,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "update", "patch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
@@ -70,6 +71,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # Orchestrator scenarios create and clean up DRA ResourceClaims.
+  - apiGroups: ["resource.k8s.io"]
+    resources: ["resourceclaims"]
+    verbs: ["create", "delete", "get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -1,21 +1,36 @@
 # Integration Tests
 
-End-to-end tests for snapshot-agent backends on real GPU hardware, in k8s and standalone modes, exercising the Helm chart and Makefile deployment paths respectively.
+End-to-end tests for the time-slicing stack on real GPU hardware, exercising the official Helm chart deployment paths.
 
-The test suite is written in Go and runs inside the cluster: `run.sh` deploys a test-runner pod, copies the repo source into it, and executes `go test` there. The Go harness deploys the snapshot-agent and inference engine pods itself — one engine at a time, so a single free GPU is enough.
+The test suite is written in Go and runs inside the cluster: `run.sh` deploys a test-runner pod, copies the repo source into it, and executes `go test` there.
 
-All snapshot/restore calls go through the **Python client** (`timeslice.snapshot_agent`, invoked via `agentctl.py`), so the entire client layer is covered.
+## Suites
 
-- `run.sh` — launcher (build image, install chart fixture, deploy runner, copy source, build `make standalone`, install the Python client, `go test`, cleanup)
-- `runner.yaml` — test-runner pod + RBAC
-- `harness/` — shared framework: in-cluster client, node selection, pod lifecycle, exec/HTTP/VRAM helpers
-- `snapshot-agent/` — the agent suite: `standalone_test.go` / `k8s_test.go`, plus the agent specifics (`harness.go` agent deployment, `engines.go` engine specs, `agentctl.py` — a thin CLI over the Python client that builds `BackendConfig` protos from primitive flags)
+### snapshot-agent (phases: standalone, k8s)
 
-**How the standalone mode for snapshot-agent works:** since the test suite runs inside a GKE cluster, standalone mode is simulated by deploying a privileged pod with `hostPID` and `hostNetwork` on the test node. The `make standalone` artifacts are built in the test runner and copied into this pod, which then runs the agent binary with the same GPU and PID namespace access as a host process. Long-term, standalone tests will run on an actual GPU VM.
+Tests snapshot-agent backends in standalone and k8s modes. The Go harness deploys the snapshot-agent and inference engine pods itself -- one engine at a time, so a single free GPU is enough. All snapshot/restore calls go through the **Python client** (`timeslice.snapshot_agent`, invoked via `agentctl.py`), so the entire client layer is covered.
+
+**How the standalone mode works:** since the test suite runs inside a GKE cluster, standalone mode is simulated by deploying a privileged pod with `hostPID` and `hostNetwork` on the test node. The `make standalone` artifacts are built in the test runner and copied into this pod, which then runs the agent binary with the same GPU and PID namespace access as a host process.
+
+### orchestrator (phase: orchestrator)
+
+Composed orchestrator integration suite. Installs BOTH official Helm charts (snapshot-agent + timeslice-orchestrator) on `TEST_NODE` and drives real orchestrator scenarios through the gRPC API. The orchestrator chart is configured with `snapshotAgentPort` matching `CHART_AGENT_PORT` so it commands the suite's own agent.
+
+The suite labels `TEST_NODE` with dedicated integration groups (`integ-samplers`, `integ-trainers`) so scenario workloads do not interfere with unrelated production groups on shared clusters.
+
+## Layout
+
+- `run.sh` -- launcher (build images, install chart fixtures, deploy runner, copy source, build `make standalone`, install the Python client, `go test`, cleanup)
+- `runner.yaml` -- test-runner pod + RBAC
+- `harness/` -- shared framework: in-cluster client, node selection, pod lifecycle, exec/HTTP/VRAM helpers
+- `snapshot-agent/` -- the agent suite: `standalone_test.go` / `k8s_test.go`, plus the agent specifics (`harness.go` agent deployment, `engines.go` engine specs, `agentctl.py`)
+- `orchestrator/` -- the orchestrator suite: `orchestrator_test.go` / `harness.go`
+- `orchestrator/scenarios/` -- scenario drivers shared by both the simulate tier (unit tests) and the composed suite
+- `orchestrator/simulate/` -- fakes tier: in-process orchestrator with fake K8s, runs on every PR
 
 ## Adding a test
 
-Add a `t.Run(...)` inside the engine group that provides the pods it needs, using the harness helpers:
+**snapshot-agent:** Add a `t.Run(...)` inside the engine group that provides the pods it needs, using the harness helpers:
 
 ```go
 h.WithEngine(t, VLLM, func(t *testing.T, e *Engine) {
@@ -31,75 +46,85 @@ h.WithEngine(t, VLLM, func(t *testing.T, e *Engine) {
 
 A new engine is an `EngineSpec` in `snapshot-agent/engines.go`.
 
+**orchestrator:** Add a scenario to `orchestrator/scenarios/` and call it from the `TestOrchestrator` function in `orchestrator/orchestrator_test.go`.
+
 ## Prerequisites
 
 - A GKE cluster with at least 1 free GPU
 - `gcloud` and `kubectl` on the machine running the tests
   (Go and everything else run inside the cluster)
-- For the k8s phase: a snapshot-agent image built from the official
-  Dockerfile (`--build` does this for you; `cloudbuild-image.yaml` defaults
-  to `docker/snapshot-agent/Dockerfile`). The standalone phase needs no
-  image — it builds the agent from source in the test runner.
+- For the k8s/orchestrator phases: images built from the official
+  Dockerfiles (`--build` does this for you). The standalone phase needs no
+  image -- it builds the agent from source in the test runner.
 - Cloud Build API enabled (`gcloud services enable cloudbuild.googleapis.com`)
   and permission to push to the project's registry; GKE nodes in the same
   project can pull from `gcr.io/<project>` by default.
 
 ## Testing your changes
 
-Everything runs from your working directory — uncommitted changes included —
+Everything runs from your working directory -- uncommitted changes included --
 so no commit or merge is needed at any layer:
 
 ```bash
+# snapshot-agent phases (standalone + k8s):
 TEST_NODE=<gpu-node> ./tests/integration/run.sh \
   --build --project <gcp-project>
+
+# orchestrator phase only:
+TEST_NODE=<gpu-node> ./tests/integration/run.sh \
+  --build --project <gcp-project> --phase orchestrator
+
+# everything:
+TEST_NODE=<gpu-node> ./tests/integration/run.sh \
+  --build --project <gcp-project> --phase all
 ```
 
-`--build` has Cloud Build produce the agent image from the working directory
+`--build` has Cloud Build produce the images from the working directory
 (tagged `integ-<commit>` so repeated runs don't collide with node image
-caches) and runs both phases against it. `run.sh` then copies the local
-workspace into the cluster, so the standalone phase's `make standalone`
-build, the Helm chart (installed from local `deploy/`), the Python client,
-and the test code all come from the workspace too.
+caches).
 
-Alternative (pre-built image — any registry the cluster can pull from):
+Alternative (pre-built images -- any registry the cluster can pull from):
 
 ```bash
-gcloud builds submit --config=cloudbuild-image.yaml \
-  --substitutions=_IMAGE=gcr.io/<project>/snapshot-agent:dev .
-
 TEST_NODE=<gpu-node> ./tests/integration/run.sh \
-  --agent-image gcr.io/<project>/snapshot-agent:dev
+  --agent-image gcr.io/<project>/snapshot-agent:dev \
+  --orch-image gcr.io/<project>/timesliceorchestrator:dev \
+  --phase all
 ```
 
 ## Options
 
 ```text
---agent-image IMAGE  Snapshot-agent image the k8s phase installs via the
-                     official chart (required for k8s/both unless --build)
---build              Build the agent image from the working directory via
-                     Cloud Build (requires --project); explicit
-                     --agent-image overrides
+--agent-image IMAGE  Snapshot-agent image (required for k8s/orchestrator
+                     unless --build)
+--orch-image IMAGE   Orchestrator image (required for orchestrator unless
+                     --build)
+--build              Build images from the working directory via Cloud Build
+                     (requires --project); explicit --agent-image /
+                     --orch-image overrides
 --project PROJECT    GCP project (required with --build for image pushes;
                      also used by gcloud get-credentials with --cluster)
 --cluster CLUSTER    GKE cluster name (optional; omit to use current
                      kubectl context)
 --zone ZONE          GKE cluster zone (optional)
 --model MODEL        Model to load (default: Qwen/Qwen2.5-0.5B)
---phase PHASE        "standalone", "k8s", or "both" (default)
---skip-cleanup       Leave the test-runner pod and chart fixture running
+--phase PHASE        "standalone", "k8s", "orchestrator", "both" (default,
+                     = standalone+k8s), or "all" (= standalone+k8s+orch)
+--skip-cleanup       Leave the test-runner pod and chart fixtures running
                      for debugging
 ```
 
 Environment:
 
-- `TEST_NODE=<node-name>` — required for the k8s phase (the chart is pinned
-  to this node); for the standalone phase it pins the suite instead of the
-  default pick (first node with a free GPU by requests). Use the pin when
-  the cluster runs workloads that occupy GPUs without requesting them
-  (time-slicing experiments), which the default pick cannot see.
-- `CHART_AGENT_PORT=<port>` — port for the chart-deployed agent (default
-  9001), so the suite can coexist with an unrelated agent on the default
-  port (the chart runs on hostNetwork).
+- `TEST_NODE=<node-name>` -- required for the k8s and orchestrator phases
+  (charts are pinned to this node); for the standalone phase it pins the
+  suite instead of the default pick (first node with a free GPU). Use the
+  pin when the cluster runs workloads that occupy GPUs without requesting
+  them (time-slicing experiments), which the default pick cannot see.
+- `CHART_AGENT_PORT=<port>` -- port for the chart-deployed agent (default
+  9002), so the suite can coexist with an unrelated agent on the default
+  port (the chart runs on hostNetwork). The orchestrator chart is
+  configured with the same port via `snapshotAgentPort`.
 
 ## Exit code
 
