@@ -3,10 +3,14 @@
 This guide provides step-by-step instructions on how to integrate and deploy **Slime** (high-performance RL framework for LLMs) with the **llm-d-rl-time-slicing** platform.
 
 ### Motivation: Maximizing GPU Utilization
-In traditional disaggregated RL setups, GPUs sit idle whenever worker groups wait for another phase to complete (e.g., trainer GPUs idling during rollout generation, or rollout GPUs idling during policy updates). Cooperative time-slicing enables multiple independent Slime jobs to multiplex physical GPU resource pools concurrently. When one job finishes a phase, its GPU context is checkpointed and evicted, allowing another job to immediately utilize the hardware—significantly driving up GPU duty cycle and overall cluster throughput.
+In disaggregated RL setups, GPUs sit idle whenever worker groups wait for another phase to complete. Cooperative time-slicing enables multiple independent Slime jobs to share physical GPU pools — when one job finishes a phase, its GPU context is checkpointed and evicted, allowing another job to immediately utilize the hardware.
 
-For a runnable example, see:
-* **[GRPO Integration Example](sync/README.md)**
+**Sync RL** (`train.py`): Training and generation alternate strictly. Both trainer and sampler GPUs have idle gaps. Time-slicing shares **both pools** — Job B trains while Job A generates, then they swap.
+
+**Async RL** (`train_async.py`): Generation N+1 runs concurrently with training N (pipelined). Sampler GPUs are busy non-stop. Only the **trainer GPU** has idle gaps waiting for the next batch. Time-slicing shares only the trainer pool; each job gets dedicated sampler GPUs (separate group per job, no contention).
+
+For a runnable sync example, see:
+* **[Sync GRPO Integration Example](sync/README.md)**
 
 ---
 
