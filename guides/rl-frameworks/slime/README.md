@@ -5,8 +5,20 @@ This guide provides step-by-step instructions on how to integrate and deploy **S
 ### Motivation: Maximizing GPU Utilization
 In traditional disaggregated RL setups, GPUs sit idle whenever worker groups wait for another phase to complete (e.g., trainer GPUs idling during rollout generation, or rollout GPUs idling during policy updates). Cooperative time-slicing enables multiple independent Slime jobs to multiplex physical GPU resource pools concurrently. When one job finishes a phase, its GPU context is checkpointed and evicted, allowing another job to immediately utilize the hardware—significantly driving up GPU duty cycle and overall cluster throughput.
 
-For a runnable example, see:
-* **[GRPO Integration Example](sync/README.md)**
+### Runnable Examples
+
+| Mode | Description | Guide |
+|------|-------------|-------|
+| **Sync disaggregated** | Two sync GRPO jobs sharing trainer + sampler GPU pools | [sync/](sync/) |
+| **Async disaggregated** | Two async GRPO jobs with shared trainer pool and dedicated samplers | [async/](async/) |
+
+### Integration Approaches
+
+There are two ways to integrate Slime with time-slicing:
+
+1. **PhaseCallback (recommended)** — `pip install timeslice-slime`, add `--phase-callback-path timeslice_slime.callback.TimesliceCallback` to your launch command. Zero Slime code changes. Works with Slime's `train.py` (sync) and `train_async.py` (async). Requires a [Slime fork with PhaseCallback support](https://github.com/aishukamal/slime/tree/feat/phase-callbacks).
+
+2. **Fork-based** — Jessica's [timeslice branch](https://github.com/jessicaochen/slime/tree/timeslice) modifies Slime's driver scripts directly to add orchestrator acquire/release calls. Covers sync mode only. Documented in detail below.
 
 ---
 

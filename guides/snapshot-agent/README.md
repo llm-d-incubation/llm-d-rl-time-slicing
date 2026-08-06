@@ -342,3 +342,11 @@ grpcurl -plaintext \
 - **GPU Not Found:** Check that the `nvidia.driver.hostPath` in the agent's configuration matches your node's setup.
 - **Garbage inference after resume (vLLM):** The workload was suspended with `SUSPEND_MODE_DISCARD`, which drops weights. Suspend with `SUSPEND_MODE_OFFLOAD` (vLLM's default when the mode is unspecified), or have the application push new weights after resume.
 - **Garbage inference after SGLang resume:** The SGLang server was started without `--enable-weights-cpu-backup`. Restart with this flag.
+
+---
+
+## Next Steps
+
+- [Accelerator Orchestrator Guide](../accelerator-orchestrator/) — the companion component that coordinates GPU access across jobs
+- [Framework Integration Guide](../framework-integration/) — how RL frameworks signal phase boundaries to trigger snapshot/restore
+- [Slime integration](../rl-frameworks/slime/) | [verl integration](../rl-frameworks/verl/) — framework-specific guides

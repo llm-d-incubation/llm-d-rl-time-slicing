@@ -310,3 +310,12 @@ kubectl port-forward svc/timeslice-acceleratororchestrator 50051:50051 -n timesl
 
 ### Metrics
 * Note: Currently under development (TBD).
+
+---
+
+## Next Steps
+
+- [Framework Integration Guide](../framework-integration/) — how to integrate RL frameworks with the orchestrator's lock protocol
+- [Slime integration](../rl-frameworks/slime/) — PhaseCallback-based integration, sync and async examples
+- [verl integration](../rl-frameworks/verl/) — subclass-based integration, three modes
+- [Snapshot Agent Guide](../snapshot-agent/) — the companion component that handles GPU state checkpoint/restore

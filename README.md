@@ -67,11 +67,11 @@ with SnapshotAgentClient(endpoint="localhost:9001") as client:
     client.restore_and_wait(job_id="my-job")    # host memory -> GPU
 ```
 
-For step-by-step instructions, installation walkthroughs, and API references, explore our [Documentation & Guides](./guides).
+For step-by-step instructions, installation walkthroughs, and API references, explore our [Documentation & Guides](./guides/README.md).
 
 ## Roadmap
 
-- **Framework integrations** — OpenRL (Snapshot Agent) in progress; Slime or veRL orchestrator integration next
+- **Framework integrations** — [Slime](./guides/rl-frameworks/slime/) and [verl](./guides/rl-frameworks/verl/) validated; OpenRL in progress
 - **Snapshot backend expansion** — faster snapshot mechanisms and selective offload (e.g., specific memory regions such as LoRA adapters)
 - **User onboarding** — simplified deployment and onboarding flows
 - **Multi-host support** — distributed multi-node time-slicing
