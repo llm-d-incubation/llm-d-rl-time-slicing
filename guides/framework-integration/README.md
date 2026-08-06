@@ -1,6 +1,6 @@
 # Framework Integration Guide
 
-How to integrate any RL training framework with GPU time-slicing.
+How to integrate an RL training framework with GPU time-slicing. This guide is for **framework owners and developers** building a new time-slicing integration — not for end users of already-integrated frameworks (see the [framework-specific guides](../rl-frameworks/)).
 
 ## Overview
 
@@ -38,7 +38,7 @@ class PhaseCallback:
 
 The driver calls `on_phase_begin` before each GPU phase and `on_phase_end` after. The time-slicing package provides a callback implementation that does lock acquire/release. The framework stays completely unaware of time-slicing.
 
-**Used by:** Slime (`--phase-callback-path timeslice_slime.callback.TimesliceCallback`)
+**Used by:** [Slime integration](../rl-frameworks/slime/) (PhaseCallback fork)
 
 ### Pattern B: Trainer subclass (for frameworks with hook/registry systems)
 
@@ -61,7 +61,7 @@ class TimeslicedTrainer(BaseTrainer):
         self.locks.drop_all()         # release after step
 ```
 
-**Used by:** verl (`trainer_mode=sync_timesliced` or `separate_async_timesliced`)
+**Used by:** [verl integration](../rl-frameworks/verl/) (`trainer_mode=sync_timesliced`)
 
 ### Pattern C: Method patching (last resort)
 

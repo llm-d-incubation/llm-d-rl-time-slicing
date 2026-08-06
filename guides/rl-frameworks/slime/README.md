@@ -3,7 +3,11 @@
 This guide provides step-by-step instructions on how to integrate and deploy **Slime** (high-performance RL framework for LLMs) with the **llm-d-rl-time-slicing** platform.
 
 ### Motivation: Maximizing GPU Utilization
-In traditional disaggregated RL setups, GPUs sit idle whenever worker groups wait for another phase to complete (e.g., trainer GPUs idling during rollout generation, or rollout GPUs idling during policy updates). Cooperative time-slicing enables multiple independent Slime jobs to multiplex physical GPU resource pools concurrently. When one job finishes a phase, its GPU context is checkpointed and evicted, allowing another job to immediately utilize the hardware—significantly driving up GPU duty cycle and overall cluster throughput.
+In disaggregated RL setups, GPUs sit idle whenever worker groups wait for another phase to complete. Cooperative time-slicing enables multiple independent Slime jobs to share physical GPU pools — when one job finishes a phase, its GPU context is checkpointed and evicted, allowing another job to immediately utilize the hardware.
+
+**Sync RL:** Both trainer and sampler GPUs have idle gaps. Time-slicing shares both pools — Job B trains while Job A generates, then they swap.
+
+**Async RL:** Sampler GPUs generate continuously (no idle time). Only the trainer GPU has idle gaps waiting for the next batch. Time-slicing shares only the trainer pool; each job gets dedicated sampler GPUs.
 
 ### Runnable Examples
 
@@ -14,11 +18,9 @@ In traditional disaggregated RL setups, GPUs sit idle whenever worker groups wai
 
 ### Integration Approaches
 
-There are two ways to integrate Slime with time-slicing:
+1. **Fork-based (current)** — Jessica's [timeslice branch](https://github.com/jessicaochen/slime/tree/timeslice) modifies Slime's driver scripts directly to add orchestrator acquire/release calls. Covers sync mode. Documented in detail below.
 
-1. **PhaseCallback (recommended)** — `pip install timeslice-slime`, add `--phase-callback-path timeslice_slime.callback.TimesliceCallback` to your launch command. Zero Slime code changes. Works with Slime's `train.py` (sync) and `train_async.py` (async). Requires a [Slime fork with PhaseCallback support](https://github.com/aishukamal/slime/tree/feat/phase-callbacks).
-
-2. **Fork-based** — Jessica's [timeslice branch](https://github.com/jessicaochen/slime/tree/timeslice) modifies Slime's driver scripts directly to add orchestrator acquire/release calls. Covers sync mode only. Documented in detail below.
+2. **PhaseCallback (in development)** — a [Slime fork with driver-level phase callbacks](https://github.com/aishukamal/slime/tree/feat/phase-callbacks) enables a zero-code-change integration via `--phase-callback-path`. Covers both sync and async modes. Pending upstream acceptance.
 
 ---
 

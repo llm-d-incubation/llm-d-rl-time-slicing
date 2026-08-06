@@ -10,8 +10,12 @@ For a detailed architectural breakdown of this inefficiency and the co-operative
 
 ### Use Cases
 
-1.  **Cooperative RL Job Interleaving:** Interleave independent RL jobs on shared GPU/TPU pools (e.g., Job B samples while Job A trains) to maximize utilization.
-2.  **Multi-tenant Resource Sharing:** Manage fair sharing of accelerator pools across teams/experiments without manual coordination or OOM risks.
+1.  **Cooperative RL Job Interleaving (Sync RL):** Interleave independent RL jobs on shared GPU/TPU pools. In sync RL, the trainer and sampler alternate strictly — Job B trains while Job A generates, then they swap. Both the trainer and sampler pools are time-sliced.
+2.  **Async RL Trainer Sharing:** In async/disaggregated RL, samplers generate continuously while trainers consume batches from a queue. The trainer GPU has idle gaps between batches — time-slicing fills those gaps with another job's training. Only the **trainer pool** is shared; each job gets dedicated sampler GPUs.
+3.  **Multi-Tenant RLaaS:** Platforms like open-rl or Tinker serve multiple users fine-tuning models. Time-slicing lets the platform pack more concurrent fine-tuning jobs onto the same GPU fleet, improving utilization without requiring users to manage scheduling.
+4.  **Batch RL Experiment Queues:** Run 4 RL experiments on 2 GPU nodes — the orchestrator queues jobs and swaps them in/out at phase boundaries, maximizing throughput without manual coordination.
+5.  **Dev/Prod GPU Sharing:** Development RL jobs share GPUs with production training during off-peak hours. The orchestrator ensures mutual exclusion and clean context switching.
+6.  **Inference + Training Co-tenancy:** A serving workload (vLLM/SGLang) shares GPUs with an RL training job. When the training job yields during its idle phase, the serving workload resumes inference.
 
 ### Orchestrator Overview
 
@@ -271,6 +275,47 @@ for epoch in range(10):
     rewards = compute_rewards(trajectories)
     train_phase(policy, rewards)
 ```
+
+#### Pattern C: Async RL — Trainer-Only Time-Slicing
+
+In async or disaggregated RL, sampler GPUs generate rollouts continuously — there is no idle time to reclaim. Only the **trainer GPU** has idle gaps (waiting for the next batch). In this case, only the trainer pool is time-sliced; each job gets its own sampler group with no contention.
+
+```python
+from timeslice import TimeSliceOrchestratorClient
+
+# Trainer pool: shared across jobs (time-sliced)
+trainer_orch = TimeSliceOrchestratorClient(
+    target="accelerator-orchestrator.timeslice-system.svc.cluster.local:50051",
+    job_id="job-a",
+    group_id="shared-trainers"  # Both jobs contend for this group
+)
+
+# Sampler pool: dedicated per job (no contention)
+sampler_orch = TimeSliceOrchestratorClient(
+    target="accelerator-orchestrator.timeslice-system.svc.cluster.local:50051",
+    job_id="job-a",
+    group_id="samplers-job-a"  # Only this job uses this group
+)
+
+@trainer_orch.on_accelerators()
+def train_step(model, batch):
+    return model.update(batch)
+
+@trainer_orch.on_accelerators()
+@sampler_orch.on_accelerators()
+def weight_sync(model):
+    # Weight sync (NCCL broadcast) needs both trainer and sampler GPUs
+    model.broadcast_weights()
+
+# Async loop: sampler generates continuously, trainer consumes from queue
+while True:
+    batch = sample_queue.get()  # Trainer GPU is idle here — other job can train
+    train_step(model, batch)
+    if should_sync_weights():
+        weight_sync(model)
+```
+
+The key difference from sync (Pattern B): `generate_phase` is **not decorated** with `on_accelerators` because the sampler group has no contention. The `train_step` decorator handles the trainer lock — blocking until the other job finishes its training step and the GPU state is restored.
 
 ---
 
