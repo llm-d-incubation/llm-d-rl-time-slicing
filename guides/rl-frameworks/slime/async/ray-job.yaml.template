@@ -3,7 +3,7 @@ kind: RayJob
 metadata:
   name: ${JOB_NAME}
 spec:
-  entrypoint: /opt/scripts/run_disaggregated_grpo.sh
+  entrypoint: /opt/scripts/run_async_grpo.sh
   shutdownAfterJobFinishes: true
   ttlSecondsAfterFinished: 300
   runtimeEnvYAML: |
@@ -14,7 +14,7 @@ spec:
       TIMESLICE_JOB_ID: "${JOB_NAME}"
       TIMESLICE_ORCH_ADDR: "timeslice-acceleratororchestrator.timeslice-system.svc.cluster.local:50051"
       TIMESLICE_TRAINER_GROUP: "trainers"
-      TIMESLICE_SAMPLER_GROUP: "samplers"
+      TIMESLICE_SAMPLER_GROUP: "samplers-${JOB_NAME}"
       NCCL_CUMEM_ENABLE: "0"
       NCCL_NVLS_ENABLE: "0"
 
@@ -60,7 +60,7 @@ spec:
           volumes:
           - name: script-vol
             configMap:
-              name: slime-job-script
+              name: slime-async-script
               defaultMode: 0755
 
     workerGroupSpecs:
@@ -114,7 +114,7 @@ spec:
           volumes:
           - name: script-vol
             configMap:
-              name: slime-job-script
+              name: slime-async-script
               defaultMode: 0755
 
     - groupName: rollout-group
@@ -130,7 +130,7 @@ spec:
           labels:
             slime-role: rollout
             timeslice.io/job-id: "${JOB_NAME}"
-            timeslice.io/group: "samplers"
+            timeslice.io/group: "samplers-${JOB_NAME}"
         spec:
           nodeSelector:
             group.timeslice.io/samplers: "true"
@@ -167,5 +167,5 @@ spec:
           volumes:
           - name: script-vol
             configMap:
-              name: slime-job-script
+              name: slime-async-script
               defaultMode: 0755

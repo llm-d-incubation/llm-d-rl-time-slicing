@@ -83,12 +83,12 @@ SGLANG_ARGS=(
     --sglang-mem-fraction-static 0.4
 )
 
-# Time-slicing via PhaseCallback — zero Slime code changes
+# Time-slicing via PhaseCallback — uses train_async.py (async driver)
 TIMESLICE_ARGS=(
     --phase-callback-path timeslice_slime.callback.TimesliceCallback
 )
 
-python3 /root/slime/train.py \
+python3 /root/slime/train_async.py \
     "${RESOURCE_ARGS[@]}" \
     "${MODEL_ARGS[@]}" \
     "${ROLLOUT_ARGS[@]}" \
