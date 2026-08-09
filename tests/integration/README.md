@@ -14,9 +14,9 @@ Tests snapshot-agent backends in standalone and k8s modes. The Go harness deploy
 
 ### orchestrator (phase: orchestrator)
 
-Composed orchestrator integration suite. Installs BOTH official Helm charts (snapshot-agent + timeslice-orchestrator) on `TEST_NODE` and drives real orchestrator scenarios through the gRPC API. The orchestrator chart is configured with `snapshotAgentPort` matching `CHART_AGENT_PORT` so it commands the suite's own agent.
+Composed orchestrator integration suite. Installs BOTH official Helm charts (snapshot-agent + timeslice-orchestrator) and drives real orchestrator scenarios through the gRPC API. The orchestrator chart is configured with `snapshotAgentPort` matching `CHART_AGENT_PORT` so it commands the suite's own agent.
 
-The suite labels `TEST_NODE` with dedicated integration groups (`integ-samplers`, `integ-trainers`) so scenario workloads do not interfere with unrelated production groups on shared clusters.
+Uses a 2-node topology: `TEST_NODE_SAMPLERS` for the samplers group, `TEST_NODE_TRAINERS` for the trainers group (one GPU per node, separate nodes). `exclusiveLabel` temporarily removes group labels from other nodes so pods land only on the designated test nodes.
 
 ## Layout
 
@@ -70,12 +70,14 @@ so no commit or merge is needed at any layer:
 TEST_NODE=<gpu-node> ./tests/integration/run.sh \
   --build --project <gcp-project>
 
-# orchestrator phase only:
-TEST_NODE=<gpu-node> ./tests/integration/run.sh \
+# orchestrator phase only (2 GPU nodes, one per group):
+TEST_NODE_SAMPLERS=<gpu-node-1> TEST_NODE_TRAINERS=<gpu-node-2> \
+  ./tests/integration/run.sh \
   --build --project <gcp-project> --phase orchestrator
 
-# everything:
-TEST_NODE=<gpu-node> ./tests/integration/run.sh \
+# everything (standalone + k8s on TEST_NODE, orchestrator on the 2-node topology):
+TEST_NODE=<gpu-node> TEST_NODE_SAMPLERS=<gpu-node-1> TEST_NODE_TRAINERS=<gpu-node-2> \
+  ./tests/integration/run.sh \
   --build --project <gcp-project> --phase all
 ```
 
@@ -86,7 +88,8 @@ caches).
 Alternative (pre-built images -- any registry the cluster can pull from):
 
 ```bash
-TEST_NODE=<gpu-node> ./tests/integration/run.sh \
+TEST_NODE=<gpu-node> TEST_NODE_SAMPLERS=<gpu-node-1> TEST_NODE_TRAINERS=<gpu-node-2> \
+  ./tests/integration/run.sh \
   --agent-image gcr.io/<project>/snapshot-agent:dev \
   --orch-image gcr.io/<project>/timesliceorchestrator:dev \
   --phase all
@@ -116,11 +119,15 @@ TEST_NODE=<gpu-node> ./tests/integration/run.sh \
 
 Environment:
 
-- `TEST_NODE=<node-name>` -- required for the k8s and orchestrator phases
+- `TEST_NODE=<node-name>` -- required for the standalone and k8s phases
   (charts are pinned to this node); for the standalone phase it pins the
   suite instead of the default pick (first node with a free GPU). Use the
   pin when the cluster runs workloads that occupy GPUs without requesting
   them (time-slicing experiments), which the default pick cannot see.
+- `TEST_NODE_SAMPLERS=<node-name>` -- required for the orchestrator phase.
+  GPU node for the samplers group (must be different from `TEST_NODE_TRAINERS`).
+- `TEST_NODE_TRAINERS=<node-name>` -- required for the orchestrator phase.
+  GPU node for the trainers group (must be different from `TEST_NODE_SAMPLERS`).
 - `CHART_AGENT_PORT=<port>` -- port for the chart-deployed agent (default
   9002), so the suite can coexist with an unrelated agent on the default
   port (the chart runs on hostNetwork). The orchestrator chart is
