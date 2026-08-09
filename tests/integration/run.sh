@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 usage() {
-  echo "Usage: $0 [--agent-image IMAGE] [--orch-image IMAGE] [--build --project PROJECT] [--cluster CLUSTER --zone ZONE] [--model MODEL] [--phase standalone|k8s|orchestrator|all]"
+  echo "Usage: $0 [--agent-image IMAGE] [--orch-image IMAGE] [--build --project PROJECT] [--cluster CLUSTER --zone ZONE] [--model MODEL] [--phase standalone|k8s|both|orchestrator|all]"
   echo ""
   echo "  --cluster/--zone/--project are optional; omit them to use your current kubectl context."
   echo "  --project is required with --build (Cloud Build needs it for the image registry)."
