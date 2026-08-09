@@ -418,9 +418,10 @@ func (f *FakeRLJob) cleanupPods(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// 1. Delete Pods
+	// 1. Delete Pods (force-delete so they vanish immediately)
+	zero := int64(0)
 	for _, podName := range f.createdPods {
-		err := f.clientset.CoreV1().Pods("default").Delete(ctx, podName, metav1.DeleteOptions{})
+		err := f.clientset.CoreV1().Pods("default").Delete(ctx, podName, metav1.DeleteOptions{GracePeriodSeconds: &zero})
 		if err != nil {
 			if !k8serrors.IsNotFound(err) {
 				f.t.Errorf("[Job %s] Failed to delete pod %s: %v", f.name, podName, err)

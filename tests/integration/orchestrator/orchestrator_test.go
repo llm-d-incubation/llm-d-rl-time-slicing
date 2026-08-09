@@ -51,8 +51,8 @@ func TestOrchestrator(t *testing.T) {
 			h.Client,
 			client,
 			t,
-			"vllm",  // sampler template key
-			"vllm",  // trainer template key
+			"",  // sampler template key (default: PyTorch GPU burner)
+			"",  // trainer template key (default: PyTorch GPU burner)
 		)
 		if err != nil {
 			t.Fatalf("SingleRLJob scenario failed: %v", err)
@@ -79,8 +79,8 @@ func TestOrchestrator(t *testing.T) {
 			h.Client,
 			client,
 			t,
-			"vllm",  // sampler template key
-			"vllm",  // trainer template key
+			"",  // sampler template key (default: PyTorch GPU burner)
+			"",  // trainer template key (default: PyTorch GPU burner)
 		)
 		if err != nil {
 			t.Fatalf("QueuedRLJobs scenario failed: %v", err)

@@ -42,29 +42,44 @@ const (
 // ComposedHarness manages the composed orchestrator + snapshot-agent test
 // stack. Both components are deployed by run.sh via their official Helm
 // charts; this harness attaches to them and sets up the test environment.
+//
+// The canonical topology uses separate nodes for each group (one GPU per
+// node): TEST_NODE_SAMPLERS for the samplers group, TEST_NODE_TRAINERS
+// for the trainers group.
 type ComposedHarness struct {
 	*harness.Cluster
-	Node     string
-	OrchAddr string // host:port of the orchestrator gRPC service
+	SamplerNode string
+	TrainerNode string
+	OrchAddr    string // host:port of the orchestrator gRPC service
 }
 
 // NewComposedHarness connects to the cluster, attaches to the chart-deployed
-// orchestrator (via its ClusterIP Service) and snapshot-agent, labels
-// TEST_NODE with the integration test groups, and registers cleanup.
+// orchestrator (via its ClusterIP Service) and snapshot-agent, labels the
+// group nodes, and registers cleanup.
+//
+// Requires TEST_NODE_SAMPLERS and TEST_NODE_TRAINERS (separate GPU nodes,
+// one per group — the canonical deployment topology).
 func NewComposedHarness(t *testing.T) *ComposedHarness {
 	t.Helper()
 
-	node := harness.RequiredNode(t)
+	samplerNode := os.Getenv("TEST_NODE_SAMPLERS")
+	trainerNode := os.Getenv("TEST_NODE_TRAINERS")
+	if samplerNode == "" || trainerNode == "" {
+		t.Fatal("TEST_NODE_SAMPLERS and TEST_NODE_TRAINERS are required (one GPU node per group)")
+	}
+	if samplerNode == trainerNode {
+		t.Fatal("TEST_NODE_SAMPLERS and TEST_NODE_TRAINERS must be different nodes")
+	}
+
 	c := harness.NewCluster(t, "default")
 
 	h := &ComposedHarness{
-		Cluster: c,
-		Node:    node,
+		Cluster:     c,
+		SamplerNode: samplerNode,
+		TrainerNode: trainerNode,
 	}
 
-	// Resolve the orchestrator Service address. The chart creates a
-	// ClusterIP Service in timeslice-system; run.sh installs it as
-	// "orch-chart-test".
+	// Resolve the orchestrator Service address.
 	orchPort := 50051
 	if p := os.Getenv("ORCH_PORT"); p != "" {
 		port, err := strconv.Atoi(p)
@@ -80,9 +95,8 @@ func NewComposedHarness(t *testing.T) *ComposedHarness {
 	h.WaitPodReadyByLabel(t, chartNamespace, orchSelector, "", orchPodTimeout)
 	t.Logf("orchestrator chart pod ready, reachable at %s", h.OrchAddr)
 
-	// Wait for the snapshot-agent chart pod to be Ready on TEST_NODE.
+	// Wait for snapshot-agent chart pods to be Ready on BOTH group nodes.
 	saSelector := "app.kubernetes.io/name=snapshot-agent,app.kubernetes.io/instance=sa-chart-test"
-	agentIP := h.WaitPodReadyByLabel(t, chartNamespace, saSelector, node, orchPodTimeout)
 	agentPort := 9001
 	if p := os.Getenv("CHART_AGENT_PORT"); p != "" {
 		port, err := strconv.Atoi(p)
@@ -91,15 +105,14 @@ func NewComposedHarness(t *testing.T) *ComposedHarness {
 		}
 		agentPort = port
 	}
-	t.Logf("snapshot-agent chart pod ready at %s:%d on %s", agentIP, agentPort, node)
-
-	// Ensure TEST_NODE is the ONLY node with these group labels so the
-	// scheduler pins scenario pods there. Other nodes (e.g. a production
-	// timeslice release) may carry the same labels; temporarily remove
-	// them for the test and restore on cleanup.
-	for _, group := range []string{integSamplers, integTrainers} {
-		h.exclusiveLabel(t, node, group)
+	for _, node := range []string{samplerNode, trainerNode} {
+		ip := h.WaitPodReadyByLabel(t, chartNamespace, saSelector, node, orchPodTimeout)
+		t.Logf("snapshot-agent chart pod ready at %s:%d on %s", ip, agentPort, node)
 	}
+
+	// Label each group node exclusively.
+	h.exclusiveLabel(t, samplerNode, integSamplers)
+	h.exclusiveLabel(t, trainerNode, integTrainers)
 
 	// Pre-clean: remove any leaked pods from a previous failed run.
 	h.cleanLeakedPods(t)

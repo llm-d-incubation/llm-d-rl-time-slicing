@@ -83,7 +83,7 @@ func RunSingleRLJobScenario(
 	}
 
 	// Verify Post-Cleanup State: All pods created by this job should be deleted
-	err := wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
 		pods, err := clientset.CoreV1().Pods("default").List(ctx, metav1.ListOptions{
 			LabelSelector: "timeslice.io/job-id=my-rl-job",
 		})
@@ -248,7 +248,7 @@ func RunQueuedRLJobsScenario(
 	}
 
 	// Verify Post-Cleanup State (only pods for these jobs)
-	err = wait.PollUntilContextTimeout(ctx, 200*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+	err = wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
 		pods, err := clientset.CoreV1().Pods("default").List(ctx, metav1.ListOptions{
 			LabelSelector: "timeslice.io/job-id in (job-a, job-b)",
 		})

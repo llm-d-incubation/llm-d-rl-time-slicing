@@ -97,10 +97,17 @@ if [[ "$NEED_ORCH_CHART" == "true" && -z "$ORCH_IMAGE" && "$BUILD" != "true" ]];
   usage
   exit 1
 fi
-if [[ "$NEED_SA_CHART" == "true" && -z "${TEST_NODE:-}" ]]; then
-  echo "Error: TEST_NODE must be set for the k8s/orchestrator phase: the chart is pinned to" \
+if [[ "$NEED_SA_CHART" == "true" && -z "${TEST_NODE:-}" && "$NEED_ORCH_CHART" != "true" ]]; then
+  echo "Error: TEST_NODE must be set for the k8s phase: the chart is pinned to" \
        "one node so the suite stays off other workloads on shared clusters"
   exit 1
+fi
+if [[ "$NEED_ORCH_CHART" == "true" ]]; then
+  if [[ -z "${TEST_NODE_SAMPLERS:-}" || -z "${TEST_NODE_TRAINERS:-}" ]]; then
+    echo "Error: TEST_NODE_SAMPLERS and TEST_NODE_TRAINERS must be set for the orchestrator phase" \
+         "(one GPU node per group — the canonical deployment topology)"
+    exit 1
+  fi
 fi
 
 log() { echo "$(date +%H:%M:%S) $*"; }
@@ -112,9 +119,12 @@ cleanup() {
   $K delete -f "${SCRIPT_DIR}/runner.yaml" --force --grace-period=0 2>/dev/null || true
   if [[ "$NEED_ORCH_CHART" == "true" ]]; then
     $HELM uninstall orch-chart-test -n timeslice-system 2>/dev/null || true
-    # Remove integration group labels from TEST_NODE (only the ones we added).
-    if [[ -n "${TEST_NODE:-}" ]]; then
-      $K label node "$TEST_NODE" "group.timeslice.io/samplers-" "group.timeslice.io/trainers-" 2>/dev/null || true
+    # Remove integration group labels (only the ones we added).
+    if [[ -n "${TEST_NODE_SAMPLERS:-}" ]]; then
+      $K label node "$TEST_NODE_SAMPLERS" "group.timeslice.io/samplers-" 2>/dev/null || true
+    fi
+    if [[ -n "${TEST_NODE_TRAINERS:-}" ]]; then
+      $K label node "$TEST_NODE_TRAINERS" "group.timeslice.io/trainers-" 2>/dev/null || true
     fi
   fi
   if [[ "$NEED_SA_CHART" == "true" ]]; then
@@ -178,18 +188,32 @@ fi
 if [[ "$NEED_SA_CHART" == "true" ]]; then
   # The chart templates pin their namespace to timeslice-system.
   $K create namespace timeslice-system --dry-run=client -o yaml | $K apply -f -
-  log "Installing the official snapshot-agent chart (node ${TEST_NODE}, port ${CHART_AGENT_PORT})..."
-  $HELM upgrade --install sa-chart-test "${REPO_ROOT}/deploy/snapshot-agent" \
-    -n timeslice-system \
-    --set fullnameOverride=sa-chart-test \
-    --set image.repository="${AGENT_IMAGE%:*}" \
-    --set image.tag="${AGENT_IMAGE##*:}" \
-    --set image.pullPolicy=IfNotPresent \
-    --set port="${CHART_AGENT_PORT}" \
-    --set nodeSelector."kubernetes\.io/hostname"="${TEST_NODE}"
-  SA_SELECTOR="app.kubernetes.io/name=snapshot-agent,app.kubernetes.io/instance=sa-chart-test"
-  log "Waiting for the chart's DaemonSet pod to become Ready on ${TEST_NODE}..."
-  wait_chart_pods_ready "$SA_SELECTOR" "$TEST_NODE" || chart_failure "snapshot-agent" "$SA_SELECTOR"
+  SA_HELM_ARGS=(
+    -n timeslice-system
+    --set fullnameOverride=sa-chart-test
+    --set image.repository="${AGENT_IMAGE%:*}"
+    --set image.tag="${AGENT_IMAGE##*:}"
+    --set image.pullPolicy=IfNotPresent
+    --set port="${CHART_AGENT_PORT}"
+  )
+  if [[ "$NEED_ORCH_CHART" == "true" ]]; then
+    # Orchestrator phase: SA DaemonSet must land on both group nodes (no nodeSelector pin).
+    log "Installing the official snapshot-agent chart (both group nodes, port ${CHART_AGENT_PORT})..."
+    $HELM upgrade --install sa-chart-test "${REPO_ROOT}/deploy/snapshot-agent" "${SA_HELM_ARGS[@]}"
+    SA_SELECTOR="app.kubernetes.io/name=snapshot-agent,app.kubernetes.io/instance=sa-chart-test"
+    for NODE in "$TEST_NODE_SAMPLERS" "$TEST_NODE_TRAINERS"; do
+      log "Waiting for the chart's DaemonSet pod to become Ready on ${NODE}..."
+      wait_chart_pods_ready "$SA_SELECTOR" "$NODE" || chart_failure "snapshot-agent" "$SA_SELECTOR"
+    done
+  else
+    # k8s phase: single-node pin.
+    log "Installing the official snapshot-agent chart (node ${TEST_NODE}, port ${CHART_AGENT_PORT})..."
+    $HELM upgrade --install sa-chart-test "${REPO_ROOT}/deploy/snapshot-agent" "${SA_HELM_ARGS[@]}" \
+      --set nodeSelector."kubernetes\.io/hostname"="${TEST_NODE}"
+    SA_SELECTOR="app.kubernetes.io/name=snapshot-agent,app.kubernetes.io/instance=sa-chart-test"
+    log "Waiting for the chart's DaemonSet pod to become Ready on ${TEST_NODE}..."
+    wait_chart_pods_ready "$SA_SELECTOR" "$TEST_NODE" || chart_failure "snapshot-agent" "$SA_SELECTOR"
+  fi
 fi
 
 if [[ "$NEED_ORCH_CHART" == "true" ]]; then
@@ -230,6 +254,8 @@ ORCH_CHART_DEPLOYED=""
 [[ "$NEED_ORCH_CHART" == "true" ]] && ORCH_CHART_DEPLOYED=1
 EXIT=0
 $K exec test-runner -- env "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
+  "TEST_NODE_SAMPLERS=${TEST_NODE_SAMPLERS:-}" \
+  "TEST_NODE_TRAINERS=${TEST_NODE_TRAINERS:-}" \
   "SA_CHART_DEPLOYED=${SA_CHART_DEPLOYED}" \
   "ORCH_CHART_DEPLOYED=${ORCH_CHART_DEPLOYED}" \
   "CHART_AGENT_PORT=${CHART_AGENT_PORT}" \
