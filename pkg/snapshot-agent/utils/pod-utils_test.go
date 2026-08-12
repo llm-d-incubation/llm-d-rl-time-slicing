@@ -77,8 +77,8 @@ func TestGetPodPIDs(t *testing.T) {
 				snapshotutils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
 				snapshotutils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
 				device := &mockDevice{
-					computeProcs:  []nvml.ProcessInfo{{Pid: 100}, {Pid: 200}},
-					graphicsProcs: []nvml.ProcessInfo{{Pid: 200}, {Pid: 300}},
+					computeProcs:  []nvml.ProcessInfo{{Pid: 100, UsedGpuMemory: 1024}, {Pid: 200, UsedGpuMemory: 1024}},
+					graphicsProcs: []nvml.ProcessInfo{{Pid: 200, UsedGpuMemory: 1024}, {Pid: 300, UsedGpuMemory: 1024}},
 				}
 				snapshotutils.NvmlDeviceGetHandleByIndex = func(index int) (snapshotutils.DeviceInterface, nvml.Return) {
 					return device, nvml.SUCCESS
@@ -88,6 +88,39 @@ func TestGetPodPIDs(t *testing.T) {
 				}
 			},
 			expectedPIDs: []int{100, 300},
+			expectError:  false,
+		},
+		{
+			name:      "Ignore Zero VRAM Processes",
+			podName:   "test-pod",
+			namespace: "test-ns",
+			setupMocks: func() {
+				podUID := "test-uid"
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: "test-ns",
+						UID:       types.UID(podUID),
+					},
+				}
+				snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
+					return fake.NewSimpleClientset(pod), nil
+				}
+				snapshotutils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
+				snapshotutils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
+				device := &mockDevice{
+					computeProcs: []nvml.ProcessInfo{{Pid: 100, UsedGpuMemory: 1024}, {Pid: 200, UsedGpuMemory: 0}},
+					// ^uint64(0) is NVML_VALUE_NOT_AVAILABLE (-1) as reported in the uint64 field.
+					graphicsProcs: []nvml.ProcessInfo{{Pid: 300, UsedGpuMemory: ^uint64(0)}},
+				}
+				snapshotutils.NvmlDeviceGetHandleByIndex = func(index int) (snapshotutils.DeviceInterface, nvml.Return) {
+					return device, nvml.SUCCESS
+				}
+				snapshotutils.IsPIDInPodCgroupFunc = func(pid int, uid string) (bool, error) {
+					return true, nil
+				}
+			},
+			expectedPIDs: []int{100},
 			expectError:  false,
 		},
 		{
@@ -149,7 +182,7 @@ func TestGetPodPIDs(t *testing.T) {
 				snapshotutils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
 				snapshotutils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
 				device := &mockDevice{
-					computeProcs: []nvml.ProcessInfo{{Pid: 400}, {Pid: 500}},
+					computeProcs: []nvml.ProcessInfo{{Pid: 400, UsedGpuMemory: 1024}, {Pid: 500, UsedGpuMemory: 1024}},
 				}
 				snapshotutils.NvmlDeviceGetHandleByIndex = func(index int) (snapshotutils.DeviceInterface, nvml.Return) {
 					return device, nvml.SUCCESS
@@ -180,7 +213,7 @@ func TestGetPodPIDs(t *testing.T) {
 				snapshotutils.NvmlInit = func() nvml.Return { return nvml.SUCCESS }
 				snapshotutils.NvmlDeviceGetCount = func() (int, nvml.Return) { return 1, nvml.SUCCESS }
 				device := &mockDevice{
-					computeProcs: []nvml.ProcessInfo{{Pid: 600}},
+					computeProcs: []nvml.ProcessInfo{{Pid: 600, UsedGpuMemory: 1024}},
 				}
 				snapshotutils.NvmlDeviceGetHandleByIndex = func(index int) (snapshotutils.DeviceInterface, nvml.Return) {
 					return device, nvml.SUCCESS

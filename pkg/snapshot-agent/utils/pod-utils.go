@@ -150,6 +150,11 @@ func getPodPIDsInternal(ctx context.Context, podName, namespace string) ([]int, 
 		}
 
 		for _, proc := range procs {
+			// Skip non-computing parent/daemon processes that hold 0 VRAM; they have no
+			// active CUDA context, so cuda-checkpoint fails to lock them.
+			if proc.UsedGpuMemory == 0 || int64(proc.UsedGpuMemory) == nvml.VALUE_NOT_AVAILABLE {
+				continue
+			}
 			pid := int(proc.Pid)
 			if seenPIDs[pid] {
 				continue
@@ -170,6 +175,11 @@ func getPodPIDsInternal(ctx context.Context, podName, namespace string) ([]int, 
 		graphicsProcs, ret := device.GetGraphicsRunningProcesses()
 		if ret == nvml.SUCCESS {
 			for _, proc := range graphicsProcs {
+				// Skip non-computing parent/daemon processes that hold 0 VRAM; they have no
+				// active CUDA context, so cuda-checkpoint fails to lock them.
+				if proc.UsedGpuMemory == 0 || int64(proc.UsedGpuMemory) == nvml.VALUE_NOT_AVAILABLE {
+					continue
+				}
 				pid := int(proc.Pid)
 				if seenPIDs[pid] {
 					continue
