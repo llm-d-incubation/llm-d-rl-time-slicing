@@ -25,6 +25,9 @@ tolerations:
     operator: "Equal"
     value: "present"
     effect: "NoSchedule"
+  - key: "timeslice.io/shared"
+    operator: "Exists"
+    effect: "NoSchedule"
 
 affinity: {}
 
