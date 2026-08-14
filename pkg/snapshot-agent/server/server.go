@@ -26,10 +26,10 @@ type Server struct {
 	pb.UnimplementedSnapshotAgentServiceServer
 	state           *sm.StateManager
 	backendMap      map[backends.BackendType]backends.Backend
-	defaultBackend  backends.BackendType
 	deploymentMode  string
 	channelRegistry *backends.ChannelRegistry
 	featureGates    features.Gates
+	resolver        *backendResolver
 }
 
 // NewServer creates a new Server instance. channelRegistry is shared with
@@ -47,16 +47,18 @@ func NewServer(
 	return &Server{
 		state:           sm.NewStateManager(),
 		backendMap:      backendMap,
-		defaultBackend:  defaultBackend,
 		deploymentMode:  deploymentMode,
 		channelRegistry: channelRegistry,
 		featureGates:    featureGates,
+		resolver:        newBackendResolver(defaultBackend, channelRegistry, deploymentMode),
 	}
 }
 
 // checkFeatureGates rejects configs that select an experimental backend
-// whose feature gate is off. It runs before backend routing so a gated
-// config never silently falls through to another backend.
+// whose feature gate is off. It runs on the resolved config, so a gated
+// backend is rejected whichever source selected it (an explicit request
+// config or a pod annotation) and never silently falls through to another
+// backend.
 func (s *Server) checkFeatureGates(config *pb.BackendConfig) error {
 	if config.GetDirectMemory() != nil && !s.featureGates.Enabled(features.DirectMemoryBackend) {
 		return status.Errorf(codes.FailedPrecondition,
@@ -74,11 +76,13 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	ctx = logging.WithJobID(ctx, req.GetJobId())
 	ctx = logging.WithGroupID(ctx, req.GetGroup())
 
-	if err := s.checkFeatureGates(req.GetBackendConfig()); err != nil {
+	backendType, config, err := s.resolver.Resolve(ctx, req.GetJobId(), req.GetBackendConfig())
+	if err != nil {
 		return nil, err
 	}
-
-	backendType := s.getSnapshotBackendType(req.GetBackendConfig())
+	if err := s.checkFeatureGates(config); err != nil {
+		return nil, err
+	}
 	slog.InfoContext(ctx, "Snapshot called", "backend", backendType)
 
 	backend, ok := s.backendMap[backendType]
@@ -89,7 +93,6 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	s.ensureJobRunningIfGPUOccupied(ctx, req.GetJobId(), req.GetGroup())
 
 	bgCtx := context.WithoutCancel(ctx)
-	config := req.GetBackendConfig()
 
 	snapshotFn, fnErr := s.buildSnapshotFn(bgCtx, req.GetJobId(), backendType, backend, config)
 	if fnErr != nil {
@@ -103,25 +106,6 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	}
 
 	return &pb.SnapshotResponse{OperationId: opID}, nil
-}
-
-func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.BackendType {
-	if config == nil {
-		return s.defaultBackend
-	}
-	if config.GetCuda() != nil {
-		return backends.BackendCuda
-	}
-	if config.GetAppEndpoint() != nil {
-		return backends.BackendAppEndpoint
-	}
-	if config.GetAppChannel() != nil {
-		return backends.BackendAppChannel
-	}
-	// NOTE: direct_memory is not routed yet and falls through to the
-	// default backend. It is unreachable unless the DirectMemoryBackend
-	// feature gate is enabled (checkFeatureGates runs before routing).
-	return s.defaultBackend
 }
 
 // ensureJobRunningIfGPUOccupied registers the job and, if it is IDLE while
@@ -274,11 +258,13 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 	ctx = logging.WithJobID(ctx, req.GetJobId())
 	ctx = logging.WithGroupID(ctx, req.GetGroup())
 
-	if err := s.checkFeatureGates(req.GetBackendConfig()); err != nil {
+	backendType, restoreConfig, err := s.resolver.Resolve(ctx, req.GetJobId(), req.GetBackendConfig())
+	if err != nil {
 		return nil, err
 	}
-
-	backendType := s.getSnapshotBackendType(req.GetBackendConfig())
+	if err := s.checkFeatureGates(restoreConfig); err != nil {
+		return nil, err
+	}
 	slog.InfoContext(ctx, "Restore called", "backend", backendType)
 
 	backend, ok := s.backendMap[backendType]
@@ -287,7 +273,6 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 	}
 
 	bgCtx := context.WithoutCancel(ctx)
-	restoreConfig := req.GetBackendConfig()
 
 	restoreFn, fnErr := s.buildRestoreFn(bgCtx, req.GetJobId(), backendType, backend, restoreConfig)
 	if fnErr != nil {
