@@ -6,6 +6,27 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONPATH=/root/Megatron-LM
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
+# 1. Time-slicing mode: "sync" (default) or "async"
+MODE="${SLIME_MODE:-sync}"
+DRIVER="train.py"
+export TIMESLICE_JOB_ID="${JOB_NAME}"
+export TIMESLICE_TRAINER_GROUP="trainers"
+# Sampler group: shared by default (sync), per-job for async to avoid sampler contention.
+# Can be overridden by TIMESLICE_SAMPLER_GROUP_OVERRIDE env var.
+export TIMESLICE_SAMPLER_GROUP="${TIMESLICE_SAMPLER_GROUP_OVERRIDE:-samplers}"
+# Ray resource names for placement group pinning (match rayStartParams.resources)
+export TIMESLICE_TRAINER_RAY_RESOURCE="trainers"
+export TIMESLICE_SAMPLER_RAY_RESOURCE="samplers"
+
+if [ "$MODE" = "async" ]; then
+    DRIVER="train_async.py"
+    export TIMESLICE_SAMPLER_GROUP="${TIMESLICE_SAMPLER_GROUP_OVERRIDE:-samplers-${JOB_NAME}}"
+fi
+
+if [ "$MODE" = "sync" ]; then
+    DRIVER="train.py"
+fi
+
 MODEL_NAME="Qwen2.5-0.5B-Instruct"
 LOCAL_MODEL_DIR="/tmp/${MODEL_NAME}"
 LOCAL_PROMPT_DATA="/tmp/dapo-math-17k/dapo-math-17k.jsonl"
@@ -42,7 +63,6 @@ RESOURCE_ARGS=(
     --actor-num-gpus-per-node 1
     --rollout-num-gpus 1
     --rollout-num-gpus-per-engine 1
-    --placement-group-strategy SPREAD
 )
 
 # 4. Workload Settings (GBS=8, rollout-batch-size=1)
@@ -85,28 +105,16 @@ OPTIMIZER_ARGS=(
 )
 SGLANG_ARGS=(
     --sglang-mem-fraction-static 0.4
+    --sglang-disable-cuda-graph
+    --sglang-disable-piecewise-cuda-graph
 )
+
+# 6. Time-slicing via PhaseCallback — zero Slime code changes
 TIMESLICE_ARGS=(
-    --enable-timeslice
-    --timeslice-orchestrator-addr "timeslice-timesliceorchestrator.timeslice-system.svc.cluster.local:50051"
-    --timeslice-sampler-group "samplers"
-    --timeslice-trainer-group "trainers"
-    --timeslice-job-id "${JOB_NAME:-slime-job-$RANDOM}"
-    --offload-train
-    --offload-rollout
-    --train-memory-margin-bytes 67108864
+    --phase-callback-path timeslice_slime.callback.TimesliceCallback
 )
 
-# Override baked train.py with our parallel placement group creation script from configmap
-if [ -f /opt/scripts/train.py ]; then
-    cp -f /opt/scripts/train.py /root/slime/train.py
-fi
-if [ -f /opt/scripts/arguments.py ]; then cp -f /opt/scripts/arguments.py /root/slime/slime/utils/arguments.py; fi
-if [ -f /opt/scripts/rollout.py ]; then cp -f /opt/scripts/rollout.py /root/slime/slime/ray/rollout.py; fi
-if [ -f /opt/scripts/sglang_engine.py ]; then cp -f /opt/scripts/sglang_engine.py /root/slime/slime/backends/sglang_utils/sglang_engine.py; fi
-
-# Launch Slime training via Ray
-python3 /root/slime/train.py \
+python3 /root/slime/${DRIVER} \
     "${RESOURCE_ARGS[@]}" \
     "${MODEL_ARGS[@]}" \
     "${ROLLOUT_ARGS[@]}" \

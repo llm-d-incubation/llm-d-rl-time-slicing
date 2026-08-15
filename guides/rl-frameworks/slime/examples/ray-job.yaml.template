@@ -3,7 +3,7 @@ kind: RayJob
 metadata:
   name: ${JOB_NAME}
 spec:
-  entrypoint: /opt/scripts/run_disaggregated_grpo.sh
+  entrypoint: /opt/scripts/run_grpo.sh
   shutdownAfterJobFinishes: true
   ttlSecondsAfterFinished: 60
   runtimeEnvYAML: |
@@ -11,6 +11,10 @@ spec:
       PYTHONPATH: "/root/Megatron-LM"
       CUDA_DEVICE_MAX_CONNECTIONS: "1"
       JOB_NAME: "${JOB_NAME}"
+      SLIME_MODE: "${SLIME_MODE}"
+      TIMESLICE_ORCH_ADDR: "timeslice-timesliceorchestrator.timeslice-system.svc.cluster.local:50051"
+      NCCL_CUMEM_ENABLE: "0"
+      NCCL_NVLS_ENABLE: "0"
 
   submitterPodTemplate:
     spec:
@@ -34,6 +38,14 @@ spec:
         dashboard-host: '0.0.0.0'
       template:
         spec:
+          tolerations:
+          - key: "nvidia.com/gpu"
+            operator: "Exists"
+            effect: "NoSchedule"
+          - key: "timeslice.io/shared"
+            operator: "Equal"
+            value: "true"
+            effect: "NoSchedule"
           containers:
           - name: ray-head
             image: slimerl/slime@sha256:c95eb968649ee8e2a567c500df5a5643c9f85951622646fe6e08244d939e4b94
@@ -43,11 +55,11 @@ spec:
                   command: ["/bin/sh", "-c", "/opt/scripts/setup_node.sh"]
             resources:
               limits:
-                cpu: "2"
-                memory: "16Gi"
+                cpu: "1"
+                memory: "8Gi"
               requests:
-                cpu: "300m"
-                memory: "4Gi"
+                cpu: "100m"
+                memory: "2Gi"
             volumeMounts:
             - name: script-vol
               mountPath: /opt/scripts
@@ -90,6 +102,11 @@ spec:
           containers:
           - name: ray-worker-trainer
             image: slimerl/slime@sha256:c95eb968649ee8e2a567c500df5a5643c9f85951622646fe6e08244d939e4b94
+            env:
+            - name: NCCL_CUMEM_ENABLE
+              value: "0"
+            - name: NCCL_NVLS_ENABLE
+              value: "0"
             lifecycle:
               postStart:
                 exec:
@@ -126,7 +143,7 @@ spec:
           labels:
             slime-role: rollout
             timeslice.io/job-id: "${JOB_NAME}"
-            timeslice.io/group: "samplers"
+            timeslice.io/group: "${SAMPLER_TS_GROUP}"
         spec:
           nodeSelector:
             group.timeslice.io/samplers: "true"
@@ -144,6 +161,11 @@ spec:
           containers:
           - name: ray-worker-rollout
             image: slimerl/slime@sha256:c95eb968649ee8e2a567c500df5a5643c9f85951622646fe6e08244d939e4b94
+            env:
+            - name: NCCL_CUMEM_ENABLE
+              value: "0"
+            - name: NCCL_NVLS_ENABLE
+              value: "0"
             lifecycle:
               postStart:
                 exec:
@@ -151,10 +173,10 @@ spec:
             resources:
               limits:
                 cpu: "8"
-                memory: "32Gi"
+                memory: "128Gi"
               requests:
                 cpu: "4"
-                memory: "16Gi"
+                memory: "64Gi"
               claims:
               - name: accelerator
             volumeMounts:

@@ -1,20 +1,25 @@
 # Time-Slicing Integration Guide for Slime Workloads
 
-This guide provides step-by-step instructions on how to integrate and deploy **Slime** (high-performance RL framework for LLMs) with the **llm-d-rl-time-slicing** platform.
+This guide provides step-by-step instructions on how to integrate and deploy **Slime** (high-performance RL framework for LLMs) with the **llm-d-rl-time-slicing** platform using the pre-packaged `llm-d-timeslice-slime` integration.
 
 ### Motivation: Maximizing GPU Utilization
-In traditional disaggregated RL setups, GPUs sit idle whenever worker groups wait for another phase to complete (e.g., trainer GPUs idling during rollout generation, or rollout GPUs idling during policy updates). Cooperative time-slicing enables multiple independent Slime jobs to multiplex physical GPU resource pools concurrently. When one job finishes a phase, its GPU context is checkpointed and evicted, allowing another job to immediately utilize the hardware—significantly driving up GPU duty cycle and overall cluster throughput.
+In disaggregated RL setups, GPUs sit idle whenever worker groups wait for another phase to complete. Cooperative time-slicing enables multiple independent Slime jobs to share physical GPU pools — when one job finishes a phase, its GPU context is checkpointed and evicted, allowing another job to immediately utilize the hardware.
 
-For a runnable example, see:
-* **[GRPO Integration Example](sync/README.md)**
+**Sync RL** (`train.py`): Training and generation alternate strictly. Both trainer and sampler GPUs have idle gaps. Time-slicing shares **both pools** — Job B trains while Job A generates, then they swap.
+
+**Async RL** (`train_async.py`): Generation N+1 runs concurrently with training N (pipelined). Sampler GPUs are busy non-stop. Only the **trainer GPU** has idle gaps waiting for the next batch. Time-slicing shares only the trainer pool; each job gets dedicated sampler GPUs (separate group per job, no contention).
+
+For runnable examples, see:
+* **[Sync GRPO Example](examples/sync/README.md)** — two sync RL jobs sharing trainer + sampler pools
+* **[Async GRPO Example](examples/async/README.md)** — two async RL jobs with shared trainer pool, dedicated samplers
 
 ---
 
 ## Table of Contents
 1. [Cluster Prerequisites](#1-cluster-prerequisites)
 2. [Deploying the Time-Slicing Platform](#2-deploying-the-time-slicing-platform)
-3. [Code Integration with Slime](#3-code-integration-with-slime)
-4. [Deploying the Modified Slime Variant](#4-deploying-the-modified-slime-variant)
+3. [Integrating with Slime](#3-integrating-with-slime)
+4. [Deploying Time-Sliced Slime Jobs](#4-deploying-time-sliced-slime-jobs)
 5. [Submitting and Observing Time-Sliced Jobs](#5-submitting-and-observing-time-sliced-jobs)
 6. [Observing Convergence and Job Completion](#6-observing-convergence-and-job-completion)
 
@@ -31,9 +36,9 @@ Before deploying cooperative time-slicing for Slime, ensure your Kubernetes clus
 * **KubeRay Operator v1.6.0 or later** (required for modern Dynamic Resource Allocation pod syntax).
 
 ### GPU Node Configuration
-* GPU nodes must run **NVIDIA GPU Driver 565 or later**. This is a strict requirement to support **NVIDIA Dynamic Resource Allocation (DRA)**.
+* GPU nodes must run **NVIDIA GPU Driver 565 or later**. This is a strict requirement to support **NVIDIA Dynamic Resource Allocation (DRA)**. On GKE, you can verify the driver version by checking the NVIDIA DRA driver pod logs or running `kubectl exec` into a GPU pod and running `nvidia-smi`.
 * GPU memory capacity must be sufficient to hold the active working set of a single Slime job's trainer or sampler at any one time (since inactive jobs will have their GPU memory checkpointed and evicted).
-* Sampler/trainer node host memory capacity must be sufficient to hold the GPU memory footprint of the trainers/samplers needed for the number of parallel Slime jobs.
+* Sampler/trainer node host memory capacity must be sufficient to hold the GPU memory footprint of the trainers/samplers needed for the number of parallel Slime jobs. Worker pod memory limits must account for cuda-checkpoint saving GPU state to host memory — set the pod memory limit to at least 2× the GPU memory footprint of the workload (e.g., 128Gi for a sampler using ~33GB GPU memory with two time-sliced jobs).
 
 ### Node Labeling and Tainting for Time-Slice Pools
 The `timeslice` platform relies on node labels and taints to identify resource pools (groups) and isolate time-sliced workloads. For disaggregated Slime executions, label and taint your GPU nodes accordingly:
@@ -43,13 +48,13 @@ The `timeslice` platform relies on node labels and taints to identify resource p
   kubectl label nodes <node-name> timeslice.io/enabled=true
   kubectl taint nodes <node-name> timeslice.io/shared=true:NoSchedule
   ```
-* **Sampler Nodes**:
-  ```bash
-  kubectl label nodes <node-name> group.timeslice.io/samplers=true
-  ```
 * **Trainer Nodes**:
   ```bash
-  kubectl label nodes <node-name> group.timeslice.io/trainers=true
+  kubectl label nodes <trainer-node> group.timeslice.io/trainers=true
+  ```
+* **Sampler Nodes**:
+  ```bash
+  kubectl label nodes <sampler-node> group.timeslice.io/samplers=true
   ```
 
 ### Shared DRA Resource Claims
@@ -87,7 +92,7 @@ spec:
 
 Apply these resource claims to your cluster:
 ```bash
-kubectl apply -f sync/resource-claims.yaml
+kubectl apply -f guides/rl-frameworks/slime/examples/resource-claims.yaml
 ```
 
 ---
@@ -107,13 +112,15 @@ helm dependency update .
 Review or modify the parent `values.yaml` file to match your cluster environment:
 ```yaml
 timesliceorchestrator:
-  replicaCount: 2
+  replicaCount: 1
   image:
     tag: latest
 
 snapshot-agent:
   image:
     tag: latest
+  nodeSelector:
+    timeslice.io/enabled: "true"
 
 nvidia-dra-driver-gpu:
   enabled: true
@@ -130,161 +137,77 @@ helm install timeslice . -n timeslice-system --create-namespace
 
 ### Step 4: Verify Platform Health
 Verify that the orchestrator and agents are running and healthy:
-1. **Using the `rlts` CLI**:
-   Build the CLI tool and run the verify command:
-   ```bash
-   go build -o bin/rlts ./cmd/rlts
-   ./bin/rlts orchestrator verify
-   ```
-2. **Using kubectl**:
+1. **Using kubectl**:
    Ensure all pods in the `timeslice-system` namespace are `Running`:
    ```bash
    kubectl get pods -n timeslice-system
    ```
+2. **Using the `rlts` CLI** (optional, requires Go toolchain):
+   ```bash
+   go build -o bin/rlts ./cmd/rlts
+   ./bin/rlts orchestrator verify
+   ```
 
 ---
 
-## 3. Code Integration with Slime
+## 3. Integrating with Slime
 
-To participate in cooperative time-slicing, the Slime training loop driver requests and yields access to the GPU resource pools at its natural phase boundaries.
+The `llm-d-timeslice-slime` package provides a pre-built `PhaseCallback` that acquires and releases orchestrator locks at Slime's natural phase boundaries (init, generate, train, weight sync). No manual code changes to Slime are required.
 
-Because worker processes (SGLang engines and Megatron-LM trainer actors) run as background servers, **only the main RL loop driver script (`train.py`)** needs to communicate with the TimeSlice Orchestrator via `OrchestratorClient`.
+### How It Works
 
-### Step 1: Add Time-Slicing Command-Line Arguments
-Add time-slicing configuration options to `slime/utils/arguments.py`:
+1. A Slime fork adds a `--phase-callback-path` CLI argument and `on_phase_begin`/`on_phase_end` calls around each GPU phase in the training drivers (`train.py` and `train_async.py`).
+2. The `llm-d-timeslice-slime` package provides `TimesliceCallback` — a `PhaseCallback` implementation that maps phase events to orchestrator lock acquire/release.
+3. Configuration (job ID, orchestrator address, group IDs) comes from environment variables — Slime doesn't need to know about any of them.
 
-```python
-parser.add_argument(
-    "--enable-timeslice",
-    action="store_true",
-    default=False,
-    help="Enable llm-d-rl-time-slicing cooperative accelerator acquisition.",
-)
-parser.add_argument(
-    "--timeslice-orchestrator-addr",
-    type=str,
-    default="timeslice-timesliceorchestrator.timeslice-system.svc.cluster.local:50051",
-    help="Address of the TimeSlice Orchestrator gRPC service.",
-)
-parser.add_argument(
-    "--timeslice-job-id",
-    type=str,
-    default=None,
-    help="Unique job identifier for the TimeSlice Orchestrator.",
-)
-parser.add_argument(
-    "--timeslice-sampler-group",
-    type=str,
-    default="group-slime-sampler",
-    help="TimeSlice Orchestrator time-slice group for rollout samplers.",
-)
-parser.add_argument(
-    "--timeslice-trainer-group",
-    type=str,
-    default="group-slime-trainer",
-    help="TimeSlice Orchestrator time-slice group for trainer actors.",
-)
+> **Note:** The Slime fork is a temporary measure. We have already requested upstream Slime to add phase callback hooks. Once upstreamed, the only change needed is one pip install line in `setup_node.sh` (fork → mainline Slime).
+
+### Installation
+
+The `setup_node.sh` script (mounted via ConfigMap and executed by container `postStart` hooks) installs the required packages at runtime:
+
+```bash
+# Replace the base image's Slime with the fork (PhaseCallback support)
+rm -rf /root/slime
+git clone --depth 1 -b feat/phase-callbacks https://github.com/aishukamal/slime.git /root/slime
+cd /root/slime && pip install --no-cache-dir --no-deps -e .
+
+# Install the timeslice client library (--no-deps avoids protobuf version conflicts)
+pip install --no-cache-dir --no-deps "timeslice @ git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/client/python"
+
+# Install the llm-d-timeslice-slime callback package
+pip install --no-cache-dir --no-deps "llm-d-timeslice-slime @ git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/integrations/slime"
 ```
 
-### Step 2: Initialize Client & Allocate Placement Groups (`train.py`)
-In `train.py`, instantiate clients for both the sampler and trainer GPU groups. To prevent cross-cluster circular wait deadlocks, enforce a **Trainer-First lock hierarchy**: acquire the Trainer lock before requesting placement groups from Ray, and create actor and rollout groups concurrently using a `ThreadPoolExecutor`:
+> **Why `--no-deps`?** The Slime base image ships protobuf 6.x which Ray depends on. Without `--no-deps`, pip upgrades protobuf to 7.x, which corrupts the running Ray process.
 
-```python
-import os, concurrent.futures
-from timeslice import OrchestratorClient
+### Usage
 
-def train(args):
-    sampler_client = None
-    trainer_client = None
-    job_id = getattr(args, "timeslice_job_id", None) or os.getenv("TIMESLICE_JOB_ID", "slime-job-default")
+Add one flag to your Slime launch command:
+```bash
+# Sync
+python3 train.py ... --phase-callback-path timeslice_slime.callback.TimesliceCallback
 
-    if getattr(args, "enable_timeslice", False):
-        addr = getattr(args, "timeslice_orchestrator_addr", "timeslice-timesliceorchestrator.timeslice-system.svc.cluster.local:50051")
-        sampler_client = OrchestratorClient(target=addr, job_id=job_id, group_id=getattr(args, "timeslice_sampler_group", "group-slime-sampler"))
-        trainer_client = OrchestratorClient(target=addr, job_id=job_id, group_id=getattr(args, "timeslice_trainer_group", "group-slime-trainer"))
-
-    # DEADLOCK PREVENTION: Acquire Trainer grant first, then Sampler.
-    if trainer_client:
-        trainer_client.acquire()
-
-    def _create_rollout_group():
-        if sampler_client:
-            sampler_client.acquire()
-        return create_placement_groups(args, role="rollout")
-
-    # Parallel deployment of the actor (i.e. trainer) & sampler groups    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        f_actor = executor.submit(create_placement_groups, args, role="actor") 
-        f_rollout = executor.submit(_create_rollout_group)
-        pgs = f_actor.result()
-        pgs.update(f_rollout.result())
+# Async
+python3 train_async.py ... --phase-callback-path timeslice_slime.callback.TimesliceCallback
 ```
 
-### Step 3: Wrap Rollout and Training Phases
-Acquire and release GPU grants around the rollout collection and policy training loops in `train.py`. Note that because weight synchronization (`update_weights`) executes via direct GPU-to-GPU NCCL broadcast, **both Trainer and Sampler locks must be held concurrently** during the transfer:
-
-```python
-    # Yield Trainer lock after initial weight sync, retaining Sampler lock for rollout
-    if trainer_client:
-        trainer_client.release()
-
-    for rollout_id in range(args.start_rollout_id, args.num_rollout):
-        # ---------------------------------------------------------
-        # Phase 1: Rollout Generation (Rollout GPU Group)
-        # ---------------------------------------------------------
-        rollout_data_ref = ray.get(rollout_manager.generate.remote(rollout_id))
-        if sampler_client:
-            sampler_client.release()
-
-        # ---------------------------------------------------------
-        # Phase 2: Megatron-LM Policy Training (Trainer GPU Group)
-        # ---------------------------------------------------------
-        if trainer_client:
-            trainer_client.acquire()
-
-        actor_model.async_train(rollout_id, rollout_data_ref)
-        
-        # Re-acquire Sampler lock (following Trainer-first order) for GPU-to-GPU NCCL broadcast
-        if sampler_client:
-            sampler_client.acquire()
-
-        actor_model.update_weights()
-
-        # Yield Trainer lock, retaining Sampler lock for next rollout epoch
-        if trainer_client:
-            trainer_client.release()
-
-    if sampler_client:
-        sampler_client.release()
-        sampler_client.close()
-    if trainer_client:
-        trainer_client.close()
-```
-
-> [!NOTE]
-> **Cooperative Memory Offloading is Optional:** Application-level offloading (`--offload-train` and `--offload-rollout`) is optional. The node-local Snapshot Agent can transparently context-switch the entire GPU VRAM state without code changes. Cooperative offloading simply optimizes PCIe swap latency by discarding transient SGLang KV caches and copying only static model weights (~1GB) to CPU memory before yielding locks.
+Set environment variables — these are set in `run_grpo.sh` (derived from `JOB_NAME` and `SLIME_MODE`) and `runtimeEnvYAML` in the RayJob manifest:
+- `TIMESLICE_JOB_ID` — unique job identifier, derived from `JOB_NAME` (set in `run_grpo.sh`)
+- `TIMESLICE_ORCH_ADDR` — orchestrator gRPC address (set in `runtimeEnvYAML`)
+- `TIMESLICE_TRAINER_GROUP` — trainer pool group, shared across jobs (set in `run_grpo.sh`)
+- `TIMESLICE_SAMPLER_GROUP` — sampler pool group: shared for sync, per-job for async (set in `run_grpo.sh` based on `SLIME_MODE`)
+- `NCCL_CUMEM_ENABLE=0`, `NCCL_NVLS_ENABLE=0` — required for cuda-checkpoint compatibility. Must be set as **container-level env vars** in the RayJob worker pod spec (not just `runtimeEnvYAML`), so they propagate to subprocesses like the SGLang inference server.
 
 > [!TIP]
-> For a tested codebase reference branch containing these exact changes, see [jessicaochen/slime (timeslice branch)](https://github.com/jessicaochen/slime/tree/timeslice).
-> For a detailed walkthrough of all codebase changes made in this fork (categorized by scheduling, device leak fixes, and memory offloading), see **[Detailed Fork Changes](sync/SLIME_CHANGES.md)**.
+> For a detailed walkthrough of how to manually integrate a framework (without the pre-packaged solution), see **[Manual Integration Example](../manual-integration-example.md)**.
 
 ---
 
-## 4. Deploying the Modified Slime Variant
-
-To run your modified Slime workload on the cluster, you must package the `timeslice` client library and configure the Kubernetes deployments.
+## 4. Deploying Time-Sliced Slime Jobs
 
 ### Step 1: Package and Containerize
-Ensure the `timeslice` Python client is installed in your Slime container image. Add the following to your Slime `Dockerfile`:
-
-<!-- TBD: Less than 98% confident in the exact base image or Dockerfile structure of the Slime workload. Customize this step to fit your existing Docker build process. -->
-```dockerfile
-# Copy the local timeslice Python client library into the image
-COPY pkg/client/python /opt/timeslice-client
-
-# Install the client library and its dependencies (grpcio, protobuf, etc.)
-RUN pip install /opt/timeslice-client
-```
+The examples use the standard `slimerl/slime` container image. The `setup_node.sh` script installs the Slime fork and timeslice packages at runtime via `postStart` hooks — no custom image build required.
 
 ### Step 2: Configure KubeRay `RayJob` with DRA Resource Claims
 When deploying Slime across independent Ray clusters, use KubeRay `RayJob` manifests configured with **Kubernetes Dynamic Resource Allocation (DRA)** (`resourceClaims`). Binding containers to shared DRA claims (`shared-trainers-gpu-claim` and `shared-samplers-gpu-claim`) instead of static `nvidia.com/gpu` limits allows multiple jobs' worker pods to co-locate on the same physical GPU nodes without scheduler blocking.
@@ -292,53 +215,14 @@ When deploying Slime across independent Ray clusters, use KubeRay `RayJob` manif
 A complete disaggregated Slime workload requires defining **two separate worker groups** under `workerGroupSpecs`: one for trainers and one for rollouts (samplers). For each group:
 * **Custom Ray Resources**: Include custom resource counts in `rayStartParams` (`"{\"trainers\": 1}"` for trainers and `"{\"samplers\": 1}"` for rollouts) so that Ray placement groups can bind tasks to the appropriate worker pool.
 * **Pool-Specific Identifiers**: Ensure each worker group is configured with its corresponding node selector (`group.timeslice.io/trainers: "true"` vs. `samplers: "true"`), pod labels (`timeslice.io/group: trainers` vs. `samplers`), and shared DRA claim (`shared-trainers-gpu-claim` vs. `shared-samplers-gpu-claim`).
+* **Time-Slicing Environment Variables**: Set `TIMESLICE_JOB_ID`, `TIMESLICE_ORCH_ADDR`, `TIMESLICE_TRAINER_GROUP`, `TIMESLICE_SAMPLER_GROUP`, and NCCL env vars in `runtimeEnvYAML`.
 
-The example below illustrates the configuration for the trainer worker group:
-
-```yaml
-apiVersion: ray.io/v1
-kind: RayJob
-metadata:
-  name: slime-job-a
-spec:
-  rayClusterSpec:
-    workerGroupSpecs:
-    - groupName: trainer-group
-      rayStartParams:
-        resources: '"{\"trainers\": 1}"'
-      template:
-        metadata:
-          labels:
-            timeslice.io/group: trainers
-            timeslice.io/job-id: slime-job-a
-        spec:
-          nodeSelector:
-            group.timeslice.io/trainers: "true"
-          tolerations:
-          - key: "nvidia.com/gpu"
-            operator: "Exists"
-            effect: "NoSchedule"
-          - key: "timeslice.io/shared"
-            operator: "Equal"
-            value: "true"
-            effect: "NoSchedule"
-          containers:
-          - name: ray-worker
-            # Must be a Slime container image built with your time-slicing modifications
-            image: my-registry/slime-modified:latest
-            env:
-            - name: TIMESLICE_JOB_ID
-              value: "slime-job-a"
-            resources:
-              claims:
-              - name: gpu-claim
-          resourceClaims:
-          - name: gpu-claim
-            resourceClaimName: shared-trainers-gpu-claim
-```
+For **async RL**, set `TIMESLICE_SAMPLER_GROUP` to a per-job value (e.g., `samplers-${JOB_NAME}`) so each job gets its own sampler group with no contention.
 
 > [!TIP]
-> For example KubeRay templates and initialization scripts, see **[`sync/ray-job.yaml.template`](sync/ray-job.yaml.template)** and **[`sync/setup_node.sh`](sync/setup_node.sh)**.
+> For example KubeRay templates and initialization scripts, see:
+> * **Sync:** [`examples/sync/ray-job.yaml.template`](examples/sync/ray-job.yaml.template) and [`examples/sync/setup_node.sh`](examples/sync/setup_node.sh)
+> * **Async:** [`examples/async/ray-job.yaml.template`](examples/async/ray-job.yaml.template) and [`examples/async/setup_node.sh`](examples/async/setup_node.sh)
 
 ---
 
@@ -398,6 +282,17 @@ You can inspect the platform logs to verify that the Snapshot Agent is actively 
    [INFO] Restore completed in 158ms.
    ```
 
+3. **TimesliceCallback Logs (Lock Acquire/Release)**:
+   ```bash
+   kubectl logs <submitter-pod> | grep "\[timeslice\]"
+   ```
+   Look for lock events:
+   ```text
+   [timeslice] job=slime-job-a ACQUIRE role=trainer group=trainers waited=1000ms context_restored=True
+   [timeslice] job=slime-job-a ACQUIRE role=sampler group=samplers waited=1000ms context_restored=True
+   [timeslice] job=slime-job-a RELEASE role=sampler group=samplers pending_waiters=1
+   ```
+
 ---
 
 ## 6. Observing Convergence and Job Completion
@@ -415,7 +310,7 @@ Slime workloads typically log training metrics to **TensorBoard**, **Weights & B
 
 ### B. Observing Job Completion
 When a Slime job completes its designated number of iterations:
-1. **Graceful Exit**: The `OrchestratorClient` context manager or the `.close()` method will clean up the gRPC channels and permanently release any remaining locks.
+1. **Graceful Exit**: The `TimesliceCallback.close()` method will release any remaining locks and clean up gRPC channels. The atexit safety net ensures locks are always released, even on crashes.
 2. **Kubernetes Job Status**:
    If deployed as a Kubernetes `Job` or `PyTorchJob` (via the Kubeflow Training Operator), you can observe the status transition to `Completed` (or `Succeeded`):
    ```bash
