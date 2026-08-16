@@ -1,0 +1,327 @@
+# EXAMPLE ONLY — demo-quality reference, not a supported platform component.
+# The embedded supervisor shows how a batch-inference server becomes a polite
+# time-slicing tenant; a production deployment should use a queue-based batch
+# front-end with retries (see README §8) and treat this file as a template.
+#
+# Shadow vLLM: a STOCK vLLM OpenAI-compatible server that harvests the RL
+# trainer's idle time on the shared GPU, plus a ~100-line supervisor that
+# makes it a polite time-slicing tenant.
+#
+# How it yields: vLLM runs with --enable-sleep-mode. The supervisor registers
+# the workload with the node's snapshot agent over the WORKLOAD CHANNEL
+# (timeslice.snapshot_agent.register_workload) with callbacks that POST to
+# vLLM's own /sleep and /wake_up endpoints. When the orchestrator hands the
+# GPU to the trainer it drives those callbacks through the agent — weights and
+# KV cache move to host RAM in ~1-2 s, and back in ~100 ms. The vLLM process
+# is never killed.
+#
+# Priority is structural: the supervisor holds the group lock ONLY while no
+# one is waiting (it polls waiter_queue_depth every 500 ms; when the trainer
+# queues it DRAINS — closes the readiness gate so the pod leaves the Service
+# endpoints and waits for in-flight requests to finish, ~3 s — then
+# releases), and re-requests the lock afterwards. The trainer therefore
+# never waits more than ~0.5 s poll + ~3 s drain + one vLLM sleep (~1-2 s).
+# The drain is REQUIRED: vLLM's /sleep does not drain the scheduler
+# (vllm#28714) and sleeping with a request mid-decode kills the server.
+#
+# Runs on the shared trainer node (nodeSelector group.timeslice.io/trainers)
+# — the 1-GPU node it shares with the RL head pod (rl-head). It references
+# the SAME shared-trainers-gpu-claim DRA ResourceClaim as rl-head (see
+# resource-claims.yaml): that shared claim is what lets both tenants
+# co-locate on the one GPU without scheduler blocking, each holding the
+# full, unpartitioned GPU during its turn. The node has a single GPU, so no
+# device selection is needed.
+#
+# No template variables — apply directly with kubectl apply -f.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shadow-vllm-scripts
+  namespace: default
+data:
+  supervisor.py: |
+    #!/usr/bin/env python3
+    """Queue-depth-preemption supervisor for a stock vLLM server."""
+    import os
+    import subprocess
+    import sys
+    import time
+    import urllib.request
+
+    JOB_ID = os.environ.get("TIMESLICE_JOB_ID", "shadow-vllm")
+    GROUP = os.environ.get("TIMESLICE_GROUP", "trainers")
+    ORCH = os.environ["TIMESLICE_ORCH_ADDR"]
+    AGENT = os.environ["TIMESLICE_AGENT_ADDR"]          # node-local, <hostIP>:9001
+    MODEL = os.environ.get("VLLM_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
+    PORT = int(os.environ.get("VLLM_PORT", "8000"))
+    GPU_FRAC = os.environ.get("VLLM_GPU_FRAC", "0.7")
+    POLL_S = float(os.environ.get("WAITER_POLL_SECONDS", "0.5"))
+    # Readiness gate file (see the pod's readinessProbe): while it exists the
+    # pod is a Service endpoint; removing it makes new batch requests fail
+    # fast at the Service (connection refused) within ~1-2 s.
+    GATE = "/tmp/serving"
+
+    try:
+        from timeslice import OrchestratorClient
+    except ImportError:  # client class was renamed upstream; API identical
+        from timeslice import TimeSliceOrchestratorClient as OrchestratorClient
+    from timeslice.snapshot_agent import register_workload
+
+    def log(msg):
+        print(f"[supervisor] {msg}", flush=True)
+
+    def http(method, path, timeout):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{PORT}{path}", data=b"" if method == "POST" else None,
+            method=method)
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    def gate_open():
+        open(GATE, "w").close()
+
+    def gate_close():
+        try:
+            os.remove(GATE)
+        except FileNotFoundError:
+            pass
+
+    def inflight():
+        """running + waiting requests, from /metrics (None if unreadable)."""
+        try:
+            with http("GET", "/metrics", timeout=2) as r:
+                text = r.read().decode()
+            n = 0.0
+            for line in text.splitlines():
+                if line.startswith(("vllm:num_requests_running",
+                                    "vllm:num_requests_waiting")):
+                    n += float(line.rsplit(" ", 1)[1])
+            return n
+        except Exception:
+            return None
+
+    def drain(settle_s=2.5, max_wait_s=12.0):
+        """Stop new batch traffic and wait for in-flight requests to finish.
+        REQUIRED before sleeping: vLLM's /sleep does NOT drain the scheduler
+        (vllm-project/vllm#28714, unfixed as of v0.10.x) — freeing weights
+        with a request mid-decode is a fatal CUDA error that kills the
+        server. Gate first (readinessProbe pulls the pod out of the Service
+        in ~1-2 s; new requests then fail fast), then wait for running+
+        waiting == 0."""
+        t0 = time.time()
+        gate_close()
+        zeros = 0
+        while time.time() - t0 < max_wait_s:
+            n = inflight()
+            if n == 0 and time.time() - t0 >= settle_s:
+                zeros += 1
+                if zeros >= 2:
+                    log(f"drained in {time.time()-t0:.2f}s")
+                    return
+            else:
+                zeros = 0
+            time.sleep(0.25)
+        log(f"drain timed out after {max_wait_s}s (in_flight={inflight()}); sleeping anyway")
+
+    def vllm_sleep(mode=None, tags=None):
+        t0 = time.time()
+        http("POST", "/sleep?level=1", timeout=300)
+        log(f"vLLM slept (HBM -> host RAM) in {time.time()-t0:.2f}s")
+
+    def vllm_wake(tags=None):
+        t0 = time.time()
+        http("POST", "/wake_up", timeout=300)
+        gate_open()   # resume batch traffic only after weights are back
+        log(f"vLLM woke in {time.time()-t0:.2f}s")
+
+    def vllm_is_sleeping():
+        try:
+            import json
+            with http("GET", "/is_sleeping", timeout=5) as r:
+                return bool(json.load(r).get("is_sleeping"))
+        except Exception:
+            return None  # endpoint unavailable — assume unknown
+
+    def launch_vllm():
+        env = dict(os.environ)
+        env["VLLM_SERVER_DEV_MODE"] = "1"   # exposes /sleep, /wake_up, /is_sleeping
+        proc = subprocess.Popen(
+            ["vllm", "serve", MODEL,
+             "--port", str(PORT),
+             "--enable-sleep-mode",
+             "--gpu-memory-utilization", GPU_FRAC,
+             "--max-model-len", "4096"],
+            env=env)
+        deadline = time.time() + 900
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                raise RuntimeError(f"vLLM exited rc={proc.returncode} during startup")
+            try:
+                http("GET", "/health", timeout=2)
+                log("vLLM is up")
+                return proc
+            except Exception:
+                time.sleep(2)
+        raise RuntimeError("vLLM did not become healthy in 900s")
+
+    def waiter_depth(client):
+        st = client.get_status(group_id=GROUP)
+        g = getattr(st, "group", st)
+        return int(getattr(g, "waiter_queue_depth", 0))
+
+    def main():
+        client = OrchestratorClient(target=ORCH, job_id=JOB_ID, group_id=GROUP)
+
+        # 1) Take the lock BEFORE creating any GPU context (cold start).
+        log("requesting lock for cold start...")
+        res = client.acquire()
+        log(f"lock acquired (waited {getattr(res, 'waited_ms', '?')} ms); launching vLLM")
+        proc = launch_vllm()
+        gate_open()   # vLLM healthy -> become a Service endpoint
+
+        # 2) Register with the node's snapshot agent: the platform drives our
+        #    sleep/wake through these callbacks at every lock handoff.
+        handle = register_workload(
+            AGENT, job_id=JOB_ID, group=GROUP,
+            on_snapshot=vllm_sleep, on_restore=vllm_wake,
+            supported_modes=["offload"], default_mode="offload")
+        log(f"workload registered with agent {AGENT}")
+
+        try:
+            while True:
+                # -- serving phase: hold the lock only while nobody waits --
+                while True:
+                    if proc.poll() is not None:
+                        log(f"vLLM died rc={proc.returncode}; releasing lock and exiting")
+                        client.release()
+                        sys.exit(1)
+                    try:
+                        if waiter_depth(client) > 0:
+                            log("trainer is waiting - yielding GPU")
+                            break
+                    except Exception as e:
+                        log(f"status poll error (transient): {e}")
+                    time.sleep(POLL_S)
+
+                drain()            # stop + flush batch traffic (sleep is NOT drain-safe)
+                client.release()   # platform snapshots us via the workload channel
+                time.sleep(1.0)
+
+                # -- reacquire: blocks until the trainer finishes its burst --
+                res = client.acquire()
+                log(f"lock reacquired (waited {getattr(res, 'waited_ms', '?')} ms, "
+                    f"context_restored={getattr(res, 'context_restored', '?')})")
+                # Belt and suspenders: if the platform didn't wake us, do it locally.
+                if vllm_is_sleeping():
+                    log("still sleeping after acquire - waking locally")
+                    vllm_wake()
+                gate_open()        # idempotent; re-admit batch traffic
+        finally:
+            handle.close()
+            proc.terminate()
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shadow-vllm
+  namespace: default
+  labels:
+    app: shadow-vllm
+    # Exact keys the platform selects on:
+    timeslice.io/job-id: shadow-vllm
+    timeslice.io/group: trainers
+spec:
+  restartPolicy: Always
+  nodeSelector:
+    group.timeslice.io/trainers: "true"
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  - key: timeslice.io/shared
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+  resourceClaims:
+  - name: accelerator
+    resourceClaimName: shared-trainers-gpu-claim   # SAME claim as rl-head
+  containers:
+  - name: vllm
+    image: vllm/vllm-openai:v0.9.2
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -euo pipefail
+      # GPU access via the pod's DRA ResourceClaim (the NVIDIA DRA driver
+      # injects the GPU + driver userspace — no setup needed here).
+      # 1-GPU node: the shared GPU is the only one visible — no device mask.
+      nvidia-smi -L
+      pip install --quiet "git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/client/python" \
+        "grpcio>=1.81.0" "protobuf>=7.35.0"
+      exec python3 /scripts/supervisor.py
+    env:
+    - name: TIMESLICE_JOB_ID
+      value: "shadow-vllm"            # must equal the timeslice.io/job-id label
+    - name: TIMESLICE_GROUP
+      value: "trainers"
+    - name: TIMESLICE_ORCH_ADDR
+      value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
+    - name: NODE_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+    - name: TIMESLICE_AGENT_ADDR
+      value: "$(NODE_IP):9001"        # snapshot agent is hostNetwork on :9001
+    - name: VLLM_MODEL
+      value: "Qwen/Qwen2.5-0.5B-Instruct"
+    - name: VLLM_PORT
+      value: "8000"
+    - name: VLLM_GPU_FRAC
+      value: "0.7"
+    # Readiness gate: the supervisor removes /tmp/serving before yielding the
+    # GPU (drain) and recreates it after wake. NotReady -> the pod leaves the
+    # Service endpoints, so batch requests fail fast (connection refused)
+    # instead of reaching a sleeping engine — required because vLLM's /sleep
+    # does not drain in-flight requests (vllm#28714; a request mid-decode at
+    # sleep time is a fatal CUDA error).
+    readinessProbe:
+      exec:
+        command: ["cat", "/tmp/serving"]
+      periodSeconds: 1
+      failureThreshold: 1
+    ports:
+    - containerPort: 8000
+    resources:
+      requests:
+        cpu: "6"
+        memory: "60Gi"     # sleep mode offloads weights+KV here; sized to share the node with rl-head
+      claims:
+      - name: accelerator
+    volumeMounts:
+    - name: scripts
+      mountPath: /scripts
+    - name: dshm
+      mountPath: /dev/shm
+  volumes:
+  - name: scripts
+    configMap:
+      name: shadow-vllm-scripts
+      defaultMode: 0755
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 8Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shadow-vllm
+  namespace: default
+spec:
+  selector:
+    app: shadow-vllm
+  ports:
+  - port: 8000
+    targetPort: 8000

@@ -1,0 +1,752 @@
+# RL trainer for the RL + batch-inference interleaving guide — disaggregated
+# 1-GPU-per-node shape. Code RLVR: Eurus-2 code split with prime_code reward
+# (live in-pod test execution), verl fully_async_policy, GRPO,
+# R1-Distill-Qwen-1.5B.
+# Training budget: edit the RUN_SECONDS env below (default 5400 s ~= 90 min).
+#
+# Topology: the RL job is a 2-node Ray cluster. Placement needs no rollout
+# node labels:
+#   rl-head    on the SHARED 1-GPU node (label group.timeslice.io/trainers=true;
+#              hosts rl-head AND the shadow vLLM pod): ray head, FSDP trainer
+#              (time-sliced with shadow vLLM)
+#   rl-rollout on any GPU node except the trainer node (required anti-affinity
+#              on group.timeslice.io/trainers); its GPU is an ordinary
+#              device-plugin request (nvidia.com/gpu: 1) — the device plugin
+#              allocates whole GPUs exclusively: ray worker, vLLM rollout
+#              engine (always on)
+# Placement is pinned by Ray CUSTOM RESOURCES, not GPU masks: the head starts
+# ray with --resources='{"trainer_node": 100}', the worker with
+# --resources='{"rollout_node": 100}', and verl's per-pool placement-group
+# bundle resources (hydra override ray_pg_extra_resources={trainer_pool:
+# {trainer_node: 1}, rollout_pool: {rollout_node: 1}}) make verl's trainer
+# placement group request {trainer_node: 1} and the rollout PG
+# {rollout_node: 1}.
+#
+# GPU access: the shared GPU is the recipe's ONLY DRA ResourceClaim (see
+# resource-claims.yaml) — rl-head and shadow-vllm reference the SAME
+# shared-trainers-gpu-claim, which is what lets both tenants co-locate on
+# the one shared GPU without scheduler blocking (each holds the full,
+# unpartitioned GPU during its turn); the NVIDIA DRA driver injects the GPU
+# + driver userspace into the container. The rollout pod requests its GPU
+# the ordinary way (nvidia.com/gpu: 1 via the device plugin). Neither path
+# needs elevated pod permissions. Each node has exactly ONE GPU, so there
+# is nothing to mask — every process sees cuda:0.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rlbatch-trainer
+  namespace: default
+data:
+  data_prep.py: |
+    #!/usr/bin/env python3
+    """Prepare the Eurus-2-RL-Data CODE subset for the async code-RLVR experiment.
+
+    Source: HF dataset PRIME-RL/Eurus-2-RL-Data (train.parquet), ALREADY in verl
+    RLHFDataset format:
+      - data_source in {codecontests, apps, codeforces, taco} -> default reward routing
+        hits verl.utils.reward_score.prime_code.compute_score (local in-pod test-case
+        execution; extracts the LAST ```python fenced block)
+      - prompt = [{system (Eurus action protocol)}, {user: problem + "Write Python code
+        ... ```python ... ``` at the end"}]
+      - reward_model = {"style": "rule", "ground_truth": '{"inputs": [...], "outputs": [...]}'}
+
+    Transformations (documented in NOTES.md):
+      1. keep only ability == "code" rows with a data_source that routes to prime_code
+      2. DROP the Eurus system message (R1-Distill guidance: no system prompt; the
+         reward-relevant ```python instruction lives in the user message, kept verbatim)
+      3. truncate test suites to first 8 in/out pairs (bounds worst-case reward latency),
+         preserving fn_name; drop rows with unusable/oversized ground truth
+      4. filter to prompts <= --max_prompt_tokens under the actual chat template
+      5. subsample 512 train / 64 val, disjoint, dedup'd on user text
+    """
+
+    import argparse
+    import json
+    import os
+
+    import pandas as pd
+    from huggingface_hub import hf_hub_download
+
+    CODE_SOURCES = {"codecontests", "apps", "codeforces", "taco"}
+
+
+    def truncate_ground_truth(gt_str, max_tests, max_bytes):
+        """Return truncated JSON ground truth, or None if the row is unusable."""
+        try:
+            gt = json.loads(gt_str)
+        except Exception:
+            return None
+        if not isinstance(gt, dict):
+            return None
+        ins, outs = gt.get("inputs"), gt.get("outputs")
+        if not isinstance(ins, list) or not isinstance(outs, list):
+            return None
+        n = min(len(ins), len(outs), max_tests)
+        if n < 1:
+            return None
+        new_gt = {"inputs": ins[:n], "outputs": outs[:n]}
+        if gt.get("fn_name"):
+            new_gt["fn_name"] = gt["fn_name"]
+        try:
+            s = json.dumps(new_gt)
+        except Exception:
+            return None
+        if len(s) > max_bytes:
+            return None
+        return s
+
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--repo_id", default="PRIME-RL/Eurus-2-RL-Data")
+        ap.add_argument("--filename", default="train.parquet")
+        ap.add_argument("--tokenizer", required=True)
+        ap.add_argument("--out_dir", default="/workspace/data/eurus_code")
+        ap.add_argument("--train_size", type=int, default=512)
+        ap.add_argument("--val_size", type=int, default=64)
+        ap.add_argument("--max_tests", type=int, default=8)
+        ap.add_argument("--max_gt_bytes", type=int, default=200000)
+        ap.add_argument("--max_prompt_tokens", type=int, default=1900)
+        ap.add_argument("--candidates", type=int, default=3000)
+        ap.add_argument("--seed", type=int, default=17)
+        args = ap.parse_args()
+
+        local = hf_hub_download(repo_id=args.repo_id, filename=args.filename, repo_type="dataset")
+        df = pd.read_parquet(local)
+        print(f"loaded {len(df)} rows, columns: {list(df.columns)}")
+
+        df = df[df["ability"] == "code"].reset_index(drop=True)
+        print(f"{len(df)} code rows; data_source counts:\n{df['data_source'].value_counts()}")
+        df = df[df["data_source"].isin(CODE_SOURCES)].reset_index(drop=True)
+        print(f"{len(df)} rows with prime_code-routable data_source")
+
+        # ---- rebuild rows: user-only prompt + truncated ground truth ----
+        rows = []
+        n_bad_gt, n_bad_prompt = 0, 0
+        for _, r in df.iterrows():
+            msgs = [dict(m) for m in r["prompt"]]
+            user = [m for m in msgs if m.get("role") == "user"]
+            if len(user) != 1 or "```python" not in user[0].get("content", ""):
+                n_bad_prompt += 1
+                continue
+            gt = truncate_ground_truth(dict(r["reward_model"])["ground_truth"], args.max_tests, args.max_gt_bytes)
+            if gt is None:
+                n_bad_gt += 1
+                continue
+            rows.append(
+                {
+                    "data_source": r["data_source"],
+                    "prompt": [{"role": "user", "content": user[0]["content"]}],
+                    "ability": "code",
+                    "reward_model": {"style": "rule", "ground_truth": gt},
+                    "extra_info": dict(r["extra_info"]) if r["extra_info"] is not None else {},
+                    "_ptext": user[0]["content"],
+                }
+            )
+        print(f"kept {len(rows)} rows (dropped {n_bad_prompt} bad-prompt, {n_bad_gt} bad-ground-truth)")
+
+        out = pd.DataFrame(rows).drop_duplicates("_ptext").reset_index(drop=True)
+        print(f"{len(out)} unique problems after dedup")
+
+        # cheap char prefilter, then exact token filter on a sampled candidate pool
+        out = out[out["_ptext"].str.len() <= 7000].reset_index(drop=True)
+        print(f"{len(out)} rows after 7000-char prefilter")
+        cand = out.sample(n=min(args.candidates, len(out)), random_state=args.seed).reset_index(drop=True)
+
+        from transformers import AutoTokenizer
+
+        tok = AutoTokenizer.from_pretrained(args.tokenizer)
+        keep_idx, tok_lens = [], []
+        for i, r in cand.iterrows():
+            ntok = len(tok.apply_chat_template(list(r["prompt"]), add_generation_prompt=True))
+            if ntok <= args.max_prompt_tokens:
+                keep_idx.append(i)
+                tok_lens.append(ntok)
+        cand = cand.loc[keep_idx].reset_index(drop=True)
+        print(
+            f"{len(cand)} candidates <= {args.max_prompt_tokens} prompt tokens "
+            f"(mean {sum(tok_lens) / max(len(tok_lens), 1):.0f})"
+        )
+
+        n = args.train_size + args.val_size
+        assert len(cand) >= n, f"only {len(cand)} candidates for {n} needed"
+        sub = cand.sample(n=n, random_state=args.seed + 1).reset_index(drop=True)
+        train = sub.iloc[: args.train_size].drop(columns="_ptext")
+        val = sub.iloc[args.train_size : n].drop(columns="_ptext")
+
+        # ---- final schema sanity checks (fail fast, before burning GPU time) ----
+        row = train.iloc[0]
+        assert row["data_source"] in CODE_SOURCES
+        p0 = dict(row["prompt"][0])
+        assert p0["role"] == "user" and "```python" in p0["content"]
+        gt = json.loads(dict(row["reward_model"])["ground_truth"])
+        assert len(gt["inputs"]) >= 1 and len(gt["inputs"]) == len(gt["outputs"])
+        ntests = [len(json.loads(dict(rm)["ground_truth"])["inputs"]) for rm in train["reward_model"]]
+        n_fn = sum(1 for rm in train["reward_model"] if "fn_name" in json.loads(dict(rm)["ground_truth"]))
+        print(f"tests/problem: mean {sum(ntests) / len(ntests):.1f} max {max(ntests)}; call-based (fn_name): {n_fn}")
+        print("sample prompt (first 400 chars):")
+        print(p0["content"][:400])
+        print("sample prompt (last 200 chars):")
+        print(p0["content"][-200:])
+        print("sample ground_truth (first 200 chars):", dict(row["reward_model"])["ground_truth"][:200])
+
+        os.makedirs(args.out_dir, exist_ok=True)
+        train.to_parquet(os.path.join(args.out_dir, "train.parquet"), index=False)
+        val.to_parquet(os.path.join(args.out_dir, "val.parquet"), index=False)
+        print(f"wrote {len(train)} train / {len(val)} val -> {args.out_dir}")
+
+
+    if __name__ == "__main__":
+        main()
+
+  install_common.sh: |
+    #!/usr/bin/env bash
+    # Phase 1 installs, identical on head and rollout pods (sourced). The
+    # prime_code reward deps + smoke test run on BOTH pods: reward scoring
+    # executes wherever Ray places the reward workers.
+    # verl with fully-async lifecycle hooks + trainer registry and per-pool
+    # PG bundle resources, installed directly from the fork branch
+    # (override via VERL_REPO/VERL_REF pod env).
+    VERL_REPO="${VERL_REPO:-https://github.com/aishukamal/verl.git}"
+    VERL_REF="${VERL_REF:-feat/fully-async-lifecycle-hooks}"
+
+    echo "=== Phase 1: install verl @ $VERL_REPO $VERL_REF ==="
+    pip install datasets TransferQueue 2>&1 | tail -5
+    git clone --filter=blob:none "$VERL_REPO" /workspace/verl-src
+    cd /workspace/verl-src
+    # A branch from a fresh clone exists only as a remote ref, and git's
+    # create-tracking-branch DWIM conflicts with --detach; try the remote
+    # ref first, then fall back for SHA/tag refs.
+    git checkout --detach "origin/$VERL_REF" 2>/dev/null || git checkout --detach "$VERL_REF"
+    git rev-parse HEAD | tee "$RESULTS_DIR/verl_commit"
+    pip install -e ".[gpu]" 2>&1 | tail -10
+    cd /workspace
+    pip install cupy-cuda12x 2>&1 | tail -3
+    python3 -c "import verl; print('verl version:', verl.__version__)"
+    python3 -c "import transfer_queue; print('transfer_queue OK')"
+
+    echo "=== Phase 1b: install timeslice lock client + verl plugin wrapper ==="
+    pip install "git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/client/python" 2>&1 | tail -3
+    # The client's generated stubs need grpcio>=1.81 and protobuf gencode
+    # 7.35; the image ships grpcio 1.80.0 / protobuf 6.33.6. Upgrade both
+    # before the import check below.
+    pip install "grpcio>=1.81.0" "protobuf>=7.35.0" 2>&1 | tail -2
+    # Install the llm-d-timeslice-verl integration package (lock protocol via
+    # verl's fully-async lifecycle hooks). It ships TimesliceFullyAsyncTrainer,
+    # a FullyAsyncTrainer subclass registered under the trainer name
+    # "timeslice" (selected by the async_training.trainer_name=timeslice hydra
+    # override in run_head.sh); installing it registers a `verl.plugins` entry
+    # point, so `import verl` loads the registering module in every process.
+    # The hooks are inert unless TIMESLICE_FULLY_ASYNC=1 is set.
+    # Placement-group pinning comes from
+    # verl's own ray_pg_extra_resources config (see the hydra overrides in
+    # run_head.sh).
+    # --no-deps: the timeslice client is already installed above and the
+    # package declares no other dependencies.
+    pip install --no-cache-dir --no-deps "llm-d-timeslice-verl @ git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/integrations/verl" 2>&1 | tail -3
+    python3 <<'CHK'
+    import importlib.metadata as md
+    eps = list(md.entry_points(group="verl.plugins"))
+    assert any(ep.name == "timeslice" for ep in eps), f"verl.plugins entry point missing: {eps}"
+    import verl  # noqa: F401 - loads verl.plugins entries -> registers the timeslice trainer
+    from verl.experimental.fully_async_policy.fully_async_trainer import get_trainer_cls
+    from timeslice_verl.trainer import TimesliceFullyAsyncTrainer
+    assert get_trainer_cls("timeslice") is TimesliceFullyAsyncTrainer, "timeslice trainer not registered"
+    try:
+        from timeslice import OrchestratorClient  # noqa: F401
+    except ImportError:  # newer client versions export TimeSliceOrchestratorClient instead (same API)
+        from timeslice import TimeSliceOrchestratorClient as OrchestratorClient
+    print("timeslice trainer install OK; registered as:", get_trainer_cls("timeslice").__name__)
+    CHK
+
+    echo "=== Phase 1c: pyext (prime_code dependency; shim if pip install broken) ==="
+    pip install pyext 2>&1 | tail -2 || true
+    python3 << 'PYEXTFIX'
+    try:
+        from pyext import RuntimeModule  # noqa: F401
+        print("pyext OK (pip)")
+    except Exception:
+        import os
+        import sysconfig
+
+        SHIM = '''"""Minimal pyext shim: only RuntimeModule.from_string, as used by
+    verl.utils.reward_score.prime_code.testing_util (pyext 0.7 does not install on
+    Python >= 3.11). Semantically identical: build a module object from source."""
+    import types
+
+
+    class RuntimeModule:
+        @staticmethod
+        def from_string(name, docstring, code):
+            mod = types.ModuleType(name, docstring)
+            exec(compile(code, name, "exec"), mod.__dict__)
+            return mod
+    '''
+        sp = sysconfig.get_paths()["purelib"]
+        with open(os.path.join(sp, "pyext.py"), "w") as f:
+            f.write(SHIM)
+        from pyext import RuntimeModule  # noqa: F401
+
+        print(f"pyext shim installed at {sp}/pyext.py")
+    PYEXTFIX
+
+    echo "=== Phase 1d: reward smoke test (prime_code local execution, pre-GPU fail-fast) ==="
+    python3 << 'REWARDCHECK'
+    import json
+    import time
+
+    from verl.utils.reward_score import default_compute_score
+
+    gt = json.dumps({"inputs": ["1 2\n", "5 7\n"], "outputs": ["3\n", "12\n"]})
+
+    good = "<think>ok</think>\nFinal solution:\n```python\na, b = map(int, input().split())\nprint(a + b)\n```"
+    s = default_compute_score("taco", good, gt)
+    print("good ->", s)
+    assert s == 1.0, s
+
+    partial = "```python\na, b = map(int, input().split())\nprint(a + b if a == 1 else 0)\n```"
+    s = default_compute_score("taco", partial, gt)
+    print("partial ->", s)
+    assert abs(s - 0.5) < 1e-6, s
+
+    bad = "no code block at all, model rambled"
+    s = default_compute_score("taco", bad, gt)
+    print("no-block ->", s)
+    assert s == 0.0, s
+
+    t0 = time.time()
+    loop = "```python\nwhile True:\n    pass\n```"
+    s = default_compute_score("taco", loop, gt)
+    dt = time.time() - t0
+    print(f"infinite-loop -> {s} in {dt:.1f}s")
+    assert s == 0.0 and dt < 130, (s, dt)
+
+    # call-based: each input is newline-joined JSON-encoded args; output is a JSON string
+    fngt = json.dumps({"inputs": ["[3, 1, 2]", "[5]"], "outputs": ["6", "5"], "fn_name": "total"})
+    fngood = "```python\nclass Solution:\n    def total(self, xs):\n        return sum(xs)\n```"
+    s = default_compute_score("taco", fngood, fngt)
+    print("fn_name ->", s)
+    assert s == 1.0, s
+    print("Reward smoke test OK: pass/partial/fail/timeout/call-based all behave")
+    REWARDCHECK
+
+  run_head.sh: |
+    #!/usr/bin/env bash
+    set -xeuo pipefail
+
+    # On ANY exit, kill background children so the stdout pipe to tee is
+    # released and the container surfaces the real exit status.
+    trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+
+    RESULTS_DIR="/workspace/results"
+    MODEL_ID="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"   # HF id; cached per node under HF_HOME
+    TRAIN_FILE="/workspace/data/eurus_code/train.parquet"
+    VAL_FILE="/workspace/data/eurus_code/val.parquet"
+    # RUN_SECS mirrors the pod env RUN_SECONDS, with a script-side default.
+    RUN_SECS="${RUN_SECONDS:-5400}"
+    RAY_WAIT_BUDGET_S=2400     # 40 min: the rollout pod's installs take ~20 min
+
+    mkdir -p "$RESULTS_DIR"
+
+    echo "=== Phase 0: verify GPU visibility (DRA-injected) ==="
+    # The NVIDIA DRA driver injects the GPU + driver userspace via the pod's
+    # ResourceClaim — no PATH/LD_LIBRARY_PATH setup or elevated permissions needed.
+    # 1-GPU-per-node topology: exactly ONE GPU must be visible. No masks, no
+    # CUDA_VISIBLE_DEVICES — the node's only GPU is cuda:0 for every process.
+    NVIS=$(nvidia-smi -L | wc -l)
+    nvidia-smi -L
+    if [ "$NVIS" != 1 ]; then
+        echo "FATAL: expected exactly 1 visible GPU on the trainer node, got $NVIS"; exit 96
+    fi
+
+    source /workspace/scripts/install_common.sh
+
+    echo "=== Phase 2: start ray head (trainer_node custom resource pins the trainer PG here) ==="
+    # NOTE: --resources takes JSON with DOUBLE quotes; keep the single-quote wrapper.
+    ray start --head --port=6379 --num-gpus=1 --resources='{"trainer_node": 100}'
+    # The trainer node is shared: never rely on ray.init(address='auto')
+    # discovery — pin every in-pod ray.init to OUR head explicitly.
+    export RAY_ADDRESS="$(hostname -i):6379"
+
+    echo "=== Phase 2b: wait for the rollout pod to join (budget ${RAY_WAIT_BUDGET_S}s) ==="
+    DEADLINE=$(( $(date +%s) + RAY_WAIT_BUDGET_S ))
+    until timeout 60 python3 -c "
+    import sys
+    import ray
+    ray.init(address='auto', log_to_driver=False)
+    gpus = sum(n['Resources'].get('GPU', 0) for n in ray.nodes() if n['Alive'])
+    print('ray cluster GPUs visible:', gpus, flush=True)
+    sys.exit(0 if gpus >= 2 else 1)
+    "; do
+        if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+            echo "FATAL: rollout pod did not join the ray cluster within ${RAY_WAIT_BUDGET_S}s"
+            ray status || true
+            exit 95
+        fi
+        echo "still waiting for the rollout pod to join (its installs take ~20 min); next poll in 20s — $(date)"
+        sleep 20
+    done
+    ray status
+
+    echo "=== Phase 3: prepare dataset (512 Eurus-2 code prompts, tests capped at 8) ==="
+    python3 /workspace/scripts/data_prep.py --out_dir /workspace/data/eurus_code \
+        --tokenizer "$MODEL_ID" --train_size 512 --val_size 64
+
+    echo "=== Phase 3b: chat-template sanity check (forced <think> must be active) ==="
+    python3 << 'TMPLCHECK'
+    import pandas as pd
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    df = pd.read_parquet("/workspace/data/eurus_code/train.parquet")
+    msgs = [dict(m) for m in df.iloc[0]["prompt"]]
+    rendered = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+    print("RENDERED PROMPT TAIL:", rendered[-200:])
+    assert rendered.rstrip().endswith("<think>"), "chat template does not force <think> - CoT premise broken"
+    ntok = len(tok.apply_chat_template(msgs, add_generation_prompt=True))
+    print(f"prompt tokens: {ntok}")
+    assert ntok < 2048, f"prompt longer than max_prompt_length: {ntok}"
+    print("Chat template check OK")
+    TMPLCHECK
+
+    echo "=== Phase 4: fully-async code-RLVR training ==="
+    echo "  Model: DeepSeek-R1-Distill-Qwen-1.5B | Dataset: Eurus-2-RL-Data code (512 prompts)"
+    echo "  Reward: in-tree prime_code, LOCAL test execution on the rollout side"
+    echo "  lr=${ACTOR_LR:-1e-6} exp=${EXP_NAME:-unnamed} staleness=${STALENESS_THRESHOLD:-8}"
+    echo "  timeslice: job=${TIMESLICE_JOB_ID:-?} group=${TIMESLICE_GROUP:-?} orch=${TIMESLICE_ORCH_ADDR:-?}"
+    nvidia-smi
+
+    export PYTHONUNBUFFERED=1
+    export HYDRA_FULL_ERROR=1
+
+    TOTAL_ROLLOUT_STEPS=65536   # >> trainer consumption; None-sentinel must not fire
+
+    run_training() {
+        # timeout bounds the experiment; exit 124 (timeout) is the EXPECTED end state.
+        timeout --signal=INT --kill-after=120 "$RUN_SECS" \
+        python3 -m verl.experimental.fully_async_policy.fully_async_main \
+            data.train_files="$TRAIN_FILE" \
+            data.val_files="$VAL_FILE" \
+            data.prompt_key=prompt \
+            data.truncation=left \
+            data.max_prompt_length=2048 \
+            data.max_response_length=16384 \
+            data.train_batch_size=0 \
+            data.gen_batch_size=1 \
+            data.return_raw_chat=True \
+            actor_rollout_ref.model.path="$MODEL_ID" \
+            actor_rollout_ref.model.use_remove_padding=True \
+            actor_rollout_ref.model.enable_gradient_checkpointing=True \
+            actor_rollout_ref.hybrid_engine=False \
+            actor_rollout_ref.actor.strategy=fsdp \
+            actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+            actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+            actor_rollout_ref.actor.use_kl_loss=False \
+            actor_rollout_ref.actor.kl_loss_coef=0.0 \
+            actor_rollout_ref.actor.entropy_coeff=0 \
+            actor_rollout_ref.actor.grad_clip=1.0 \
+            actor_rollout_ref.actor.loss_agg_mode=token-mean \
+            actor_rollout_ref.actor.use_dynamic_bsz=True \
+            actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32768 \
+            actor_rollout_ref.actor.optim.lr="${ACTOR_LR:-1e-6}" \
+            actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
+            actor_rollout_ref.actor.fsdp_config.param_offload=False \
+            actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+            actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True \
+            actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=32768 \
+            actor_rollout_ref.rollout.name=vllm \
+            actor_rollout_ref.rollout.mode=async \
+            actor_rollout_ref.rollout.n=8 \
+            actor_rollout_ref.rollout.calculate_log_probs=True \
+            actor_rollout_ref.rollout.checkpoint_engine.backend=nccl \
+            +actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.nccl.rebuild_group=True \
+            actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+            actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+            actor_rollout_ref.rollout.max_model_len=18432 \
+            actor_rollout_ref.rollout.max_num_batched_tokens=18432 \
+            actor_rollout_ref.rollout.enable_chunked_prefill=True \
+            actor_rollout_ref.rollout.temperature=1.0 \
+            actor_rollout_ref.rollout.top_p=1.0 \
+            actor_rollout_ref.rollout.top_k=-1 \
+            algorithm.adv_estimator=grpo \
+            algorithm.use_kl_in_reward=False \
+            algorithm.kl_ctrl.kl_coef=0.0 \
+            trainer.logger="['console']" \
+            trainer.val_before_train=False \
+            trainer.save_freq=-1 \
+            trainer.resume_mode=disable \
+            trainer.nnodes=1 \
+            trainer.n_gpus_per_node=1 \
+            trainer.total_epochs=10 \
+            trainer.test_freq=-1 \
+            trainer.project_name=timeslice-demo \
+            trainer.experiment_name="${EXP_NAME:-rl-batch-code}" \
+            trainer.default_local_dir="$RESULTS_DIR/ckpts" \
+            rollout.nnodes=1 \
+            rollout.n_gpus_per_node=1 \
+            rollout.total_rollout_steps="$TOTAL_ROLLOUT_STEPS" \
+            async_training.staleness_threshold="${STALENESS_THRESHOLD:-8}" \
+            async_training.trainer_name=timeslice \
+            async_training.trigger_parameter_sync_step=1 \
+            async_training.use_dynamic_resource_scheduling=False \
+            async_training.use_trainer_do_validate=False \
+            "ray_pg_extra_resources={trainer_pool: {trainer_node: 1}, rollout_pool: {rollout_node: 1}}" \
+            2>&1 | tee "$RESULTS_DIR/train.log"
+        return "${PIPESTATUS[0]}"
+    }
+
+    set +e
+    run_training
+    TRAIN_RC=$?
+    set -e
+    if [ "$TRAIN_RC" = "124" ]; then
+        echo "Training stopped by planned ${RUN_SECS}s timeout (expected end state)"
+    elif [ "$TRAIN_RC" != "0" ]; then
+        echo "WARNING: training exited rc=$TRAIN_RC before planned timeout"
+    fi
+
+    echo "=== Keeping pod alive for result collection ==="
+    sleep 7200
+
+  run_rollout.sh: |
+    #!/usr/bin/env bash
+    set -xeuo pipefail
+
+    trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+
+    RESULTS_DIR="/workspace/results"
+    RAY_HEAD_ADDR="rl-head.default.svc.cluster.local:6379"
+
+    mkdir -p "$RESULTS_DIR"
+
+    echo "=== Phase 0: verify GPU visibility (device-plugin) ==="
+    NVIS=$(nvidia-smi -L | wc -l)
+    nvidia-smi -L
+    if [ "$NVIS" != 1 ]; then
+        echo "FATAL: expected exactly 1 visible GPU on the rollout node, got $NVIS"; exit 96
+    fi
+
+    source /workspace/scripts/install_common.sh
+
+    # verl's FullyAsyncRollouter actor runs on
+    # THIS pod (rollout PG pinning) and loads the train/val parquet itself;
+    # there is no shared volume, so the dataset must be prepared here too
+    # (same seed as the head -> identical files).
+    echo "=== Phase 1e: prepare dataset locally (FullyAsyncRollouter reads it on THIS pod) ==="
+    python3 /workspace/scripts/data_prep.py --out_dir /workspace/data/eurus_code \
+        --tokenizer deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B --train_size 512 --val_size 64
+
+    echo "=== Phase 2: join the ray cluster ==="
+    # Join loop: the head pod may still be installing (its ray head comes up
+    # ~20 min after apply). ray start fails fast while the head is
+    # unreachable; --block keeps this script attached to the raylet once
+    # joined. The rollout_node custom resource pins the rollout PG here.
+    # NOTE: --resources takes JSON with DOUBLE quotes; keep the single-quote wrapper.
+    set +e
+    while true; do
+        ray start --block --address="$RAY_HEAD_ADDR" --num-gpus=1 --resources='{"rollout_node": 100}'
+        RC=$?
+        echo "ray start exited rc=$RC (head not up yet, or head gone); retrying in 15s — $(date)"
+        ray stop --force >/dev/null 2>&1 || true
+        sleep 15
+    done
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rl-head
+  namespace: default
+  labels:
+    app: rl-head
+    # Exact keys the platform selects on (pod-utils.go JobIDLabel/GroupLabel,
+    # orchestrator kubernetes.go JobLabelKey/PodLabelKey). ONLY the head pod
+    # carries them: the trainer is the sole time-sliced (snapshotted) process.
+    timeslice.io/job-id: rl-trainer
+    timeslice.io/group: trainers
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    group.timeslice.io/trainers: "true"
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  - key: timeslice.io/shared
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+  resourceClaims:
+  - name: accelerator
+    resourceClaimName: shared-trainers-gpu-claim   # SAME claim as shadow-vllm
+  containers:
+  - name: head
+    image: verlai/verl:vllm020.dev2
+    env:
+    - name: VLLM_USE_V1
+      value: "1"
+    - name: STALENESS_THRESHOLD
+      value: "8"
+    - name: RUN_SECONDS
+      value: "5400"
+    - name: HF_HOME
+      value: "/workspace/hf"         # model + dataset cache, per node (no shared volume)
+    # Precautionary NCCL settings around cuda-checkpoint; keep as set.
+    - name: NCCL_CUMEM_ENABLE
+      value: "0"
+    - name: NCCL_NVLS_ENABLE
+      value: "0"
+    - name: ACTOR_LR
+      value: "1e-6"
+    - name: EXP_NAME
+      value: "rl-batch-code"
+    # --- timeslice trainer (timeslice_verl, pip install from repo) ---
+    - name: TIMESLICE_FULLY_ASYNC
+      value: "1"
+    - name: TIMESLICE_JOB_ID
+      value: "rl-trainer"            # must equal the timeslice.io/job-id label
+    - name: TIMESLICE_ORCH_ADDR
+      value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
+    - name: TIMESLICE_GROUP
+      value: "trainers"
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -euo pipefail
+      echo "=== RL+batch guide: RL trainer (code RLVR) — HEAD (trainer node) ==="
+      echo "Node: $(hostname)"
+      echo "Date: $(date)"
+      bash /workspace/scripts/run_head.sh 2>&1 | tee /workspace/results/experiment.log
+    ports:
+    - containerPort: 6379            # ray GCS (behind headless Service rl-head)
+    - containerPort: 8265            # ray dashboard (optional)
+    resources:
+      requests:
+        cpu: "8"
+        memory: "80Gi"
+      limits:
+        memory: "110Gi"              # head + shadow vLLM must fit one a3-highgpu-1g (26 vCPU / 234 Gi)
+      claims:
+      - name: accelerator
+    volumeMounts:
+    - name: scripts
+      mountPath: /workspace/scripts
+    - name: results
+      mountPath: /workspace/results
+    - name: dshm
+      mountPath: /dev/shm
+  volumes:
+  - name: scripts
+    configMap:
+      name: rlbatch-trainer
+      defaultMode: 0755
+  - name: results
+    emptyDir: {}
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 16Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rl-rollout
+  namespace: default
+  labels:
+    app: rl-rollout
+    # NO timeslice.io labels: this pod must NEVER be selected for snapshot —
+    # the rollout engine keeps generating while the trainer is checkpointed.
+spec:
+  restartPolicy: Never
+  # Placement: any GPU node except the trainer node. The GPU comes from the
+  # ordinary device plugin (nvidia.com/gpu below); the anti-affinity keeps
+  # this pod off the trainer node, whose GPU is claim-managed.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: group.timeslice.io/trainers
+            operator: DoesNotExist
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  - key: timeslice.io/shared
+    operator: Equal
+    value: "true"
+    effect: NoSchedule
+  containers:
+  - name: rollout
+    image: verlai/verl:vllm020.dev2
+    env:
+    - name: VLLM_USE_V1
+      value: "1"
+    - name: HF_HOME
+      value: "/workspace/hf"         # model downloads land here, per node
+    - name: NCCL_CUMEM_ENABLE
+      value: "0"
+    - name: NCCL_NVLS_ENABLE
+      value: "0"
+    # The trainer driver actor (the registered timeslice trainer subclass)
+    # is a CPU-only Ray actor that can be scheduled on either Ray node and
+    # inherits the raylet's env, not the driver's - keep the timeslice env
+    # identical on both pods.
+    - name: TIMESLICE_FULLY_ASYNC
+      value: "1"
+    - name: TIMESLICE_JOB_ID
+      value: "rl-trainer"
+    - name: TIMESLICE_ORCH_ADDR
+      value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
+    - name: TIMESLICE_GROUP
+      value: "trainers"
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -euo pipefail
+      echo "=== RL+batch guide: RL trainer (code RLVR) — ROLLOUT (dedicated node) ==="
+      echo "Node: $(hostname)"
+      echo "Date: $(date)"
+      bash /workspace/scripts/run_rollout.sh 2>&1 | tee /workspace/results/experiment.log
+    resources:
+      requests:
+        cpu: "16"
+        memory: "120Gi"
+      limits:
+        nvidia.com/gpu: "1"          # ordinary device-plugin GPU (no claim)
+    volumeMounts:
+    - name: scripts
+      mountPath: /workspace/scripts
+    - name: results
+      mountPath: /workspace/results
+    - name: dshm
+      mountPath: /dev/shm
+  volumes:
+  - name: scripts
+    configMap:
+      name: rlbatch-trainer
+      defaultMode: 0755
+  - name: results
+    emptyDir: {}
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 32Gi
+---
+# Headless Service: stable DNS for the ray head; the rollout pod joins via
+# rl-head.default.svc.cluster.local:6379.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rl-head
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    app: rl-head
+  ports:
+  - name: ray-gcs
+    port: 6379
+    targetPort: 6379
+  - name: ray-dashboard
+    port: 8265
+    targetPort: 8265

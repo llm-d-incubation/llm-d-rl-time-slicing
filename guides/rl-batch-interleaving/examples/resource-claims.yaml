@@ -1,0 +1,23 @@
+# The single DRA ResourceClaim for the RL + batch-inference interleaving
+# demo. Apply BEFORE launching the workloads:
+#   kubectl apply -f resource-claims.yaml
+#
+# rl-head and shadow-vllm reference the SAME shared-trainers-gpu-claim — that
+# is what lets the two tenants co-locate on the one shared GPU without
+# scheduler blocking (each holds the full, unpartitioned GPU during its
+# turn). This is the ONLY ResourceClaim in the recipe: sharing is what only
+# DRA can express. The RL rollout pod requests its GPU the ordinary way
+# (nvidia.com/gpu: 1 via the device plugin) — see rl-job.yaml.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: shared-trainers-gpu-claim
+  namespace: default
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        deviceClassName: gpu.nvidia.com
+        allocationMode: ExactCount
+        count: 1
