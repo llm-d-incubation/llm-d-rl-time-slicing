@@ -44,7 +44,10 @@ type Operation struct {
 type StateManager struct {
 	jobs       map[string]*Job
 	operations map[string]*Operation
-	mu         sync.RWMutex
+
+	// mu guards jobs and operations.
+	// Lock order: mu → Job.mu. The reverse order deadlocks.
+	mu sync.RWMutex
 }
 
 // NewStateManager creates a new StateManager instance.
@@ -80,8 +83,8 @@ func (sm *StateManager) RegisterJob(jobID, group string) {
 // StartSnapshot initiates a snapshot operation if the job state allows it.
 func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) (string, error) {
 	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	job := sm.getOrCreateJob(jobID, group)
-	sm.mu.Unlock()
 
 	job.mu.Lock()
 	defer job.mu.Unlock()
@@ -105,9 +108,7 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) 
 		StartedAt: time.Now(),
 	}
 
-	sm.mu.Lock()
 	sm.operations[opID] = op
-	sm.mu.Unlock()
 
 	// Update job state to TRANSITIONING
 	job.State = pb.JobState_JOB_STATE_TRANSITIONING
@@ -140,8 +141,8 @@ func (sm *StateManager) StartSnapshot(jobID, group string, worker func() error) 
 // StartRestore initiates a restore operation if the job state allows it.
 func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (string, error) {
 	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	job := sm.getOrCreateJob(jobID, group)
-	sm.mu.Unlock()
 
 	job.mu.Lock()
 	defer job.mu.Unlock()
@@ -170,9 +171,7 @@ func (sm *StateManager) StartRestore(jobID, group string, worker func() error) (
 		StartedAt: time.Now(),
 	}
 
-	sm.mu.Lock()
 	sm.operations[opID] = op
-	sm.mu.Unlock()
 
 	// Update job state to TRANSITIONING
 	job.State = pb.JobState_JOB_STATE_TRANSITIONING
@@ -235,9 +234,8 @@ func (sm *StateManager) GetJobStatus() []*pb.JobStatus {
 // UpdateJobPIDs updates the PIDs associated with a job.
 func (sm *StateManager) UpdateJobPIDs(jobID string, pids []int) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	job, ok := sm.jobs[jobID]
+	sm.mu.Unlock()
 	if !ok {
 		return
 	}
@@ -250,9 +248,8 @@ func (sm *StateManager) UpdateJobPIDs(jobID string, pids []int) {
 // GetJobPIDs returns the PIDs associated with a job.
 func (sm *StateManager) GetJobPIDs(jobID string) ([]int, error) {
 	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
 	job, ok := sm.jobs[jobID]
+	sm.mu.RUnlock()
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "job %s not found", jobID)
 	}
@@ -274,7 +271,6 @@ func (sm *StateManager) TransitionToRunning(jobID string, pids []int) error {
 	sm.mu.Lock()
 	job, ok := sm.jobs[jobID]
 	sm.mu.Unlock()
-
 	if !ok {
 		return status.Errorf(codes.NotFound, "job %s not found", jobID)
 	}
