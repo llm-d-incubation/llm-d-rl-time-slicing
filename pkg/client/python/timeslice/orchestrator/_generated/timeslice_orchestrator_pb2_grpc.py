@@ -5,7 +5,7 @@ import warnings
 
 from timeslice.orchestrator._generated import timeslice_orchestrator_pb2 as timeslice_dot_orchestrator_dot___generated_dot_timeslice__orchestrator__pb2
 
-GRPC_GENERATED_VERSION = '1.81.1'
+GRPC_GENERATED_VERSION = '1.81.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

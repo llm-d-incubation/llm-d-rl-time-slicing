@@ -4,18 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "timeslice"
-version = "0.2.0"
+version = "0.2.1"
 description = "Timeslice library including Snapshot Agent client"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "grpcio>=1.83.0",
-    "protobuf>=7.35.1",
+    "grpcio>=1.81.0",
+    "protobuf>=6.33.5",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "grpcio-tools>=1.83.0",
+    # Pinned: gencode floor toolchain; regenerating with a newer
+    # grpcio-tools raises the runtime floors above.
+    "grpcio-tools==1.81.0",
 ]
 
 [tool.setuptools.packages.find]
