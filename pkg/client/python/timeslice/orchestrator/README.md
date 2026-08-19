@@ -182,7 +182,16 @@ if __name__ == "__main__":
 
 ## Development
 
-To regenerate gRPC stubs for the TimeSlice Orchestrator:
+To regenerate gRPC stubs for the TimeSlice Orchestrator, first install the pinned
+codegen toolchain (generated code sets the package's minimum supported
+grpcio/protobuf — regenerating with a newer toolchain silently raises the floors,
+see `[dev]` in `pyproject.toml`):
+
+```bash
+pip install "grpcio-tools==1.81.0"
+```
+
+Then:
 
 ```bash
 # Run from pkg/client/python directory

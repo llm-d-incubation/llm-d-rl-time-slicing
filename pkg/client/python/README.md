@@ -44,7 +44,16 @@ with SnapshotAgentClient(endpoint="localhost:9001") as client:
 
 ## Development
 
-To generate gRPC stubs for the Snapshot Agent:
+To generate gRPC stubs for the Snapshot Agent, first install the pinned codegen
+toolchain (generated code sets the package's minimum supported grpcio/protobuf —
+regenerating with a newer toolchain silently raises the floors, see `[dev]` in
+`pyproject.toml`):
+
+```bash
+pip install "grpcio-tools==1.81.0"
+```
+
+Then:
 
 ```bash
 # Run from pkg/client/python directory
