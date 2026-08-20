@@ -1,0 +1,52 @@
+# Continuous batch-inference client: hammers the shadow vLLM Service and
+# reports throughput every 5 s. Errors while the trainer holds the GPU are
+# EXPECTED (the server is asleep) — production clients should queue/retry;
+# this demo client just counts them.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: batch-load-generator
+  namespace: default
+  labels:
+    app: batch-load-generator
+spec:
+  restartPolicy: Always
+  containers:
+  - name: loadgen
+    image: python:3.11-slim
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      pip install --quiet requests
+      python3 - <<'PY'
+      import datetime, time, requests
+
+      URL = "http://shadow-vllm.default.svc.cluster.local:8000/v1/completions"
+      PROMPT = "Explain, in three sentences, why sharing a GPU between RL training and batch inference raises utilization."
+      MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+
+      completed = errors = 0
+      window = time.time()
+      print("batch load generator started", flush=True)
+      while True:
+          try:
+              r = requests.post(URL, json={"model": MODEL, "prompt": PROMPT,
+                                           "max_tokens": 48}, timeout=10)
+              if r.status_code == 200:
+                  completed += 1
+              else:
+                  errors += 1
+          except Exception:
+              errors += 1
+              time.sleep(0.5)
+          if time.time() - window >= 5.0:
+              ts = datetime.datetime.now().strftime("%H:%M:%S")
+              print(f"[{ts}] last 5s: completed={completed} errors_or_asleep={errors}",
+                    flush=True)
+              completed = errors = 0
+              window = time.time()
+      PY
+    resources:
+      requests:
+        cpu: "1"
+        memory: 1Gi
