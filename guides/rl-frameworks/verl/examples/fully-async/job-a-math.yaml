@@ -1,0 +1,640 @@
+# Job A (math RLVR) for the two-RL-jobs time-slicing guide — disaggregated
+# 1-GPU-per-node shape. DAPO-Math-17k, verl fully_async_policy, GRPO,
+# R1-Distill-Qwen-1.5B.
+# Template variables (render with: envsubst '${TRAINER_NODE} ${ROLLOUT_NODE_A} ${RUN_SECONDS}'):
+#   ${TRAINER_NODE}    the SHARED 1-GPU trainer node (hosts job-a-head AND job-b-head)
+#   ${ROLLOUT_NODE_A}  job A's DEDICATED 1-GPU rollout node
+#   ${RUN_SECONDS}     training budget passed to `timeout`
+#
+# Topology: each job is a 2-node Ray cluster.
+#   job-a-head    on ${TRAINER_NODE}:   ray head, FSDP trainer (time-sliced with job B)
+#   job-a-rollout on ${ROLLOUT_NODE_A}: ray worker, vLLM rollout engine (always on)
+# Placement is pinned by Ray CUSTOM RESOURCES, not GPU masks: the head starts
+# ray with --resources='{"trainer_node": 100}', the worker with
+# --resources='{"rollout_node": 100}', and verl's per-pool placement-group
+# bundle resources (hydra override ray_pg_extra_resources={trainer_pool:
+# {trainer_node: 1}, rollout_pool: {rollout_node: 1}}) make verl's trainer
+# placement group request {trainer_node: 1} and the rollout PG
+# {rollout_node: 1}.
+#
+# No nvidia.com/gpu resources: the pods are privileged and get GPU access via
+# the same hostPath driver/device mounts the snapshot-agent DaemonSet uses
+# (GKE COS: /home/kubernetes/bin/nvidia + /dev). Each node has exactly ONE
+# GPU, so there is nothing to mask — every process sees cuda:0.
+# hostPID + SYS_PTRACE + seccomp Unconfined: required for verl fully-async
+# weight sync on GKE (pidfd_getfd is blocked by the default seccomp profile).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ts-job-a
+  namespace: default
+data:
+  data_prep.py: |
+    #!/usr/bin/env python3
+    """Prepare DAPO-Math-17k subsets for the async long-CoT experiment.
+
+    Source: HF dataset BytedTsinghua-SIA/DAPO-Math-17k (data/dapo-math-17k.parquet),
+    which is ALREADY in verl RLHFDataset format:
+      - data_source = "math_dapo"  -> default reward routing hits
+        verl.utils.reward_score.math_dapo.compute_score (Answer: <ans> extraction,
+        matching the instruction baked into every prompt)
+      - prompt = [{"role": "user", "content": "...Remember to put your answer on its
+        own line after \"Answer:\"..."}]
+      - reward_model = {"style": "rule", "ground_truth": "<answer string>"}
+
+    We only subsample (512 train / 64 val, disjoint) and sanity-check the schema.
+    No agent_name column -> single_turn_agent (default), single-turn long CoT.
+    """
+
+    import argparse
+    import os
+
+    import pandas as pd
+    from huggingface_hub import hf_hub_download
+
+
+    def main():
+        ap = argparse.ArgumentParser()
+        ap.add_argument("--repo_id", default="BytedTsinghua-SIA/DAPO-Math-17k")
+        ap.add_argument("--filename", default="data/dapo-math-17k.parquet")
+        ap.add_argument("--out_dir", default="/workspace/data/dapo_math")
+        ap.add_argument("--train_size", type=int, default=512)
+        ap.add_argument("--val_size", type=int, default=64)
+        ap.add_argument("--seed", type=int, default=17)
+        args = ap.parse_args()
+
+        local = hf_hub_download(repo_id=args.repo_id, filename=args.filename, repo_type="dataset")
+        df = pd.read_parquet(local)
+        print(f"loaded {len(df)} rows, columns: {list(df.columns)}")
+
+        # ---- schema sanity checks (fail fast, before burning GPU time) ----
+        row = df.iloc[0]
+        prompt = row["prompt"]
+        assert row["data_source"] == "math_dapo", f"unexpected data_source {row['data_source']!r}"
+        p0 = prompt[0] if not isinstance(prompt, dict) else prompt
+        p0 = dict(p0)
+        assert p0.get("role") == "user" and isinstance(p0.get("content"), str), f"bad prompt row: {p0}"
+        assert "Answer:" in p0["content"], "prompt lacks the Answer: instruction the reward fn expects"
+        rm = dict(row["reward_model"])
+        gt = rm.get("ground_truth")
+        assert isinstance(gt, str) and gt, f"bad ground_truth: {gt!r}"
+        print("schema OK; sample prompt (first 400 chars):")
+        print(p0["content"][:400])
+        print("sample ground_truth:", gt[:100])
+
+        # Deduplicate on prompt text so train/val are truly distinct problems.
+        df = df.assign(_ptext=df["prompt"].map(lambda p: dict(list(p)[0])["content"]))
+        df = df.drop_duplicates("_ptext").drop(columns="_ptext").reset_index(drop=True)
+        print(f"{len(df)} unique problems after dedup")
+
+        n = args.train_size + args.val_size
+        sub = df.sample(n=min(n, len(df)), random_state=args.seed).reset_index(drop=True)
+        train = sub.iloc[: args.train_size]
+        val = sub.iloc[args.train_size : args.train_size + args.val_size]
+
+        os.makedirs(args.out_dir, exist_ok=True)
+        train.to_parquet(os.path.join(args.out_dir, "train.parquet"), index=False)
+        val.to_parquet(os.path.join(args.out_dir, "val.parquet"), index=False)
+        print(f"wrote {len(train)} train / {len(val)} val -> {args.out_dir}")
+
+
+    if __name__ == "__main__":
+        main()
+
+  install_common.sh: |
+    #!/usr/bin/env bash
+    # Phase 1 installs, identical on head and rollout pods (sourced).
+    # verl with fully-async lifecycle hooks + trainer registry and per-pool
+    # PG bundle resources, installed directly from the fork branch
+    # (override via VERL_REPO/VERL_REF pod env).
+    VERL_REPO="${VERL_REPO:-https://github.com/aishukamal/verl.git}"
+    VERL_REF="${VERL_REF:-feat/fully-async-lifecycle-hooks}"
+
+    echo "=== Phase 1: install verl @ $VERL_REPO $VERL_REF ==="
+    pip install datasets TransferQueue 2>&1 | tail -5
+    git clone --filter=blob:none "$VERL_REPO" /workspace/verl-src
+    cd /workspace/verl-src
+    git checkout --detach "$VERL_REF"
+    git rev-parse HEAD | tee "$RESULTS_DIR/verl_commit"
+    pip install -e ".[gpu]" 2>&1 | tail -10
+    cd /workspace
+    pip install cupy-cuda12x 2>&1 | tail -3
+    python3 -c "import verl; print('verl version:', verl.__version__)"
+    python3 -c "import transfer_queue; print('transfer_queue OK')"
+
+    echo "=== Phase 1b: install timeslice lock client + verl plugin wrapper (ConfigMap install) ==="
+    pip install "git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/client/python" 2>&1 | tail -3
+    # FIX 2026-07-26 (small-run finding): client generated stubs need
+    # grpcio>=1.81 and protobuf gencode 7.35; image ships grpcio 1.80.0 /
+    # protobuf 6.33.6. Upgrade both before the import check below.
+    pip install "grpcio>=1.81.0" "protobuf>=7.35.0" 2>&1 | tail -2
+    # Install the timeslice-verl integration package (lock protocol via
+    # verl's fully-async lifecycle hooks). It ships TimesliceFullyAsyncTrainer,
+    # a FullyAsyncTrainer subclass registered under the trainer name
+    # "timeslice" (selected by the async_training.trainer_name=timeslice hydra
+    # override in run_head.sh); installing it registers a `verl.plugins` entry
+    # point, so `import verl` loads the registering module in every process.
+    # The hooks are inert unless TIMESLICE_FULLY_ASYNC=1 is set.
+    # Placement-group pinning comes from
+    # verl's own ray_pg_extra_resources config (see the hydra overrides in
+    # run_head.sh).
+    # Integration package from ConfigMaps (local source of truth; works
+    # air-gapped; pip alternative: "git+https://github.com/llm-d-incubation/
+    # llm-d-rl-time-slicing.git#subdirectory=pkg/integrations/verl").
+    # Reassemble the tree into a writable dir, then editable install.
+    mkdir -p /workspace/timeslice-verl-pkg/timeslice_verl
+    cp -L /workspace/timeslice-pkg-root/pyproject.toml /workspace/timeslice-verl-pkg/
+    cp -L /workspace/timeslice-pkg-src/*.py /workspace/timeslice-verl-pkg/timeslice_verl/
+    pip install -e /workspace/timeslice-verl-pkg 2>&1 | tail -3
+    python3 <<'CHK'
+    import importlib.metadata as md
+    eps = list(md.entry_points(group="verl.plugins"))
+    assert any(ep.name == "timeslice" for ep in eps), f"verl.plugins entry point missing: {eps}"
+    import verl  # noqa: F401 - loads verl.plugins entries -> registers the timeslice trainer
+    from verl.experimental.fully_async_policy.fully_async_trainer import get_trainer_cls
+    from timeslice_verl.trainer import TimesliceFullyAsyncTrainer
+    assert get_trainer_cls("timeslice") is TimesliceFullyAsyncTrainer, "timeslice trainer not registered"
+    try:
+        from timeslice import OrchestratorClient  # noqa: F401
+    except ImportError:  # renamed upstream to TimeSliceOrchestratorClient (small-run finding 2026-07-26; API identical)
+        from timeslice import TimeSliceOrchestratorClient as OrchestratorClient
+    print("timeslice trainer install OK; registered as:", get_trainer_cls("timeslice").__name__)
+    CHK
+
+  run_head.sh: |
+    #!/usr/bin/env bash
+    set -xeuo pipefail
+
+    # On ANY exit, kill background children so the stdout pipe to tee is
+    # released and the container surfaces the real exit status.
+    trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+
+    RESULTS_DIR="/workspace/results"
+    MODEL_ID="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"   # HF id; cached per node under HF_HOME
+    TRAIN_FILE="/workspace/data/dapo_math/train.parquet"
+    VAL_FILE="/workspace/data/dapo_math/val.parquet"
+    # RUN_SECS (not RUN_SECONDS) inside the script: keeps envsubst rendering
+    # of the pod env from touching script-internal references.
+    RUN_SECS="${RUN_SECONDS:-5400}"
+    RAY_WAIT_BUDGET_S=2400     # 40 min: the rollout pod's installs take ~20 min
+
+    mkdir -p "$RESULTS_DIR"
+
+    echo "=== Phase 0: GPU access without the device plugin (hostPath driver mounts) ==="
+    # Mirror the snapshot-agent DaemonSet: driver userspace at /usr/local/nvidia.
+    export PATH="/usr/local/nvidia/bin:$PATH"
+    export LD_LIBRARY_PATH="/usr/local/nvidia/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    ldconfig /usr/local/nvidia/lib64 2>/dev/null || true
+
+    # 1-GPU-per-node topology: exactly ONE GPU must be visible. No masks, no
+    # CUDA_VISIBLE_DEVICES — the node's only GPU is cuda:0 for every process.
+    NVIS=$(nvidia-smi -L | wc -l)
+    nvidia-smi -L
+    if [ "$NVIS" != 1 ]; then
+        echo "FATAL: expected exactly 1 visible GPU on the trainer node, got $NVIS"; exit 96
+    fi
+
+    source /workspace/scripts/install_common.sh
+
+    echo "=== Phase 2: start ray head (trainer_node custom resource pins the trainer PG here) ==="
+    # NOTE: --resources takes JSON with DOUBLE quotes; keep the single-quote wrapper.
+    ray start --head --port=6379 --num-gpus=1 --resources='{"trainer_node": 100}'
+    # FIX (battle test 2026-08-14): with hostPID, ray.init(address='auto')
+    # scans /proc and finds the OTHER job's GCS on the shared trainer node
+    # ("Found multiple active Ray instances" -> may join the wrong cluster).
+    # Pin every in-pod ray.init to OUR head explicitly.
+    export RAY_ADDRESS="$(hostname -i):6379"
+
+    echo "=== Phase 2b: wait for the rollout pod to join (budget ${RAY_WAIT_BUDGET_S}s) ==="
+    DEADLINE=$(( $(date +%s) + RAY_WAIT_BUDGET_S ))
+    until timeout 60 python3 -c "
+    import sys
+    import ray
+    ray.init(address='auto', log_to_driver=False)
+    gpus = sum(n['Resources'].get('GPU', 0) for n in ray.nodes() if n['Alive'])
+    print('ray cluster GPUs visible:', gpus, flush=True)
+    sys.exit(0 if gpus >= 2 else 1)
+    "; do
+        if [ "$(date +%s)" -ge "$DEADLINE" ]; then
+            echo "FATAL: rollout pod did not join the ray cluster within ${RAY_WAIT_BUDGET_S}s"
+            ray status || true
+            exit 95
+        fi
+        echo "still waiting for the rollout pod to join (its installs take ~20 min); next poll in 20s — $(date)"
+        sleep 20
+    done
+    ray status
+
+    echo "=== Phase 3: prepare dataset (512 DAPO-Math-17k prompts) ==="
+    python3 /workspace/scripts/data_prep.py --out_dir /workspace/data/dapo_math \
+        --train_size 512 --val_size 64
+
+    echo "=== Phase 3b: chat-template sanity check (forced <think> must be active) ==="
+    python3 << 'TMPLCHECK'
+    import pandas as pd
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    df = pd.read_parquet("/workspace/data/dapo_math/train.parquet")
+    msgs = [dict(m) for m in df.iloc[0]["prompt"]]
+    rendered = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+    print("RENDERED PROMPT TAIL:", rendered[-200:])
+    assert rendered.rstrip().endswith("<think>"), "chat template does not force <think> - CoT premise broken"
+    ntok = len(tok.apply_chat_template(msgs, add_generation_prompt=True))
+    print(f"prompt tokens: {ntok}")
+    assert ntok < 2048, f"prompt longer than max_prompt_length: {ntok}"
+    print("Chat template check OK")
+    TMPLCHECK
+
+    echo "=== Phase 4: fully-async long-CoT training ==="
+    echo "  Model: DeepSeek-R1-Distill-Qwen-1.5B | Dataset: DAPO-Math-17k (512 prompts)"
+    echo "  lr=${ACTOR_LR:-1e-6} exp=${EXP_NAME:-unnamed} staleness=${STALENESS_THRESHOLD:-8}"
+    echo "  timeslice: job=${TIMESLICE_JOB_ID:-?} group=${TIMESLICE_GROUP:-?} orch=${TIMESLICE_ORCH_ADDR:-?}"
+    nvidia-smi
+
+    export PYTHONUNBUFFERED=1
+    export HYDRA_FULL_ERROR=1
+
+    TOTAL_ROLLOUT_STEPS=65536   # >> trainer consumption; None-sentinel must not fire
+
+    run_training() {
+        # timeout bounds the experiment; exit 124 (timeout) is the EXPECTED end state.
+        timeout --signal=INT --kill-after=120 "$RUN_SECS" \
+        python3 -m verl.experimental.fully_async_policy.fully_async_main \
+            data.train_files="$TRAIN_FILE" \
+            data.val_files="$VAL_FILE" \
+            data.prompt_key=prompt \
+            data.truncation=left \
+            data.max_prompt_length=2048 \
+            data.max_response_length=16384 \
+            data.train_batch_size=0 \
+            data.gen_batch_size=1 \
+            data.return_raw_chat=True \
+            actor_rollout_ref.model.path="$MODEL_ID" \
+            actor_rollout_ref.model.use_remove_padding=True \
+            actor_rollout_ref.model.enable_gradient_checkpointing=True \
+            actor_rollout_ref.hybrid_engine=False \
+            actor_rollout_ref.actor.strategy=fsdp \
+            actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+            actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+            actor_rollout_ref.actor.use_kl_loss=False \
+            actor_rollout_ref.actor.kl_loss_coef=0.0 \
+            actor_rollout_ref.actor.entropy_coeff=0 \
+            actor_rollout_ref.actor.grad_clip=1.0 \
+            actor_rollout_ref.actor.loss_agg_mode=token-mean \
+            actor_rollout_ref.actor.use_dynamic_bsz=True \
+            actor_rollout_ref.actor.ppo_max_token_len_per_gpu=36864 \
+            actor_rollout_ref.actor.optim.lr="${ACTOR_LR:-1e-6}" \
+            actor_rollout_ref.actor.optim.lr_warmup_steps=-1 \
+            actor_rollout_ref.actor.fsdp_config.param_offload=False \
+            actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+            actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True \
+            actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=36864 \
+            actor_rollout_ref.rollout.name=vllm \
+            actor_rollout_ref.rollout.mode=async \
+            actor_rollout_ref.rollout.n=8 \
+            actor_rollout_ref.rollout.calculate_log_probs=True \
+            actor_rollout_ref.rollout.checkpoint_engine.backend=nccl \
+            +actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.nccl.rebuild_group=True \
+            actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+            actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+            actor_rollout_ref.rollout.max_model_len=18432 \
+            actor_rollout_ref.rollout.max_num_batched_tokens=18432 \
+            actor_rollout_ref.rollout.enable_chunked_prefill=True \
+            actor_rollout_ref.rollout.temperature=1.0 \
+            actor_rollout_ref.rollout.top_p=1.0 \
+            actor_rollout_ref.rollout.top_k=-1 \
+            algorithm.adv_estimator=grpo \
+            algorithm.use_kl_in_reward=False \
+            algorithm.kl_ctrl.kl_coef=0.0 \
+            trainer.logger="['console']" \
+            trainer.val_before_train=False \
+            trainer.save_freq=-1 \
+            trainer.resume_mode=disable \
+            trainer.nnodes=1 \
+            trainer.n_gpus_per_node=1 \
+            trainer.total_epochs=10 \
+            trainer.test_freq=-1 \
+            trainer.project_name=timeslice-demo \
+            trainer.experiment_name="${EXP_NAME:-two-jobs-math-a}" \
+            trainer.default_local_dir="$RESULTS_DIR/ckpts" \
+            rollout.nnodes=1 \
+            rollout.n_gpus_per_node=1 \
+            rollout.total_rollout_steps="$TOTAL_ROLLOUT_STEPS" \
+            async_training.staleness_threshold="${STALENESS_THRESHOLD:-8}" \
+            async_training.trainer_name=timeslice \
+            async_training.trigger_parameter_sync_step=1 \
+            async_training.use_dynamic_resource_scheduling=False \
+            async_training.use_trainer_do_validate=False \
+            "ray_pg_extra_resources={trainer_pool: {trainer_node: 1}, rollout_pool: {rollout_node: 1}}" \
+            2>&1 | tee "$RESULTS_DIR/train.log"
+        return "${PIPESTATUS[0]}"
+    }
+
+    set +e
+    run_training
+    TRAIN_RC=$?
+    set -e
+    if [ "$TRAIN_RC" = "124" ]; then
+        echo "Training stopped by planned ${RUN_SECS}s timeout (expected end state)"
+    elif [ "$TRAIN_RC" != "0" ]; then
+        echo "WARNING: training exited rc=$TRAIN_RC before planned timeout"
+    fi
+
+    echo "=== Keeping pod alive for result collection ==="
+    sleep 7200
+
+  run_rollout.sh: |
+    #!/usr/bin/env bash
+    set -xeuo pipefail
+
+    trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+
+    RESULTS_DIR="/workspace/results"
+    RAY_HEAD_ADDR="job-a-head.default.svc.cluster.local:6379"
+
+    mkdir -p "$RESULTS_DIR"
+
+    echo "=== Phase 0: GPU access without the device plugin (hostPath driver mounts) ==="
+    export PATH="/usr/local/nvidia/bin:$PATH"
+    export LD_LIBRARY_PATH="/usr/local/nvidia/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    ldconfig /usr/local/nvidia/lib64 2>/dev/null || true
+
+    NVIS=$(nvidia-smi -L | wc -l)
+    nvidia-smi -L
+    if [ "$NVIS" != 1 ]; then
+        echo "FATAL: expected exactly 1 visible GPU on the rollout node, got $NVIS"; exit 96
+    fi
+
+    source /workspace/scripts/install_common.sh
+
+    # FIX (battle test 2026-08-14): verl's FullyAsyncRollouter actor runs on
+    # THIS pod (rollout PG pinning) and loads the train/val parquet itself;
+    # there is no shared volume, so the dataset must be prepared here too
+    # (same seed as the head -> identical files).
+    echo "=== Phase 1e: prepare dataset locally (FullyAsyncRollouter reads it on THIS pod) ==="
+    python3 /workspace/scripts/data_prep.py --out_dir /workspace/data/dapo_math \
+        --train_size 512 --val_size 64
+
+    echo "=== Phase 2: join the ray cluster ==="
+    # Join loop: the head pod may still be installing (its ray head comes up
+    # ~20 min after apply). ray start fails fast while the head is
+    # unreachable; --block keeps this script attached to the raylet once
+    # joined. The rollout_node custom resource pins the rollout PG here.
+    # NOTE: --resources takes JSON with DOUBLE quotes; keep the single-quote wrapper.
+    set +e
+    while true; do
+        ray start --block --address="$RAY_HEAD_ADDR" --num-gpus=1 --resources='{"rollout_node": 100}'
+        RC=$?
+        echo "ray start exited rc=$RC (head not up yet, or head gone); retrying in 15s — $(date)"
+        ray stop --force >/dev/null 2>&1 || true
+        sleep 15
+    done
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: job-a-head
+  namespace: default
+  labels:
+    app: job-a-head
+    # Exact keys the platform selects on (pod-utils.go JobIDLabel/GroupLabel,
+    # orchestrator kubernetes.go JobLabelKey/PodLabelKey). ONLY the head pod
+    # carries them: the trainer is the sole time-sliced (snapshotted) process.
+    timeslice.io/job-id: job-a-trainer
+    timeslice.io/group: trainers
+spec:
+  restartPolicy: Never
+  nodeName: ${TRAINER_NODE}
+  hostPID: true                      # pidfd_getfd weight sync + agent pid discovery
+  securityContext:
+    seccompProfile:
+      type: Unconfined               # pidfd_getfd blocked by default seccomp on GKE
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: head
+    image: verlai/verl:vllm020.dev2
+    securityContext:
+      privileged: true
+      capabilities:
+        add: ["SYS_PTRACE"]
+    env:
+    - name: VLLM_USE_V1
+      value: "1"
+    - name: STALENESS_THRESHOLD
+      value: "8"
+    - name: RUN_SECONDS
+      value: "${RUN_SECONDS}"
+    - name: HF_HOME
+      value: "/workspace/hf"         # model + dataset cache, per node (no shared volume)
+    - name: NVIDIA_DRIVER_CAPABILITIES
+      value: "compute,utility"
+    # FIX 2026-07-26 (nccl-restore-diagnosis.md): cuda-checkpoint does not
+    # preserve cuMem/VMM allocations or cuMulticast (NVLS) objects; the
+    # first post-restore comm creation died in transport/nvls.cc (cuda
+    # error 101 -> NCCL_ERROR_UNHANDLED_CUDA_ERROR). Force cudaMalloc-based
+    # transports. Set on ALL pods for config parity.
+    - name: NCCL_CUMEM_ENABLE
+      value: "0"
+    - name: NCCL_NVLS_ENABLE
+      value: "0"
+    - name: ACTOR_LR
+      value: "1e-6"
+    - name: EXP_NAME
+      value: "two-jobs-math-a"
+    # --- timeslice trainer (timeslice_verl, ConfigMap install) ---
+    - name: TIMESLICE_FULLY_ASYNC
+      value: "1"
+    - name: TIMESLICE_JOB_ID
+      value: "job-a-trainer"         # must equal the timeslice.io/job-id label
+    - name: TIMESLICE_ORCH_ADDR
+      value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
+    - name: TIMESLICE_GROUP
+      value: "trainers"
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -euo pipefail
+      echo "=== time-slicing guide: job A (math RLVR) — HEAD (trainer node) ==="
+      echo "Node: $(hostname)"
+      echo "Date: $(date)"
+      bash /workspace/scripts/run_head.sh 2>&1 | tee /workspace/results/experiment.log
+    ports:
+    - containerPort: 6379            # ray GCS (behind headless Service job-a-head)
+    - containerPort: 8265            # ray dashboard (optional)
+    resources:
+      requests:
+        cpu: "8"
+        memory: "80Gi"
+      limits:
+        memory: "110Gi"              # two head pods must fit one a3-highgpu-1g (26 vCPU / 234 Gi)
+    volumeMounts:
+    - name: scripts
+      mountPath: /workspace/scripts
+    - name: results
+      mountPath: /workspace/results
+    - name: timeslice-pkg-root
+      mountPath: /workspace/timeslice-pkg-root
+    - name: timeslice-pkg-src
+      mountPath: /workspace/timeslice-pkg-src
+    - name: nvidia-driver
+      mountPath: /usr/local/nvidia
+      readOnly: true
+    - name: nvidia-devices
+      mountPath: /dev
+    - name: dshm
+      mountPath: /dev/shm
+  volumes:
+  - name: scripts
+    configMap:
+      name: ts-job-a
+      defaultMode: 0755
+  - name: results
+    emptyDir: {}
+  - name: timeslice-pkg-root
+    configMap:
+      name: timeslice-verl-root
+      defaultMode: 0644
+  - name: timeslice-pkg-src
+    configMap:
+      name: timeslice-verl-src
+      defaultMode: 0644
+  - name: nvidia-driver
+    hostPath:
+      path: /home/kubernetes/bin/nvidia
+      type: Directory
+  - name: nvidia-devices
+    hostPath:
+      path: /dev
+      type: Directory
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 16Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: job-a-rollout
+  namespace: default
+  labels:
+    app: job-a-rollout
+    # NO timeslice.io labels: this pod must NEVER be selected for snapshot —
+    # the rollout engine keeps generating while the trainer is checkpointed.
+spec:
+  restartPolicy: Never
+  nodeName: ${ROLLOUT_NODE_A}
+  hostPID: true                      # pidfd_getfd weight sync (vLLM side of param sync)
+  securityContext:
+    seccompProfile:
+      type: Unconfined
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: rollout
+    image: verlai/verl:vllm020.dev2
+    securityContext:
+      privileged: true
+      capabilities:
+        add: ["SYS_PTRACE"]
+    env:
+    - name: VLLM_USE_V1
+      value: "1"
+    - name: HF_HOME
+      value: "/workspace/hf"         # model downloads land here, per node
+    - name: NVIDIA_DRIVER_CAPABILITIES
+      value: "compute,utility"
+    - name: NCCL_CUMEM_ENABLE
+      value: "0"
+    - name: NCCL_NVLS_ENABLE
+      value: "0"
+    # The trainer driver actor (the registered timeslice trainer subclass)
+    # is a CPU-only Ray actor that can be scheduled on either Ray node and
+    # inherits the raylet's env, not the driver's - keep the timeslice env
+    # identical on both pods.
+    - name: TIMESLICE_FULLY_ASYNC
+      value: "1"
+    - name: TIMESLICE_JOB_ID
+      value: "job-a-trainer"
+    - name: TIMESLICE_ORCH_ADDR
+      value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
+    - name: TIMESLICE_GROUP
+      value: "trainers"
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -euo pipefail
+      echo "=== time-slicing guide: job A (math RLVR) — ROLLOUT (dedicated node) ==="
+      echo "Node: $(hostname)"
+      echo "Date: $(date)"
+      bash /workspace/scripts/run_rollout.sh 2>&1 | tee /workspace/results/experiment.log
+    resources:
+      requests:
+        cpu: "16"
+        memory: "120Gi"
+    volumeMounts:
+    - name: scripts
+      mountPath: /workspace/scripts
+    - name: results
+      mountPath: /workspace/results
+    - name: timeslice-pkg-root
+      mountPath: /workspace/timeslice-pkg-root
+    - name: timeslice-pkg-src
+      mountPath: /workspace/timeslice-pkg-src
+    - name: nvidia-driver
+      mountPath: /usr/local/nvidia
+      readOnly: true
+    - name: nvidia-devices
+      mountPath: /dev
+    - name: dshm
+      mountPath: /dev/shm
+  volumes:
+  - name: scripts
+    configMap:
+      name: ts-job-a
+      defaultMode: 0755
+  - name: results
+    emptyDir: {}
+  - name: timeslice-pkg-root
+    configMap:
+      name: timeslice-verl-root
+      defaultMode: 0644
+  - name: timeslice-pkg-src
+    configMap:
+      name: timeslice-verl-src
+      defaultMode: 0644
+  - name: nvidia-driver
+    hostPath:
+      path: /home/kubernetes/bin/nvidia
+      type: Directory
+  - name: nvidia-devices
+    hostPath:
+      path: /dev
+      type: Directory
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 32Gi
+---
+# Headless Service: stable DNS for the ray head; the rollout pod joins via
+# job-a-head.default.svc.cluster.local:6379.
+apiVersion: v1
+kind: Service
+metadata:
+  name: job-a-head
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    app: job-a-head
+  ports:
+  - name: ray-gcs
+    port: 6379
+    targetPort: 6379
+  - name: ray-dashboard
+    port: 8265
+    targetPort: 8265
