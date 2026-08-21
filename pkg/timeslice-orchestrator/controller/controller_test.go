@@ -1512,6 +1512,282 @@ func TestController_Reconcile_DeduceLoadedJob_NonExistentButOtherRunning(t *test
 	}
 }
 
+// TestController_Reconcile_ColdStartIdleJobBecomesLocked covers the cold-start
+// lifecycle where a job's pods are pre-provisioned (deployed before Acquire,
+// e.g. a Ray cluster) and register with the agent in STATE_IDLE. The group
+// must reach STATE_LOCKED so the job's Acquire returns — an IDLE job has no
+// accelerator context to restore, exactly like UNSPECIFIED.
+func TestController_Reconcile_ColdStartIdleJobBecomesLocked(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeNames := []string{"node-1", "node-2"}
+
+	// job-1 holds the group lock (Acquire was called)...
+	if err := lockStore.Lock(ctx, groupID, "job-1"); err != nil {
+		t.Fatalf("failed to lock in store: %v", err)
+	}
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+
+	// ...but its pods were deployed BEFORE Acquire, so the agents report IDLE.
+	job1 := store.NewJob(groupID, "job-1")
+	job1.UpdateContextState("node-1", pb.SnapshotAgentJobState_STATE_IDLE)
+	job1.UpdateContextState("node-2", pb.SnapshotAgentJobState_STATE_IDLE)
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, &controller.MockSnapshotAgentStore{})
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	testQueue.Add(groupID)
+
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Timed out waiting for reconcile: %v", err)
+	}
+
+	if group.Status().LoadedJob() != "job-1" {
+		t.Errorf("Expected loadedJob to be 'job-1', got %q", group.Status().LoadedJob())
+	}
+	state, _ := group.Status().State()
+	if state != pb.GroupStatus_STATE_LOCKED {
+		t.Errorf("Expected state to be STATE_LOCKED (Acquire must not deadlock on IDLE), got %v", state)
+	}
+}
+
+// TestController_Reconcile_ColdStartTwoIdleJobs covers a cold start with two
+// statically-provisioned jobs: both deployed their pods up front (IDLE), job-1
+// holds the lock and job-2 is parked waiting for it. The parked IDLE job has
+// nothing resident to preempt, so it must not stall job-1's reconciliation:
+// the group reaches STATE_LOCKED with no snapshot or restore issued.
+func TestController_Reconcile_ColdStartTwoIdleJobs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeName := "node-1"
+
+	// job-1 holds the group lock
+	if err := lockStore.Lock(ctx, groupID, "job-1"); err != nil {
+		t.Fatalf("failed to lock in store: %v", err)
+	}
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes([]string{nodeName})
+
+	// Both jobs deployed their pods before acquiring: both IDLE.
+	job1 := store.NewJob(groupID, "job-1")
+	job1.UpdateContextState(nodeName, pb.SnapshotAgentJobState_STATE_IDLE)
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+	job2 := store.NewJob(groupID, "job-2")
+	job2.UpdateContextState(nodeName, pb.SnapshotAgentJobState_STATE_IDLE)
+	if err := jobStore.Put(ctx, job2); err != nil {
+		t.Fatalf("failed to put job2: %v", err)
+	}
+
+	// Neither job has an accelerator context: no snapshot/restore may happen.
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
+			t.Errorf("Unexpected call to Snapshot for job %s", jobID)
+			return nil, fmt.Errorf("unexpected call")
+		},
+		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+			t.Errorf("Unexpected call to Restore for job %s", jobID)
+			return nil, fmt.Errorf("unexpected call")
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	testQueue.Add(groupID)
+
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Timed out waiting for reconcile: %v", err)
+	}
+
+	if got := testQueue.getAddRateLimitedCount(); got != 0 {
+		t.Errorf("Expected no rate-limited requeues (parked IDLE job must not stall reconcile), got %d", got)
+	}
+	if group.Status().LoadedJob() != "job-1" {
+		t.Errorf("Expected loadedJob to be 'job-1', got %q", group.Status().LoadedJob())
+	}
+	state, _ := group.Status().State()
+	if state != pb.GroupStatus_STATE_LOCKED {
+		t.Errorf("Expected state to be STATE_LOCKED, got %v", state)
+	}
+}
+
+// TestController_Reconcile_DeduceLoadedJob_IdleButOtherRunning verifies that
+// an IDLE job is not considered loaded while another job is running on the
+// node: the running job must be snapshotted first, exactly as for a
+// non-existent target job.
+func TestController_Reconcile_DeduceLoadedJob_IdleButOtherRunning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeNames := []string{"node-1", "node-2"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+	group.Spec().SetActiveJob("job-1")
+
+	// job-1 pods are pre-provisioned on node-1 (IDLE), UNSPECIFIED on node-2
+	job1 := store.NewJob(groupID, "job-1")
+	job1.UpdateContextState("node-1", pb.SnapshotAgentJobState_STATE_IDLE)
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+
+	// job-2 IS running on node-1
+	job2 := store.NewJob(groupID, "job-2")
+	job2.UpdateContextState("node-1", pb.SnapshotAgentJobState_STATE_RUNNING)
+	if err := jobStore.Put(ctx, job2); err != nil {
+		t.Fatalf("failed to put job2: %v", err)
+	}
+
+	snapshotCalled := make(chan string, 1)
+	getStatusCallsNode1 := 0
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+			if node == "node-1" {
+				getStatusCallsNode1++
+				state := agentpb.JobState_JOB_STATE_RUNNING
+				if getStatusCallsNode1 > 1 {
+					state = agentpb.JobState_JOB_STATE_SAVED
+				}
+				return &agentpb.StatusResponse{
+					JobStatuses: []*agentpb.JobStatus{
+						{JobId: "job-1", State: agentpb.JobState_JOB_STATE_IDLE},
+						{JobId: "job-2", State: state},
+					},
+				}, nil
+			}
+			return &agentpb.StatusResponse{}, nil
+		},
+		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
+			if node == "node-1" && jobID == "job-2" && gID == groupID {
+				snapshotCalled <- jobID
+			}
+			return &agentpb.SnapshotResponse{OperationId: "op-123"}, nil
+		},
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			if node == "node-1" && operationID == "op-123" {
+				return &agentpb.GetOperationResponse{
+					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
+				}, nil
+			}
+			return &agentpb.GetOperationResponse{}, nil
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	testQueue.Add(groupID)
+
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 2*time.Second)
+	if err != nil {
+		t.Fatalf("Timed out waiting for reconcile: %v", err)
+	}
+
+	select {
+	case jobID := <-snapshotCalled:
+		if jobID != "job-2" {
+			t.Errorf("Expected snapshot to be called for job-2 on node-1, got %s", jobID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for Snapshot to be called")
+	}
+
+	// job-1 becomes loaded only after job-2 was snapshotted off the node.
+	if group.Status().LoadedJob() != "job-1" {
+		t.Errorf("Expected loadedJob to be 'job-1', got %q", group.Status().LoadedJob())
+	}
+	state, _ := group.Status().State()
+	if state != pb.GroupStatus_STATE_IDLE_YIELDED {
+		t.Errorf("Expected state to be STATE_IDLE_YIELDED, got %v", state)
+	}
+}
+
 func TestController_PeriodicResync(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1563,7 +1839,7 @@ func TestController_PeriodicResync(t *testing.T) {
 	}
 }
 
-func TestController_Reconcile_DeduceLoadedJob_IdleNotLoaded(t *testing.T) {
+func TestController_Reconcile_DeduceLoadedJob_IdleLoaded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1615,9 +1891,10 @@ func TestController_Reconcile_DeduceLoadedJob_IdleNotLoaded(t *testing.T) {
 		t.Fatalf("Timed out waiting for reconcile: %v", err)
 	}
 
-	// job-1 should NOT be considered loaded because it is IDLE.
-	if group.Status().LoadedJob() != "" {
-		t.Errorf("Expected loadedJob to be empty, got %q", group.Status().LoadedJob())
+	// job-1 is considered loaded: IDLE means its pods exist but have no
+	// accelerator context yet — nothing to restore, like UNSPECIFIED.
+	if group.Status().LoadedJob() != "job-1" {
+		t.Errorf("Expected loadedJob to be 'job-1', got %q", group.Status().LoadedJob())
 	}
 	state, _ := group.Status().State()
 	if state != pb.GroupStatus_STATE_IDLE_YIELDED {
@@ -1625,7 +1902,11 @@ func TestController_Reconcile_DeduceLoadedJob_IdleNotLoaded(t *testing.T) {
 	}
 }
 
-func TestController_Reconcile_PreemptionSafetyGates_IdleJob(t *testing.T) {
+// TestController_Reconcile_IdleJobDoesNotBlockRestore verifies that a
+// non-active IDLE job (pods parked with no accelerator context, e.g. waiting
+// in the Acquire queue) does not stall reconciliation: the active job's
+// restore proceeds, and the IDLE job is never snapshotted.
+func TestController_Reconcile_IdleJobDoesNotBlockRestore(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1664,15 +1945,43 @@ func TestController_Reconcile_PreemptionSafetyGates_IdleJob(t *testing.T) {
 		t.Fatalf("failed to put job2: %v", err)
 	}
 
-	// 3. Mock SnapshotAgentStore to fail if Snapshot/Restore is called
+	// 3. Mock SnapshotAgentStore: restore succeeds, snapshot must not happen
+	restoreCalled := make(chan string, 1)
+	getStatusCalls := 0
 	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+			if node == nodeName {
+				getStatusCalls++
+				state := agentpb.JobState_JOB_STATE_SAVED
+				if getStatusCalls > 1 {
+					state = agentpb.JobState_JOB_STATE_RUNNING
+				}
+				return &agentpb.StatusResponse{
+					JobStatuses: []*agentpb.JobStatus{
+						{JobId: "job-1", State: state},
+						{JobId: "job-2", State: agentpb.JobState_JOB_STATE_IDLE},
+					},
+				}, nil
+			}
+			return &agentpb.StatusResponse{}, nil
+		},
 		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
-			t.Errorf("Unexpected call to Snapshot")
+			t.Errorf("Unexpected call to Snapshot for job %s (IDLE jobs have nothing to snapshot)", jobID)
 			return nil, fmt.Errorf("unexpected call")
 		},
 		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
-			t.Errorf("Unexpected call to Restore")
-			return nil, fmt.Errorf("unexpected call")
+			if node == nodeName && jobID == "job-1" && gID == groupID {
+				restoreCalled <- jobID
+			}
+			return &agentpb.RestoreResponse{OperationId: "op-123"}, nil
+		},
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			if node == nodeName && operationID == "op-123" {
+				return &agentpb.GetOperationResponse{
+					Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
+				}, nil
+			}
+			return &agentpb.GetOperationResponse{}, nil
 		},
 	}
 
@@ -1694,16 +2003,14 @@ func TestController_Reconcile_PreemptionSafetyGates_IdleJob(t *testing.T) {
 	// Trigger reconcile
 	testQueue.Add(groupID)
 
-	// Verify that it failed and was re-queued (AddRateLimited called)
-	err = waitWithTimeout(func() bool {
-		return testQueue.getAddRateLimitedCount() > 0
-	}, 2*time.Second)
-	if err != nil {
-		t.Fatal("Timed out waiting for item to be re-queued (reconciliation should have failed)")
-	}
-
-	if testQueue.getAddRateLimitedCount() < 1 {
-		t.Errorf("Expected AddRateLimited to be called at least once, got %d", testQueue.getAddRateLimitedCount())
+	// The active job's restore proceeds despite the IDLE bystander.
+	select {
+	case jobID := <-restoreCalled:
+		if jobID != "job-1" {
+			t.Errorf("Expected restore to be called for job-1, got %s", jobID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for Restore to be called")
 	}
 }
 
