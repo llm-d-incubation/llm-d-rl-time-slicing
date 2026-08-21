@@ -1,7 +1,9 @@
 """Lock protocol tests for TimesliceCallback (no GPU, no Slime, no Ray).
 
-Simulates the exact phase sequences that Slime's sync and async drivers
-produce and asserts:
+Tests the REAL TimesliceCallback class by stubbing the slime.utils.phase_callback
+module so it can be imported without a Slime installation.
+
+Asserts:
   * Trainer-first global order (TRAINER never requested while SAMPLER held)
   * No lock leaks (every acquire has a matching release)
   * Dual-lock during weight_sync and init (both held during NCCL broadcast)
@@ -12,16 +14,41 @@ produce and asserts:
 
 import importlib.util
 import os
+import sys
+import types
 import unittest
 
+# Stub slime.utils.phase_callback so TimesliceCallback can be imported
+# without a Slime installation.
+_slime = types.ModuleType("slime")
+_slime_utils = types.ModuleType("slime.utils")
+_slime_phase_callback = types.ModuleType("slime.utils.phase_callback")
+_slime_phase_callback.PhaseCallback = object
+_slime.utils = _slime_utils
+sys.modules.setdefault("slime", _slime)
+sys.modules.setdefault("slime.utils", _slime_utils)
+sys.modules.setdefault("slime.utils.phase_callback", _slime_phase_callback)
+
 _LOCKS_PATH = os.path.join(os.path.dirname(__file__), "..", "timeslice_slime", "locks.py")
-_spec = importlib.util.spec_from_file_location("_timeslice_locks", _LOCKS_PATH)
+_spec = importlib.util.spec_from_file_location("timeslice_slime.locks", _LOCKS_PATH)
 _locks = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_locks)
+
+# Stub timeslice_slime package so callback.py can do "from timeslice_slime.locks import ..."
+_ts_pkg = types.ModuleType("timeslice_slime")
+_ts_pkg.locks = _locks
+sys.modules["timeslice_slime"] = _ts_pkg
+sys.modules["timeslice_slime.locks"] = _locks
+
+_CB_PATH = os.path.join(os.path.dirname(__file__), "..", "timeslice_slime", "callback.py")
+_cb_spec = importlib.util.spec_from_file_location("timeslice_slime.callback", _CB_PATH)
+_cb = importlib.util.module_from_spec(_cb_spec)
+_cb_spec.loader.exec_module(_cb)
 
 SAMPLER = _locks.SAMPLER
 TRAINER = _locks.TRAINER
 RoleLocks = _locks.RoleLocks
+TimesliceCallback = _cb.TimesliceCallback
 
 JOB = "job-a"
 ADDR = "orch:50051"
@@ -72,26 +99,12 @@ def held_after(events):
     return held
 
 
-class CallbackHarness:
-    """Simulate TimesliceCallback without importing Slime."""
-
-    def __init__(self, locks):
-        self.locks = locks
-
-    def on_phase_begin(self, phase, role, context=None):
-        if role in ("trainer", "both"):
-            self.locks.acquire(TRAINER)
-        if role in ("sampler", "both"):
-            self.locks.acquire(SAMPLER)
-
-    def on_phase_end(self, phase, role, context=None):
-        if role in ("sampler", "both"):
-            self.locks.release(SAMPLER)
-        if role in ("trainer", "both"):
-            self.locks.release(TRAINER)
-
-    def close(self):
-        self.locks.close()
+def make_callback(events):
+    """Create a real TimesliceCallback with fake orchestrator clients."""
+    locks = make_locks(events)
+    cb = TimesliceCallback.__new__(TimesliceCallback)
+    cb.locks = locks
+    return cb, locks
 
 
 class TestSyncDriverSequence(unittest.TestCase):
@@ -99,8 +112,7 @@ class TestSyncDriverSequence(unittest.TestCase):
 
     def _run_sync(self, n_steps, offload_rollout=False, release_train=False, with_eval=False):
         events = []
-        locks = make_locks(events)
-        cb = CallbackHarness(locks)
+        cb, locks = make_callback(events)
 
         cb.on_phase_begin("init", "both")
         cb.on_phase_end("init", "both")
@@ -179,8 +191,7 @@ class TestSyncDriverSequence(unittest.TestCase):
     def test_no_locks_between_phases(self):
         """After weight_sync end, no locks are held going into the next iteration."""
         events = []
-        locks = make_locks(events)
-        cb = CallbackHarness(locks)
+        cb, locks = make_callback(events)
         cb.on_phase_begin("init", "both")
         cb.on_phase_end("init", "both")
         for step in range(2):
@@ -212,8 +223,7 @@ class TestAsyncDriverSequence(unittest.TestCase):
         acquisition respects the global order.
         """
         events = []
-        locks = make_locks(events)
-        cb = CallbackHarness(locks)
+        cb, locks = make_callback(events)
 
         cb.on_phase_begin("init", "both")
         cb.on_phase_end("init", "both")
@@ -283,8 +293,7 @@ class TestAsyncDriverSequence(unittest.TestCase):
         (gen dispatch).  Both held during training execution.
         """
         events = []
-        locks = make_locks(events)
-        cb = CallbackHarness(locks)
+        cb, locks = make_callback(events)
         cb.on_phase_begin("init", "both")
         cb.on_phase_end("init", "both")
         # Dispatch gen 0
@@ -304,7 +313,8 @@ class TestAsyncDriverSequence(unittest.TestCase):
 class TestNoopMode(unittest.TestCase):
     def test_no_env_runs_clean(self):
         locks = RoleLocks(None, None, None, None)
-        cb = CallbackHarness(locks)
+        cb = TimesliceCallback.__new__(TimesliceCallback)
+        cb.locks = locks
         cb.on_phase_begin("init", "both")
         cb.on_phase_end("init", "both")
         cb.on_phase_begin("generate", "sampler")
