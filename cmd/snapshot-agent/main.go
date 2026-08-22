@@ -20,11 +20,13 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/backends"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/features"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/server"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 )
 
 func main() {
@@ -84,6 +86,27 @@ func main() {
 		backends.BackendAppEndpoint:  backends.NewAppEndpointBackend(),
 		backends.BackendAppChannel:   backends.NewAppChannelBackend(channelRegistry),
 		backends.BackendDirectMemory: backends.NewDirectMemory(),
+	}
+
+	// GPU-CR housekeeping runs only when the shared checkpoint dir is
+	// configured, keeping CUDA/app-only deployments untouched.
+	if ctlDir := os.Getenv("EXPORT_FILE_PATH"); ctlDir != "" {
+		// The dir must be writable by the (unprivileged) GPU-CR workloads
+		// that mmap their dump buffers in it. Tenant UIDs aren't known up
+		// front and hostPath volumes get no fsGroup remapping, so
+		// world-writable is the only workable mode; the sticky bit (the
+		// /tmp model) keeps one tenant from deleting or renaming another's
+		// artifacts.
+		if _, err := os.Stat(ctlDir); err == nil {
+			if err := os.Chmod(ctlDir, 0o777|os.ModeSticky); err != nil {
+				slog.WarnContext(ctx, "Failed to chmod GPU-CR checkpoint dir to 1777", "dir", ctlDir, "error", err)
+			} else {
+				slog.InfoContext(ctx, "Set GPU-CR checkpoint dir permissions to 1777 (world-writable, sticky)", "dir", ctlDir)
+			}
+		}
+		// Sweep stale GPU-CR artifacts: a leaked dump pins its full extent
+		// in shm/hugetlbfs even after the owning process dies.
+		utils.StartGPUCRSweeper(ctx, ctlDir, 10*time.Minute)
 	}
 
 	slog.InfoContext(ctx, "Starting Snapshot Agent",
