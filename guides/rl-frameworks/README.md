@@ -1,6 +1,6 @@
 # Framework Integration Guide
 
-Pre-packaged time-slicing integrations are available for supported frameworks — see [Slime](slime/). If your framework is already supported, use the pre-packaged integration instead of following this guide.
+Pre-packaged time-slicing integrations are available for supported frameworks — see [Slime](slime/) and [verl](verl/). If your framework is already supported, use the pre-packaged integration instead of following this guide.
 
 This guide is for **framework owners and developers** who want to build a time-slicing integration for a framework that doesn't have one yet.
 
