@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-d-timeslice-verl"
+version = "0.1.0"
+description = "GPU time-slicing integration for verl fully-async RL training"
+requires-python = ">=3.10"
+dependencies = []
+
+# `import verl` auto-loads every module in the verl.plugins entry-point group;
+# importing timeslice_verl.trainer registers TimesliceFullyAsyncTrainer under
+# the trainer name "timeslice" (select it with the hydra override
+# async_training.trainer_name=timeslice; requires verl with fully-async
+# lifecycle hooks + trainer registry). The hooks are env-gated: inert unless
+# TIMESLICE_FULLY_ASYNC=1, so the same image works with and without the
+# time-slicing platform.
+[project.entry-points."verl.plugins"]
+timeslice = "timeslice_verl.trainer"
+
+[tool.setuptools]
+packages = ["timeslice_verl"]
