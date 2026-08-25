@@ -7,6 +7,7 @@ import (
 	"time"
 
 	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/timeslice-orchestrator/store"
 )
 
 func TestController_WaitForOperation(t *testing.T) {
@@ -119,5 +120,62 @@ func TestController_WaitForOperation(t *testing.T) {
 				tc.verify(t, duration, mockAgent)
 			}
 		})
+	}
+}
+
+// TestIsJobLoaded_EmptyGroupVacuouslyLoaded verifies that a group with zero
+// member nodes (created by a first Acquire before any pods are deployed) has
+// nothing to restore, so its locking job counts as loaded — otherwise the
+// initial Acquire of the lock-then-deploy pattern would wait forever.
+func TestIsJobLoaded_EmptyGroupVacuouslyLoaded(t *testing.T) {
+	ctx := context.Background()
+	groupStore := store.NewGroupStore(store.NewMemLockStore())
+	jobStore := store.NewJobStore()
+	c := NewController(groupStore, jobStore, nil, nil, nil)
+
+	g, _, err := groupStore.GetOrCreate(ctx, "empty-group")
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+
+	loaded, err := c.isJobLoaded(ctx, g, "job-1")
+	if err != nil {
+		t.Fatalf("isJobLoaded failed: %v", err)
+	}
+	if !loaded {
+		t.Errorf("expected job to be vacuously loaded on a zero-node group")
+	}
+
+	// Sanity check: the empty-jobID short-circuit is unaffected.
+	loaded, err = c.isJobLoaded(ctx, g, "")
+	if err != nil || loaded {
+		t.Errorf("expected empty jobID to be not loaded, got loaded=%v err=%v", loaded, err)
+	}
+}
+
+// TestTryDeduceActiveJob_SkipsEmptyGroup verifies that active-job deduction
+// does nothing for a zero-node group: with isJobLoaded vacuously true on
+// empty groups, deduction would otherwise pick an arbitrary job as active
+// while its pods are still Pending.
+func TestTryDeduceActiveJob_SkipsEmptyGroup(t *testing.T) {
+	ctx := context.Background()
+	groupStore := store.NewGroupStore(store.NewMemLockStore())
+	jobStore := store.NewJobStore()
+	c := NewController(groupStore, jobStore, nil, nil, nil)
+
+	g, _, err := groupStore.GetOrCreate(ctx, "empty-group")
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	// A known job with unscheduled pods only (no context state anywhere).
+	if err := jobStore.Put(ctx, store.NewJob("empty-group", "job-1")); err != nil {
+		t.Fatalf("failed to put job: %v", err)
+	}
+
+	if err := c.tryDeduceActiveJob(ctx, g); err != nil {
+		t.Fatalf("tryDeduceActiveJob failed: %v", err)
+	}
+	if got := g.Spec().ActiveJob(); got != "" {
+		t.Errorf("expected no active job deduced for zero-node group, got %q", got)
 	}
 }

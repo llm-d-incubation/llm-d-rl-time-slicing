@@ -17,6 +17,7 @@ package scenarios
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -29,6 +30,22 @@ import (
 )
 
 // RunSingleRLJobScenario runs the single RL job E2E scenario.
+
+// emergentNodesFromEnv returns the groupID->node mapping for label-free runs
+// (INTEG_EMERGENT set), or nil for label-mode runs. With INTEG_EMERGENT=true
+// the harness skips node labeling entirely and scenario pods are pinned by
+// hostname instead, so the run validates that groups are created on first
+// Acquire and membership is discovered from scheduled pods.
+func emergentNodesFromEnv() map[string]string {
+	if os.Getenv("INTEG_EMERGENT") == "" {
+		return nil
+	}
+	return map[string]string{
+		"samplers": os.Getenv("TEST_NODE_SAMPLERS"),
+		"trainers": os.Getenv("TEST_NODE_TRAINERS"),
+	}
+}
+
 func RunSingleRLJobScenario(
 	ctx context.Context,
 	clientset kubernetes.Interface,
@@ -66,6 +83,7 @@ func RunSingleRLJobScenario(
 		samplerTemplateKey, trainerTemplateKey,
 		samplerClaim, trainerClaim,
 	)
+	job.EmergentNodes = emergentNodesFromEnv()
 
 	// Set custom work durations
 	job.OnSampling = func(ctx context.Context) {
@@ -142,6 +160,8 @@ func RunQueuedRLJobsScenario(
 		samplerTemplateKey, trainerTemplateKey,
 		samplerClaim, trainerClaim,
 	)
+	jobA.EmergentNodes = emergentNodesFromEnv()
+	jobB.EmergentNodes = emergentNodesFromEnv()
 
 	// Channels for coordination
 	jobASampling := make(chan struct{})

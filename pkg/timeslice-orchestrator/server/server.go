@@ -24,6 +24,7 @@ import (
 // GroupStore defines the interface for group store operations needed by the server.
 type GroupStore interface {
 	Get(ctx context.Context, id string) (*store.Group, error)
+	GetOrCreate(ctx context.Context, id string) (*store.Group, bool, error)
 	List(ctx context.Context) ([]*store.Group, error)
 }
 
@@ -69,13 +70,15 @@ func (s *Server) Acquire(ctx context.Context, req *pb.AcquireRequest) (*pb.Acqui
 	jobID := req.GetJobId()
 	startTime := time.Now()
 
-	// 1. Get Group
-	group, err := s.groupStore.Get(ctx, groupID)
+	// 1. Get or create the group. Groups come into being at first Acquire:
+	// in the lock-then-deploy pattern the first Acquire happens before any
+	// member pods exist, so the group cannot be discovered from pods yet.
+	group, created, err := s.groupStore.GetOrCreate(ctx, groupID)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, status.Errorf(codes.NotFound, "group %s not found", groupID)
-		}
-		return nil, status.Errorf(codes.Internal, "failed to get group: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to get or create group: %v", err)
+	}
+	if created {
+		slog.InfoContext(ctx, "Group created on first Acquire")
 	}
 
 	// 2. Request Lock
