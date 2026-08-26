@@ -260,11 +260,31 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 	activeJob := group.Spec().ActiveJob()
 
 	// 3. Act
-	// TODO: add optional fan out parallelism for node reconciliation
+	// 3a. Per-node early exits (active job already running / faulted / transitioning).
 	for _, node := range group.Status().Nodes() {
 		if err := c.reconcileNode(ctx, group.ID(), node, activeJob); err != nil {
 			return fmt.Errorf("failed to reconcile node %s: %w", node, err)
 		}
+	}
+
+	// 3b. Park (snapshot) any OTHER job that still has context loaded, fanning
+	// the snapshots out CONCURRENTLY across all nodes. A healthy host's snapshot
+	// is per-host independent, but issuing serially and blocking per node lets a
+	// single host's checkpoint stall freeze the whole group pass, delay the peer
+	// hosts' snapshots, and cascade into the waiting job's restore faulting.
+	if err := c.reconcileOtherJobsSnapshot(ctx, group, activeJob); err != nil {
+		return fmt.Errorf("failed to snapshot non-active jobs: %w", err)
+	}
+
+	// 3c. Restore the active job onto every node whose context is SAVED, fanning
+	// the restores out CONCURRENTLY. On multi-host accelerator slices (e.g. TPU
+	// libtpu) restore is a slice-wide rendezvous: every host's restore must be
+	// in flight simultaneously or none complete. Issuing them one node at a time
+	// and blocking on each deadlocks a multi-host restore — the first host parks
+	// in the rendezvous waiting for peers that are never triggered, until it
+	// times out and the job FAULTS.
+	if err := c.reconcileActiveJobRestore(ctx, group, activeJob); err != nil {
+		return fmt.Errorf("failed to restore active job: %w", err)
 	}
 
 	// 4. Update Status
@@ -317,62 +337,204 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 		}
 	}
 
-	// 3. Ensure no other jobs have their context loaded
-	for jobID, state := range agentJobStates {
-		if jobID == activeJobID {
-			continue
-		}
+	// Snapshotting OTHER jobs (RUNNING -> SAVED) and restoring the active job
+	// (SAVED -> RUNNING) are intentionally NOT done here. Both are handled after
+	// this per-node pass so the operations can be issued concurrently across all
+	// hosts of the slice (required for the multi-host libtpu restore rendezvous,
+	// and containment for single-host checkpoint stalls — see reconcileGroup
+	// steps 3b/3c).
+	return nil
+}
 
-		switch state {
-		case pb.SnapshotAgentJobState_STATE_RUNNING:
-			slog.InfoContext(ctx, "Triggering snapshot for job", "jobID", jobID, "state", state)
-			resp, err := c.agentStore.Snapshot(ctx, nodeName, jobID, groupID)
-			if err != nil {
-				return fmt.Errorf("failed to trigger snapshot for job %s on node %s: %w", jobID, nodeName, err)
+// reconcileOtherJobsSnapshot parks (snapshots) every non-active job that still
+// has accelerator context loaded on any node of the group, issuing all
+// snapshots before waiting on any of them (mirroring reconcileActiveJobRestore).
+//
+// Unlike restore, a snapshot has no hard concurrency requirement on a healthy
+// host — but a serial issue-then-block loop turns ONE host's intermittent
+// checkpoint stall into a group-wide freeze that delays the peers' snapshots
+// and cascades into the waiting job's restore faulting. Concurrent issuance
+// contains the blast radius.
+func (c *Controller) reconcileOtherJobsSnapshot(ctx context.Context, group *store.Group, activeJobID string) error {
+	jobs, err := c.jobStore.ListByGroup(ctx, group.ID())
+	if err != nil {
+		return fmt.Errorf("failed to list jobs for group %s: %w", group.ID(), err)
+	}
+
+	// Nodes where the active job is already RUNNING are fully reconciled: another
+	// job holding context there is an impossible state that must surface as an
+	// error in updateGroupStatus (for human attention), not be silently parked.
+	activeRunningNodes := make(map[string]bool)
+	if activeJobID != "" {
+		activeJob, err := c.jobStore.Get(ctx, group.ID(), activeJobID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("failed to get active job %s: %w", activeJobID, err)
+		}
+		if activeJob != nil {
+			for node, state := range activeJob.ContextState() {
+				if state == pb.SnapshotAgentJobState_STATE_RUNNING {
+					activeRunningNodes[node] = true
+				}
 			}
-			if err := c.waitForOperation(ctx, groupID, jobID, nodeName, resp.OperationId, "snapshot"); err != nil {
-				return fmt.Errorf("failed while waiting for snapshot operation %s for job %s on node %s: %w",
-					resp.OperationId, jobID, nodeName, err)
-			}
-			if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
-				return fmt.Errorf("failed to refresh agent state after snapshot: %w", err)
-			}
-		case pb.SnapshotAgentJobState_STATE_IDLE:
-			// Pods exist but have no accelerator context — nothing resident
-			// to preempt. A job only touches the GPU while holding the lock,
-			// so a parked pre-provisioned job must not stall the active one.
-			slog.DebugContext(ctx, "Other job is IDLE (nothing resident), skipping", "jobID", jobID)
-		case pb.SnapshotAgentJobState_STATE_TRANSITIONING:
-			slog.InfoContext(ctx, "Other job is TRANSITIONING, waiting for it to finish", "jobID", jobID)
-			return fmt.Errorf("preemption pending: job %s is currently transitioning", jobID)
 		}
 	}
 
+	// Collect every (node, job) pair whose context is still loaded.
+	type target struct {
+		node  string
+		jobID string
+	}
+	var targets []target
+	for _, job := range jobs {
+		if job.JobID() == activeJobID {
+			continue
+		}
+		contextState := job.ContextState()
+		for _, node := range group.Status().Nodes() {
+			if activeRunningNodes[node] {
+				continue
+			}
+			state, ok := contextState[node]
+			if !ok {
+				continue
+			}
+			switch state {
+			case pb.SnapshotAgentJobState_STATE_RUNNING:
+				targets = append(targets, target{node: node, jobID: job.JobID()})
+			case pb.SnapshotAgentJobState_STATE_IDLE:
+				// Pods exist but have no accelerator context — nothing resident
+				// to preempt. A job only touches the GPU while holding the lock,
+				// so a parked pre-provisioned job must not stall the active one.
+				slog.DebugContext(ctx, "Other job is IDLE (nothing resident), skipping",
+					"jobID", job.JobID(), "node", node)
+			case pb.SnapshotAgentJobState_STATE_TRANSITIONING:
+				slog.InfoContext(ctx, "Other job is TRANSITIONING, waiting for it to finish",
+					"jobID", job.JobID(), "node", node)
+				return fmt.Errorf("preemption pending: job %s is currently transitioning", job.JobID())
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	// Phase 1: issue every snapshot. The agent's Snapshot RPC is async (it
+	// registers the operation and returns an operation ID immediately), so all
+	// hosts' snapshots are in flight simultaneously once this loop returns.
+	type targetOp struct {
+		target
+		opID string
+	}
+	ops := make([]targetOp, 0, len(targets))
+	for _, t := range targets {
+		slog.InfoContext(ctx, "Triggering snapshot for job", "jobID", t.jobID, "node", t.node)
+		resp, err := c.agentStore.Snapshot(ctx, t.node, t.jobID, group.ID())
+		if err != nil {
+			return fmt.Errorf("failed to trigger snapshot for job %s on node %s: %w", t.jobID, t.node, err)
+		}
+		ops = append(ops, targetOp{target: t, opID: resp.OperationId})
+	}
+
+	// Phase 2: wait for all snapshot operations concurrently, then refresh state.
+	var wg sync.WaitGroup
+	errs := make([]error, len(ops))
+	for i, op := range ops {
+		wg.Add(1)
+		go func(i int, op targetOp) {
+			defer wg.Done()
+			defer handleCrash(ctx)
+			if err := c.waitForOperation(ctx, group.ID(), op.jobID, op.node, op.opID, "snapshot"); err != nil {
+				errs[i] = fmt.Errorf("failed while waiting for snapshot operation %s for job %s on node %s: %w",
+					op.opID, op.jobID, op.node, err)
+				return
+			}
+			if err := c.observeNodeJobContext(ctx, group.ID(), op.node); err != nil {
+				errs[i] = fmt.Errorf("failed to refresh agent state after snapshot on %s: %w", op.node, err)
+			}
+		}(i, op)
+	}
+	wg.Wait()
+
+	return errors.Join(errs...)
+}
+
+// reconcileActiveJobRestore restores the active job's accelerator context onto
+// every node of the group where it is currently SAVED, issuing all restores
+// before waiting on any of them.
+//
+// Multi-host accelerator restore (libtpu) is a slice-wide rendezvous: each
+// host's restore call parks until every peer host's restore is also in flight.
+// The snapshot agent's Restore RPC is asynchronous (it registers the operation
+// and returns an operation ID immediately), so this fans the restores out to all
+// SAVED nodes first, then waits for their operations concurrently. A serial
+// issue-then-block loop would deadlock: the first host would park in the
+// rendezvous forever waiting for peers that were never triggered.
+func (c *Controller) reconcileActiveJobRestore(ctx context.Context, group *store.Group, activeJobID string) error {
 	if activeJobID == "" {
 		return nil
 	}
 
-	// 4. Ensure active job is loaded where there is available context
-	state, ok := agentJobStates[activeJobID]
-	if !ok || state != pb.SnapshotAgentJobState_STATE_SAVED {
+	activeJob, err := c.jobStore.Get(ctx, group.ID(), activeJobID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// No pods for this job yet (e.g. lock acquired before deploy); nothing to restore.
+			return nil
+		}
+		return fmt.Errorf("failed to get active job %s: %w", activeJobID, err)
+	}
+
+	// Collect the nodes whose context is SAVED and therefore need a restore.
+	contextState := activeJob.ContextState()
+	var restoreNodes []string
+	for _, node := range group.Status().Nodes() {
+		if contextState[node] == pb.SnapshotAgentJobState_STATE_SAVED {
+			restoreNodes = append(restoreNodes, node)
+		}
+	}
+	if len(restoreNodes) == 0 {
 		return nil
 	}
 
-	slog.InfoContext(ctx, "Triggering restore for active job", "jobID", activeJobID, "state", state)
-	resp, err := c.agentStore.Restore(ctx, nodeName, activeJobID, groupID)
-	if err != nil {
-		return fmt.Errorf("failed to trigger restore for active job %s on node %s: %w",
-			activeJobID, nodeName, err)
+	// Phase 1: issue every restore. Restore is async, so all hosts' restores are
+	// pending simultaneously once this loop returns — forming the slice-wide
+	// rendezvous. If any issue fails, abort before waiting (nothing has to be
+	// retried; the partially-triggered restores will fault and be observed).
+	type nodeOp struct {
+		node string
+		opID string
 	}
-	if err := c.waitForOperation(ctx, groupID, activeJobID, nodeName, resp.OperationId, "restore"); err != nil {
-		return fmt.Errorf("failed waiting for restore op %s for job %s on %s: %w",
-			resp.OperationId, activeJobID, nodeName, err)
-	}
-	if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
-		return fmt.Errorf("failed to refresh agent state after restore: %w", err)
+	ops := make([]nodeOp, 0, len(restoreNodes))
+	for _, node := range restoreNodes {
+		slog.InfoContext(ctx, "Triggering restore for active job", "jobID", activeJobID, "node", node)
+		resp, err := c.agentStore.Restore(ctx, node, activeJobID, group.ID())
+		if err != nil {
+			return fmt.Errorf("failed to trigger restore for active job %s on node %s: %w",
+				activeJobID, node, err)
+		}
+		ops = append(ops, nodeOp{node: node, opID: resp.OperationId})
 	}
 
-	return nil
+	// Phase 2: wait for all restore operations concurrently, then refresh state.
+	var wg sync.WaitGroup
+	errs := make([]error, len(ops))
+	for i, op := range ops {
+		wg.Add(1)
+		go func(i int, op nodeOp) {
+			defer wg.Done()
+			defer handleCrash(ctx)
+			if err := c.waitForOperation(ctx, group.ID(), activeJobID, op.node, op.opID, "restore"); err != nil {
+				errs[i] = fmt.Errorf("failed waiting for restore op %s for job %s on %s: %w",
+					op.opID, activeJobID, op.node, err)
+				return
+			}
+			if err := c.observeNodeJobContext(ctx, group.ID(), op.node); err != nil {
+				errs[i] = fmt.Errorf("failed to refresh agent state after restore on %s: %w", op.node, err)
+			}
+		}(i, op)
+	}
+	wg.Wait()
+
+	return errors.Join(errs...)
 }
 
 // waitForGrantSettlement holds promotion of the next waiter while the current

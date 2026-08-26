@@ -2204,6 +2204,320 @@ func TestController_Reconcile_DeduceActiveJob_RestartCase(t *testing.T) {
 	}
 }
 
+// TestController_Reconcile_MultiNodeRestore_Rendezvous verifies that restores for the
+// active job are issued to ALL saved nodes before the controller blocks waiting on any
+// of them. It simulates the multi-host accelerator rendezvous (e.g. TPU libtpu): a
+// restore operation only completes once restores on every node of the group are in
+// flight. A serial issue-then-wait loop would deadlock here (the first node's operation
+// would stay pending forever) and the test would time out.
+func TestController_Reconcile_MultiNodeRestore_Rendezvous(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeNames := []string{"node-1", "node-2", "node-3"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+	group.Spec().SetActiveJob("job-1")
+
+	// job-1 (active) is SAVED on every node and needs a restore on all of them.
+	job1 := store.NewJob(groupID, "job-1")
+	for _, node := range nodeNames {
+		job1.UpdateContextState(node, pb.SnapshotAgentJobState_STATE_SAVED)
+	}
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+
+	var mu sync.Mutex
+	restoredNodes := make(map[string]bool)
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			state := agentpb.JobState_JOB_STATE_SAVED
+			// Once the rendezvous is complete, the node reports the job as running.
+			if len(restoredNodes) == len(nodeNames) {
+				state = agentpb.JobState_JOB_STATE_RUNNING
+			}
+			return &agentpb.StatusResponse{
+				JobStatuses: []*agentpb.JobStatus{{JobId: "job-1", State: state}},
+			}, nil
+		},
+		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			restoredNodes[node] = true
+			return &agentpb.RestoreResponse{OperationId: "op-restore-" + node}, nil
+		},
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			// Rendezvous: no restore completes until restores on ALL nodes are in flight.
+			if len(restoredNodes) < len(nodeNames) {
+				return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_PENDING}, nil
+			}
+			return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE}, nil
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	testQueue.Add(groupID)
+
+	// A serial restore loop would never get past the first node's pending operation.
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 5*time.Second)
+	if err != nil {
+		t.Fatal("Timed out waiting for reconcile: multi-node restore rendezvous deadlocked " +
+			"(restores were not issued concurrently across nodes)")
+	}
+
+	mu.Lock()
+	if len(restoredNodes) != len(nodeNames) {
+		t.Errorf("Expected restore to be issued on all %d nodes, got %d: %v",
+			len(nodeNames), len(restoredNodes), restoredNodes)
+	}
+	mu.Unlock()
+
+	if testQueue.getAddRateLimitedCount() != 0 {
+		t.Errorf("Expected no rate-limited requeues, got %d", testQueue.getAddRateLimitedCount())
+	}
+
+	// The refresh after each restore should have observed the job RUNNING on every node.
+	j, err := jobStore.Get(ctx, groupID, "job-1")
+	if err != nil {
+		t.Fatalf("failed to get job-1: %v", err)
+	}
+	for _, node := range nodeNames {
+		if state := j.ContextState()[node]; state != pb.SnapshotAgentJobState_STATE_RUNNING {
+			t.Errorf("Expected job-1 to be RUNNING on %s after restore, got %v", node, state)
+		}
+	}
+}
+
+// TestController_Reconcile_MultiNodeSnapshot_Concurrent verifies that snapshots of a
+// non-active job are issued to ALL nodes before the controller blocks waiting on any of
+// them, so one node's slow checkpoint cannot delay the peers' snapshots. Snapshot
+// operations here only complete once snapshots on every node are in flight, which a
+// serial issue-then-wait loop would never achieve.
+func TestController_Reconcile_MultiNodeSnapshot_Concurrent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeNames := []string{"node-1", "node-2", "node-3"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+	group.Spec().SetActiveJob("job-1")
+
+	// job-2 (NOT the active job) is RUNNING on every node and must be snapshotted
+	// everywhere. job-1 has no pods yet, so no restore follows.
+	job2 := store.NewJob(groupID, "job-2")
+	for _, node := range nodeNames {
+		job2.UpdateContextState(node, pb.SnapshotAgentJobState_STATE_RUNNING)
+	}
+	if err := jobStore.Put(ctx, job2); err != nil {
+		t.Fatalf("failed to put job2: %v", err)
+	}
+
+	var mu sync.Mutex
+	snapshottedNodes := make(map[string]bool)
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, node string) (*agentpb.StatusResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			state := agentpb.JobState_JOB_STATE_RUNNING
+			if len(snapshottedNodes) == len(nodeNames) {
+				state = agentpb.JobState_JOB_STATE_SAVED
+			}
+			return &agentpb.StatusResponse{
+				JobStatuses: []*agentpb.JobStatus{{JobId: "job-2", State: state}},
+			}, nil
+		},
+		SnapshotFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.SnapshotResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			snapshottedNodes[node] = true
+			return &agentpb.SnapshotResponse{OperationId: "op-snap-" + node}, nil
+		},
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			// No snapshot completes until snapshots on ALL nodes are in flight.
+			if len(snapshottedNodes) < len(nodeNames) {
+				return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_PENDING}, nil
+			}
+			return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE}, nil
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	testQueue.Add(groupID)
+
+	err = waitWithTimeout(func() bool { return testQueue.getDoneCount() > 0 }, 5*time.Second)
+	if err != nil {
+		t.Fatal("Timed out waiting for reconcile: multi-node snapshots were not issued concurrently across nodes")
+	}
+
+	mu.Lock()
+	if len(snapshottedNodes) != len(nodeNames) {
+		t.Errorf("Expected snapshot to be issued on all %d nodes, got %d: %v",
+			len(nodeNames), len(snapshottedNodes), snapshottedNodes)
+	}
+	mu.Unlock()
+
+	// The refresh after each snapshot should have observed the job SAVED on every node.
+	j, err := jobStore.Get(ctx, groupID, "job-2")
+	if err != nil {
+		t.Fatalf("failed to get job-2: %v", err)
+	}
+	for _, node := range nodeNames {
+		if state := j.ContextState()[node]; state != pb.SnapshotAgentJobState_STATE_SAVED {
+			t.Errorf("Expected job-2 to be SAVED on %s after snapshot, got %v", node, state)
+		}
+	}
+}
+
+// TestController_Reconcile_MultiNodeRestore_FailurePropagates verifies that when one
+// node's restore operation fails, the restores are still issued to all nodes (fan-out
+// happens before waiting) and the reconcile fails so the group is requeued.
+func TestController_Reconcile_MultiNodeRestore_FailurePropagates(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeNames := []string{"node-1", "node-2"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+	group.Spec().SetActiveJob("job-1")
+
+	job1 := store.NewJob(groupID, "job-1")
+	for _, node := range nodeNames {
+		job1.UpdateContextState(node, pb.SnapshotAgentJobState_STATE_SAVED)
+	}
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+
+	var mu sync.Mutex
+	restoredNodes := make(map[string]bool)
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			restoredNodes[node] = true
+			return &agentpb.RestoreResponse{OperationId: "op-restore-" + node}, nil
+		},
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			// node-2's restore fails; node-1's succeeds.
+			if node == "node-2" {
+				errMsg := "restore failed on node-2"
+				return &agentpb.GetOperationResponse{
+					Status: agentpb.OperationStatus_OPERATION_STATUS_FAILED,
+					Error:  &errMsg,
+				}, nil
+			}
+			return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE}, nil
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	testQueue.Add(groupID)
+
+	// The failed restore must fail the reconcile and requeue the group.
+	err = waitWithTimeout(func() bool { return testQueue.getAddRateLimitedCount() > 0 }, 5*time.Second)
+	if err != nil {
+		t.Fatal("Timed out waiting for item to be re-queued (reconciliation should have failed)")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(restoredNodes) != len(nodeNames) {
+		t.Errorf("Expected restore to be issued on all %d nodes despite the failure, got %d: %v",
+			len(nodeNames), len(restoredNodes), restoredNodes)
+	}
+}
+
 func TestController_Reconcile_PreemptionSafetyGates_ActiveJobTransitioning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
