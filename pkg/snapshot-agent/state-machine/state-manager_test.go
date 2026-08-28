@@ -2,6 +2,7 @@ package statemachine_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -146,6 +147,45 @@ func TestStartSnapshot(t *testing.T) {
 				checkJobState(t, sm, jobID, tc.finalState)
 			}
 		})
+	}
+}
+
+// TestStartSnapshot_NoLiveProcesses covers the end-of-run teardown race
+// (issue #164): a job releases its lock with the snapshot deferred, exits,
+// and only then does lazy eviction trigger the snapshot. PID discovery finds
+// nothing, which must complete the operation and return the job to IDLE —
+// not FAULTED, which would block every other job in the group.
+func TestStartSnapshot_NoLiveProcesses(t *testing.T) {
+	sm := statemachine.NewStateManager()
+	jobID := "job-1"
+	group := "group-1"
+
+	sm.RegisterJob(jobID, group)
+	if err := sm.TransitionToRunning(jobID, []int{123, 456}); err != nil {
+		t.Fatalf("TransitionToRunning failed: %v", err)
+	}
+
+	worker := func() error {
+		return fmt.Errorf("no GPU PIDs found for job %s: %w", jobID, statemachine.ErrNoLiveProcesses)
+	}
+
+	opID, err := sm.StartSnapshot(jobID, group, worker)
+	if err != nil {
+		t.Fatalf("StartSnapshot failed: %v", err)
+	}
+
+	op := waitForOperation(t, sm, opID)
+	checkOperationStatus(t, op, pb.OperationStatus_OPERATION_STATUS_COMPLETE, "")
+	checkJobState(t, sm, jobID, pb.JobState_JOB_STATE_IDLE)
+
+	// The dead workload's PIDs must be dropped so a stale restore can't target them.
+	if _, err := sm.GetJobPIDs(jobID); err == nil {
+		t.Error("Expected GetJobPIDs to fail after PIDs were cleared, got nil error")
+	}
+
+	// The job ID must be reusable: a fresh workload can run again.
+	if err := sm.TransitionToRunning(jobID, []int{789}); err != nil {
+		t.Errorf("Expected job to be re-runnable after no-live-processes snapshot, got: %v", err)
 	}
 }
 

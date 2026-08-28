@@ -1,6 +1,7 @@
 package statemachine
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -10,6 +11,14 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// ErrNoLiveProcesses marks a snapshot worker failure that means the job's
+// workload processes no longer exist (e.g. the job completed and released its
+// lock with the snapshot deferred, then exited before lazy eviction ran).
+// There is nothing left to checkpoint and the accelerator is already free, so
+// the snapshot operation completes and the job returns to IDLE instead of
+// FAULTED — a FAULTED ghost would block every other job in the group.
+var ErrNoLiveProcesses = errors.New("no live workload processes for job")
 
 // OpType represents the type of operation (Snapshot or Restore).
 type OpType string
@@ -143,11 +152,22 @@ func (sm *StateManager) StartSnapshotSlot(jobID, group, slot string, worker func
 		defer job.mu.Unlock()
 
 		op.FinishedAt = time.Now()
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrNoLiveProcesses):
+			// The workload exited before this (lazily deferred) snapshot ran.
+			// The eviction goal — a free accelerator — is already met, so the
+			// operation completes and the job returns to IDLE with no context.
+			slog.Warn("Snapshot found no live processes; treating job as exited",
+				"jobID", jobID, "error", err)
+			op.Status = pb.OperationStatus_OPERATION_STATUS_COMPLETE
+			job.State = pb.JobState_JOB_STATE_IDLE
+			job.PIDs = nil
+			job.Slot = ""
+		case err != nil:
 			op.Status = pb.OperationStatus_OPERATION_STATUS_FAILED
 			op.Error = err.Error()
 			job.State = pb.JobState_JOB_STATE_FAULTED
-		} else {
+		default:
 			op.Status = pb.OperationStatus_OPERATION_STATUS_COMPLETE
 			op.StorageBytes = 1024
 			job.State = pb.JobState_JOB_STATE_SAVED
