@@ -132,6 +132,9 @@ func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.Backe
 	if config.GetMemoryRegions() != nil {
 		return backends.BackendMemoryRegions
 	}
+	if config.GetTpu() != nil {
+		return backends.BackendTpu
+	}
 	return s.defaultBackend
 }
 
@@ -208,6 +211,21 @@ func (s *Server) buildSnapshotFn(
 				}
 				req := backends.Request{JobID: jobID, Config: reqConfig}
 				if err := backend.Snapshot(bgCtx, req); err != nil {
+					return fmt.Errorf("failed to snapshot job %s: %w", jobID, err)
+				}
+				s.state.UpdateJobPIDs(jobID, allPIDs)
+				return nil
+			}, nil
+		case backends.BackendTpu:
+			explicitPIDs := extractExplicitTpuPIDs(config)
+			return func() error {
+				slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
+				allPIDs, allPIDStrings, pidErr := resolvePIDs(bgCtx, jobID, explicitPIDs)
+				if pidErr != nil {
+					return pidErr
+				}
+				tpuReq := backends.Request{JobID: jobID, Config: backends.BuildTpuConfig(allPIDStrings)}
+				if err := backend.Snapshot(bgCtx, tpuReq); err != nil {
 					return fmt.Errorf("failed to snapshot job %s: %w", jobID, err)
 				}
 				s.state.UpdateJobPIDs(jobID, allPIDs)
@@ -290,6 +308,23 @@ func extractExplicitPIDs(config *pb.BackendConfig) []int32 {
 	return nil
 }
 
+// extractExplicitTpuPIDs returns the explicitly targeted PIDs from a TPU
+// BackendConfig, or nil if none were provided.
+func extractExplicitTpuPIDs(config *pb.BackendConfig) []int32 {
+	if config == nil {
+		return nil
+	}
+	tpu := config.GetTpu()
+	if tpu == nil {
+		return nil
+	}
+	target := tpu.GetExplicitTarget()
+	if target == nil {
+		return nil
+	}
+	return target.GetPids()
+}
+
 // buildRestoreFn returns the background restore function for the given
 // deployment mode and backend. In standalone mode the caller-provided
 // BackendConfig is passed through as-is. In k8s mode, the CUDA backend
@@ -335,6 +370,23 @@ func (s *Server) buildRestoreFn(
 					return fmt.Errorf("failed to build backend config for job %s: %w", jobID, cfgErr)
 				}
 				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: reqConfig})
+			}, nil
+		case backends.BackendTpu:
+			return func() error {
+				slog.InfoContext(bgCtx, "Background: Starting restore", "backend", backendType)
+				pids, pidErr := s.state.GetJobPIDs(jobID)
+				if pidErr != nil {
+					return fmt.Errorf("failed to get PIDs for job %s: %w", jobID, pidErr)
+				}
+				// No NVML occupancy gate here: on TPU nodes the backend
+				// itself gates on the previous occupant releasing its vfio
+				// iommu groups before issuing any RESTORE.
+				var pidStrings []string
+				for _, pid := range pids {
+					pidStrings = append(pidStrings, strconv.Itoa(pid))
+				}
+				slog.InfoContext(bgCtx, "Restoring PIDs", "pids", pidStrings, "backend", backendType)
+				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: backends.BuildTpuConfig(pidStrings)})
 			}, nil
 		case backends.BackendAppEndpoint, backends.BackendAppChannel, backends.BackendMemoryRegions:
 			// App backends resolve their own targets; the memory-regions

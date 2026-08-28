@@ -39,11 +39,21 @@ func main() {
 	deploymentMode := flag.String("deployment-mode", "standalone", "Deployment mode ('standalone' or 'k8s')")
 	featureGatesSpec := flag.String("feature-gates", "",
 		"Comma-separated list of Name=bool pairs selecting experimental features, e.g. 'DirectMemoryBackend=true'")
+	defaultBackend := flag.String("default-backend", string(backends.BackendCuda),
+		"Backend used when a request carries no backend_config (the orchestrator never sends one, "+
+			"so this selects the backend for orchestrator-driven snapshots/restores)")
 	flag.Parse()
 
 	depMode := *deploymentMode
 	if envDepMode := os.Getenv("DEPLOYMENT_MODE"); envDepMode != "" {
 		depMode = envDepMode
+	}
+
+	// DEFAULT_BACKEND overrides the flag, mirroring DEPLOYMENT_MODE: the Helm
+	// chart configures the agent through env vars, not flags.
+	defBackend := backends.BackendType(*defaultBackend)
+	if envBackend := os.Getenv("DEFAULT_BACKEND"); envBackend != "" {
+		defBackend = backends.BackendType(envBackend)
 	}
 
 	// AGENT_PORT overrides the flag, mirroring DEPLOYMENT_MODE: the Helm
@@ -87,6 +97,19 @@ func main() {
 		backends.BackendAppChannel:    backends.NewAppChannelBackend(channelRegistry),
 		backends.BackendDirectMemory:  backends.NewDirectMemory(),
 		backends.BackendMemoryRegions: backends.NewMemoryRegions(),
+		backends.BackendTpu:           backends.NewTpuCheckpoint(),
+	}
+	if _, ok := registeredBackends[defBackend]; !ok {
+		slog.Error("Invalid default backend", "backend", defBackend)
+		os.Exit(1)
+	}
+
+	// On TPU nodes there is no NVML: swap in TPU process discovery (libtpu
+	// control threads + /dev/vfio fds) for the watcher and PID resolution.
+	if accel := os.Getenv("ACCELERATOR_TYPE"); accel == "tpu" {
+		utils.GetPodPIDs = utils.GetPodTpuPIDs
+		utils.HasGPUProcesses = utils.HasTpuProcesses
+		slog.InfoContext(ctx, "Using TPU process discovery", "acceleratorType", accel)
 	}
 
 	// GPU-CR housekeeping runs only when the shared checkpoint dir is
@@ -111,9 +134,10 @@ func main() {
 	}
 
 	slog.InfoContext(ctx, "Starting Snapshot Agent",
-		"port", listenPort, "deploymentMode", depMode, "featureGates", featureGates.String())
+		"port", listenPort, "deploymentMode", depMode, "defaultBackend", defBackend,
+		"featureGates", featureGates.String())
 	err = server.StartServer(
-		ctx, listenPort, registeredBackends, backends.BackendCuda, depMode, channelRegistry, featureGates)
+		ctx, listenPort, registeredBackends, defBackend, depMode, channelRegistry, featureGates)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to start server", "error", err)
 		os.Exit(1)

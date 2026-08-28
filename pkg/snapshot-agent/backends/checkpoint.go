@@ -25,6 +25,9 @@ const (
 	BackendMemoryRegions BackendType = "memory-regions"
 	// BackendDirectMemory is the Direct Memory (process-level) checkpointing backend.
 	BackendDirectMemory BackendType = "direct-memory"
+	// BackendTpu is the libtpu-based TPU checkpointing backend (gVisor's
+	// tpucheckpoint CLI).
+	BackendTpu BackendType = "tpu"
 )
 
 // Request carries one backend invocation: the job it targets and the

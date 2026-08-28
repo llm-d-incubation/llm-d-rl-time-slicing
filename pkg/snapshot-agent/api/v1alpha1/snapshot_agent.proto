@@ -62,6 +62,18 @@ message DirectMemoryBackendConfig {
   ProcessTarget explicit_target = 1;
 }
 
+// Configuration for the TPU (libtpu) backend. Checkpoint/restore of TPU state
+// for running processes via libtpu's control-pipe protocol (gVisor's
+// tpucheckpoint CLI); targets must run with LIBTPU_CHECKPOINTING_ENABLED=true.
+message TpuBackendConfig {
+  // The target processes to checkpoint/restore. Optional in 'k8s' deployment
+  // mode (PIDs are discovered from the job's pods), required in 'standalone'.
+  // Restore is a slice-wide rendezvous inside libtpu: all of a job's TPU
+  // processes must be restored in one request, and a restore must never be
+  // retried.
+  ProcessTarget explicit_target = 1;
+}
+
 // App identifies the HTTP API dialect of an application-aware workload.
 // It grows only when a new HTTP dialect ships; workloads reached through a
 // registered workload channel never need an entry here.
@@ -155,6 +167,7 @@ message BackendConfig {
     // feature gate; see DirectMemoryBackendConfig.
     DirectMemoryBackendConfig direct_memory = 4;
     MemoryRegionsBackendConfig memory_regions = 5;
+    TpuBackendConfig tpu = 6;
   }
 }
 

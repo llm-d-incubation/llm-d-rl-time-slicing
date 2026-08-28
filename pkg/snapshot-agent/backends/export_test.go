@@ -53,3 +53,27 @@ func (g *MemoryRegions) SetProcRoot(dir string) {
 func (g *MemoryRegions) SetStarttimeFunc(f func(pid string) (int64, error)) {
 	g.starttime = f
 }
+
+func (t *TpuCheckpoint) SetExecCommand(f func(ctx context.Context, name string, args ...string) ([]byte, error)) {
+	t.execCommand = f
+}
+
+func (t *TpuCheckpoint) SetLookPath(f func(string) (string, error)) {
+	t.lookPath = f
+}
+
+func (t *TpuCheckpoint) SetStatPath(f func(string) (os.FileInfo, error)) {
+	t.statPath = f
+}
+
+func (t *TpuCheckpoint) SetWaitVfioFree(f func(ctx context.Context) error) {
+	t.waitVfioFree = f
+}
+
+func (t *TpuCheckpoint) SetClearLocks(f func(ctx context.Context, pids []string)) {
+	t.clearLocks = f
+}
+
+func (t *TpuCheckpoint) SetRetryBackoff(d time.Duration) {
+	t.retryBackoff = d
+}
