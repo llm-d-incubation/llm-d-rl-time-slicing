@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
@@ -95,6 +96,21 @@ type Controller struct {
 	infraOrchestrator InfrastructureOrchestrator
 	agentStore        store.SnapshotAgentStore
 	ResyncPeriod      time.Duration
+
+	// SettleTimeout bounds how long promotion of the next waiter is held
+	// while the current active job's grant is unconsumed (granted but never
+	// observed RUNNING). See waitForGrantSettlement.
+	SettleTimeout time.Duration
+
+	settleMu    sync.Mutex
+	settleSince map[string]settleEntry
+}
+
+// settleEntry remembers when a group's active job was first seen holding an
+// unconsumed grant, so the promotion hold is bounded per (group, job).
+type settleEntry struct {
+	jobID string
+	since time.Time
 }
 
 // NewController creates a new Controller with the provided stores, queue, and infrastructure orchestrator.
@@ -112,6 +128,8 @@ func NewController(
 		infraOrchestrator: infraOrchestrator,
 		agentStore:        agentStore,
 		ResyncPeriod:      30 * time.Second,
+		SettleTimeout:     30 * time.Second,
+		settleSince:       make(map[string]settleEntry),
 	}
 }
 
@@ -229,6 +247,10 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 
 	if err := c.tryDeduceActiveJob(ctx, group); err != nil {
 		return fmt.Errorf("failed to try deducing active job: %w", err)
+	}
+
+	if err := c.waitForGrantSettlement(ctx, group); err != nil {
+		return err
 	}
 
 	if _, err := group.Spec().TryPromote(ctx); err != nil {
@@ -351,6 +373,76 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 	}
 
 	return nil
+}
+
+// waitForGrantSettlement holds promotion of the next waiter while the current
+// active job's grant is unconsumed: it was granted the group lock but has
+// never been observed RUNNING (its context state is still IDLE on a group
+// node). Such a job's engine may be seconds from touching the accelerator —
+// it registers IDLE when its pods appear and the watcher only reports PIDs on
+// its next poll — so promoting now would let the handoff restore another
+// job's context onto a device that is about to be occupied.
+//
+// This cannot reintroduce the cold-start deadlock (#137): parked
+// pre-provisioned jobs are never the ACTIVE job, so only the one job whose
+// grant is genuinely in flight is ever waited on, and the wait is bounded by
+// SettleTimeout for grants that never produce device activity (crashed
+// engine, a job that exited right after its grant).
+func (c *Controller) waitForGrantSettlement(ctx context.Context, group *store.Group) error {
+	groupID := group.ID()
+	active := group.Spec().ActiveJob()
+	// No hold unless a promotion is actually pending behind an active job.
+	if active == "" || group.Spec().LockingJob() != "" || group.Spec().GetWaitingJobQueue().Len() == 0 {
+		c.clearSettle(groupID)
+		return nil
+	}
+
+	job, err := c.jobStore.Get(ctx, groupID, active)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// No pods -> nothing observable to wait on.
+			c.clearSettle(groupID)
+			return nil
+		}
+		return fmt.Errorf("failed to get active job %s: %w", active, err)
+	}
+
+	idleNode := ""
+	contextState := job.ContextState()
+	for _, node := range group.Status().Nodes() {
+		if contextState[node] == pb.SnapshotAgentJobState_STATE_IDLE {
+			idleNode = node
+			break
+		}
+	}
+	if idleNode == "" {
+		c.clearSettle(groupID)
+		return nil
+	}
+
+	c.settleMu.Lock()
+	entry, ok := c.settleSince[groupID]
+	if !ok || entry.jobID != active {
+		entry = settleEntry{jobID: active, since: time.Now()}
+		c.settleSince[groupID] = entry
+	}
+	c.settleMu.Unlock()
+
+	if waited := time.Since(entry.since); waited > c.SettleTimeout {
+		slog.WarnContext(ctx, "Active job's grant never produced device activity; proceeding with promotion",
+			"activeJob", active, "node", idleNode, "waited", waited)
+		c.clearSettle(groupID)
+		return nil
+	}
+
+	return fmt.Errorf("promotion pending: active job %s holds an unconsumed grant (IDLE on node %s); "+
+		"waiting for it to start or settle", active, idleNode)
+}
+
+func (c *Controller) clearSettle(groupID string) {
+	c.settleMu.Lock()
+	delete(c.settleSince, groupID)
+	c.settleMu.Unlock()
 }
 
 // tryDeduceActiveJob is a best-effort helper that deduces and sets the active job after a controller
