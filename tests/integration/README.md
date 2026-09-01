@@ -12,6 +12,10 @@ Tests snapshot-agent backends in standalone and k8s modes. The Go harness deploy
 
 **How the standalone mode works:** since the test suite runs inside a GKE cluster, standalone mode is simulated by deploying a privileged pod with `hostPID` and `hostNetwork` on the test node. The `make standalone` artifacts are built in the test runner and copied into this pod, which then runs the agent binary with the same GPU and PID namespace access as a host process.
 
+### snapshot-agent TPU (phase: tpu)
+
+Tests the TPU backend end to end on a real TPU node (e.g. a single-host v5e): the standalone agent plus the gVisor `tpucheckpoint` CLI drive a batched checkpoint/restore of a multi-process libtpu workload (one single-chip JAX process per chip, run with `LIBTPU_CHECKPOINTING_ENABLED=true`). The workload quiesces TPU ops via a flag file before the checkpoint — the libtpu contract a production driver honors before yielding its time slice — and its step counters advancing after restore prove the chips came back. Not part of `--phase all` since it needs a TPU node while the other phases need GPUs.
+
 ### orchestrator (phase: orchestrator)
 
 Composed orchestrator integration suite. Installs BOTH official Helm charts (snapshot-agent + timeslice-orchestrator) and drives real orchestrator scenarios through the gRPC API. The orchestrator chart is configured with `snapshotAgentPort` matching `CHART_AGENT_PORT` so it commands the suite's own agent.
@@ -23,7 +27,7 @@ Uses a 2-node topology: `TEST_NODE_SAMPLERS` for the samplers group, `TEST_NODE_
 - `run.sh` -- launcher (build images, install chart fixtures, deploy runner, copy source, build `make standalone`, install the Python client, `go test`, cleanup)
 - `runner.yaml` -- test-runner pod + RBAC
 - `harness/` -- shared framework: in-cluster client, node selection, pod lifecycle, exec/HTTP/VRAM helpers
-- `snapshot-agent/` -- the agent suite: `standalone_test.go` / `k8s_test.go`, plus the agent specifics (`harness.go` agent deployment, `engines.go` engine specs, `agentctl.py`)
+- `snapshot-agent/` -- the agent suite: `standalone_test.go` / `k8s_test.go` / `tpu_test.go`, plus the agent specifics (`harness.go` agent deployment, `engines.go` engine specs, `tpu.go` + `tpu_workload.py` TPU fixtures, `agentctl.py`)
 - `orchestrator/` -- the orchestrator suite: `orchestrator_test.go` / `harness.go`
 - `orchestrator/scenarios/` -- scenario drivers shared by both the simulate tier (unit tests) and the composed suite
 - `orchestrator/simulate/` -- fakes tier: in-process orchestrator with fake K8s, runs on every PR
@@ -111,8 +115,9 @@ TEST_NODE=<gpu-node> TEST_NODE_SAMPLERS=<gpu-node-1> TEST_NODE_TRAINERS=<gpu-nod
                      kubectl context)
 --zone ZONE          GKE cluster zone (optional)
 --model MODEL        Model to load (default: Qwen/Qwen2.5-0.5B)
---phase PHASE        "standalone", "k8s", "orchestrator", "both" (default,
-                     = standalone+k8s), or "all" (= standalone+k8s+orch)
+--phase PHASE        "standalone", "k8s", "orchestrator", "tpu", "both"
+                     (default, = standalone+k8s), or "all"
+                     (= standalone+k8s+orch; tpu is separate)
 --skip-cleanup       Leave the test-runner pod and chart fixtures running
                      for debugging
 ```
@@ -128,6 +133,26 @@ Environment:
   GPU node for the samplers group (must be different from `TEST_NODE_TRAINERS`).
 - `TEST_NODE_TRAINERS=<node-name>` -- required for the orchestrator phase.
   GPU node for the trainers group (must be different from `TEST_NODE_SAMPLERS`).
+- `TPU_WORKLOAD_IMAGE=<image>` -- required for the tpu phase: an image with
+  python3 + JAX for the TPU node.
+- `TPU_CHECKPOINT_URI=<uri>` -- required for the tpu phase unless
+  `bin/tpucheckpoint` already exists: gs:// or http(s) URI of the gVisor
+  tpucheckpoint CLI (linux/amd64).
+- `TPU_LIBTPU_URI=<gs-uri>` -- optional for the tpu phase: a
+  checkpointing-enabled libtpu.so fetched into the workload pod; without it
+  the image's libtpu must support `LIBTPU_CHECKPOINTING_ENABLED`.
+- `TPU_CHIPS=<n>` -- optional for the tpu phase: chips to request / worker
+  processes to run (default 8, a single-host v5e-8).
+
+TPU phase example:
+
+```bash
+TEST_NODE=<tpu-node> \
+TPU_WORKLOAD_IMAGE=<registry>/<jax-image> \
+TPU_CHECKPOINT_URI=gs://<bucket>/tpucheckpoint \
+TPU_LIBTPU_URI=gs://<bucket>/libtpu.so \
+  ./tests/integration/run.sh --phase tpu
+```
 - `CHART_AGENT_PORT=<port>` -- port for the chart-deployed agent (default
   9002), so the suite can coexist with an unrelated agent on the default
   port (the chart runs on hostNetwork). The orchestrator chart is

@@ -8,8 +8,8 @@ constructed here, in Python, the same way a real workload would build them.
 
 Usage:
   agentctl.py --agent HOST:PORT snapshot|restore --job-id ID
-              --backend cuda|app|channel
-              [--pids 1,2,3]                       (cuda)
+              --backend cuda|tpu|app|channel
+              [--pids 1,2,3]                       (cuda, tpu)
               [--app vllm|sglang] [--endpoints URL,URL]
               [--mode offload|discard] [--tags a,b] (app, channel)
 
@@ -40,6 +40,12 @@ def build_config(args: argparse.Namespace) -> snapshot_agent_pb2.BackendConfig:
             cuda.explicit_target.pids.extend(int(p) for p in args.pids.split(","))
         return snapshot_agent_pb2.BackendConfig(cuda=cuda)
 
+    if args.backend == "tpu":
+        tpu = snapshot_agent_pb2.TpuBackendConfig()
+        if args.pids:
+            tpu.explicit_target.pids.extend(int(p) for p in args.pids.split(","))
+        return snapshot_agent_pb2.BackendConfig(tpu=tpu)
+
     if args.backend == "app":
         if args.app not in APPS:
             raise ValueError(f"--app is required for --backend app (one of {sorted(APPS)})")
@@ -67,8 +73,8 @@ def main() -> int:
     parser.add_argument("--agent", required=True, help="agent endpoint HOST:PORT")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--group", default="test")
-    parser.add_argument("--backend", required=True, choices=["cuda", "app", "channel"])
-    parser.add_argument("--pids", default="", help="comma-separated PIDs (cuda)")
+    parser.add_argument("--backend", required=True, choices=["cuda", "tpu", "app", "channel"])
+    parser.add_argument("--pids", default="", help="comma-separated PIDs (cuda, tpu)")
     parser.add_argument("--app", default="", choices=["", "vllm", "sglang"], help="application (app backend)")
     parser.add_argument("--endpoints", default="", help="comma-separated application URLs")
     parser.add_argument("--mode", default="", choices=["", "offload", "discard"], help="suspend mode")

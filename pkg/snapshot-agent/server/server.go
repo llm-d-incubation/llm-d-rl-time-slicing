@@ -93,7 +93,7 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 		return nil, status.Errorf(codes.NotFound, "backend %s not found", backendType)
 	}
 
-	s.ensureJobRunningIfOccupied(ctx, req.GetJobId(), req.GetGroup(), backendType)
+	s.ensureJobRunningIfOccupied(ctx, req.GetJobId(), req.GetGroup())
 
 	bgCtx := context.WithoutCancel(ctx)
 	config := req.GetBackendConfig()
@@ -140,14 +140,14 @@ func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.Backe
 
 // ensureJobRunningIfOccupied registers the job and, if it is IDLE while the
 // accelerator has running processes, transitions it to RUNNING. Occupancy is
-// backend-appropriate: NVML compute processes for GPU backends, vfio iommu
-// group holders for the TPU backend (NVML does not exist on TPU nodes).
+// node-appropriate: podutils.HasGPUProcesses is swapped to the TPU variant at
+// startup when ACCELERATOR_TYPE=tpu (NVML does not exist on TPU nodes).
 //
 // Standalone mode only: in k8s mode the watcher is the single source of
 // state-machine transitions (and additionally binds jobs to their targets,
 // e.g. PIDs for the CUDA backend — a backend-specific concern that a future
 // discovery interface will own per backend).
-func (s *Server) ensureJobRunningIfOccupied(ctx context.Context, jobID, group string, backendType backends.BackendType) {
+func (s *Server) ensureJobRunningIfOccupied(ctx context.Context, jobID, group string) {
 	if s.deploymentMode != "standalone" {
 		return
 	}
@@ -156,7 +156,7 @@ func (s *Server) ensureJobRunningIfOccupied(ctx context.Context, jobID, group st
 		if js.JobId != jobID || js.State != pb.JobState_JOB_STATE_IDLE {
 			continue
 		}
-		occupied, err := s.acceleratorOccupied(ctx, backendType)
+		occupied, err := podutils.HasGPUProcesses(ctx)
 		if err != nil {
 			slog.WarnContext(ctx, "occupancy check failed, skipping auto-transition", "error", err)
 			return
@@ -170,15 +170,6 @@ func (s *Server) ensureJobRunningIfOccupied(ctx context.Context, jobID, group st
 		}
 		return
 	}
-}
-
-// acceleratorOccupied reports whether the node's accelerators have running
-// processes, using the signal appropriate to the backend.
-func (s *Server) acceleratorOccupied(ctx context.Context, backendType backends.BackendType) (bool, error) {
-	if backendType == backends.BackendTpu {
-		return len(podutils.VfioGroupHolders()) > 0, nil
-	}
-	return podutils.HasGPUProcesses(ctx)
 }
 
 // buildSnapshotFn returns the background snapshot function for the given

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
-	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/tpu"
 )
 
 const (
@@ -72,7 +72,7 @@ const (
 //     failed: the rest are already parked, and a second CHECKPOINT to a
 //     parked process is not part of the libtpu contract.
 //   - Restore gates on the previous occupant releasing its vfio iommu
-//     groups (utils.WaitVfioFree), ONCE per job before the RESTORE is
+//     groups (tpu.WaitVfioFree), ONCE per job before the RESTORE is
 //     issued — early members hold their own groups while parked, so gating
 //     per-process would deadlock against the job's own mesh.
 type TpuCheckpoint struct {
@@ -94,9 +94,9 @@ func NewTpuCheckpoint() *TpuCheckpoint {
 		lookPath: exec.LookPath,
 		statPath: os.Stat,
 		waitVfioFree: func(ctx context.Context) error {
-			return utils.WaitVfioFree(ctx, tpuVfioGateTimeout)
+			return tpu.WaitVfioFree(ctx, tpuVfioGateTimeout)
 		},
-		clearLocks:   utils.ClearTpuLockfiles,
+		clearLocks:   tpu.ClearLockfiles,
 		retryBackoff: tpuCheckpointRetryBackoff,
 	}
 }
@@ -126,7 +126,7 @@ func (t *TpuCheckpoint) Snapshot(ctx context.Context, req Request) error {
 	// holds what for stall postmortems.
 	t.clearLocks(ctx, pids)
 	slog.InfoContext(ctx, "tpucheckpoint checkpoint took", "duration", time.Since(t0), "pids", pids,
-		"vfioHoldersAfter", utils.VfioGroupHolders())
+		"vfioHoldersAfter", tpu.VfioGroupHolders())
 	return nil
 }
 
@@ -254,11 +254,11 @@ func ExtractTpuPIDStrings(config *pb.BackendConfig) []string {
 	if config == nil {
 		return nil
 	}
-	tpu := config.GetTpu()
-	if tpu == nil {
+	tpuCfg := config.GetTpu()
+	if tpuCfg == nil {
 		return nil
 	}
-	target := tpu.GetExplicitTarget()
+	target := tpuCfg.GetExplicitTarget()
 	if target == nil {
 		return nil
 	}

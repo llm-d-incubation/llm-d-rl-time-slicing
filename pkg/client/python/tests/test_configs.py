@@ -10,6 +10,7 @@ from timeslice.snapshot_agent import (
     direct_memory_config,
     memory_regions_config,
     sglang_config,
+    tpu_config,
     vllm_config,
 )
 from timeslice.snapshot_agent import snapshot_agent_pb2
@@ -27,6 +28,18 @@ class TestBackendConfigBuilders(unittest.TestCase):
         cfg = direct_memory_config([101, 102])
         self.assertEqual(cfg.WhichOneof("backend"), "direct_memory")
         self.assertEqual(list(cfg.direct_memory.explicit_target.pids), [101, 102])
+
+    def test_tpu_config_builds_explicit_target(self):
+        """Explicit PIDs land in tpu.explicit_target."""
+        cfg = tpu_config([101, 102])
+        self.assertEqual(cfg.WhichOneof("backend"), "tpu")
+        self.assertEqual(list(cfg.tpu.explicit_target.pids), [101, 102])
+
+    def test_tpu_config_omits_target_when_pids_not_given(self):
+        """Omitting pids leaves tpu.explicit_target unset (k8s discovery)."""
+        cfg = tpu_config()
+        self.assertEqual(cfg.WhichOneof("backend"), "tpu")
+        self.assertFalse(cfg.tpu.HasField("explicit_target"))
 
     def test_cuda_config_omits_target_when_pids_not_given(self):
         """Omitting pids leaves cuda.explicit_target unset (k8s discovery)."""
@@ -46,6 +59,8 @@ class TestBackendConfigBuilders(unittest.TestCase):
             cuda_config([])
         with self.assertRaises(ValueError):
             direct_memory_config([])
+        with self.assertRaises(ValueError):
+            tpu_config([])
 
     def test_rejects_non_positive_pids(self):
         """Zero and negative PIDs are rejected."""

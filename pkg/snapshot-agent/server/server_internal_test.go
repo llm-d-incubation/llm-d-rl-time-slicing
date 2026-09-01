@@ -958,3 +958,37 @@ func TestServer_DirectMemory_K8sMode(t *testing.T) {
 		t.Errorf("Expected restored PIDs [101, 102], got %v", rpids)
 	}
 }
+
+// TestServer_Tpu_NotRegisteredOnNonTpuNodes pins the non-TPU-node contract:
+// main.go registers the TPU backend only when ACCELERATOR_TYPE=tpu, so on
+// every other node an explicit BackendConfig.tpu request must fail with
+// NotFound at backend lookup — before any PID discovery (which would
+// otherwise run the NVML-based GetPodPIDs against a TPU request).
+func TestServer_Tpu_NotRegisteredOnNonTpuNodes(t *testing.T) {
+	// A non-TPU node's backend map: no BackendTpu entry.
+	backendsMap := map[backends.BackendType]backends.Backend{
+		backends.BackendCuda: backends.NewNoopBackend(),
+	}
+	client, cleanup := newModeTestServer(t, backendsMap, backends.BackendCuda, false, "k8s")
+	defer cleanup()
+
+	tpuConfig := &pb.BackendConfig{
+		Backend: &pb.BackendConfig_Tpu{Tpu: &pb.TpuBackendConfig{}},
+	}
+
+	_, err := client.Snapshot(context.Background(), &pb.SnapshotRequest{
+		JobId:         "tpu-on-gpu-node",
+		BackendConfig: tpuConfig,
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("Snapshot() with a tpu config on a non-TPU node = %v, want NotFound", err)
+	}
+
+	_, err = client.Restore(context.Background(), &pb.RestoreRequest{
+		JobId:         "tpu-on-gpu-node",
+		BackendConfig: tpuConfig,
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("Restore() with a tpu config on a non-TPU node = %v, want NotFound", err)
+	}
+}

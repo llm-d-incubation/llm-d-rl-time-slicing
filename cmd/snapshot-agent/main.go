@@ -27,6 +27,8 @@ import (
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/features"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/gpucr"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/server"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/tpu"
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 )
 
 func main() {
@@ -97,19 +99,39 @@ func main() {
 		backends.BackendAppChannel:    backends.NewAppChannelBackend(channelRegistry),
 		backends.BackendDirectMemory:  backends.NewDirectMemory(),
 		backends.BackendMemoryRegions: backends.NewMemoryRegions(),
-		backends.BackendTpu:           backends.NewTpuCheckpoint(),
 	}
+
+	// The TPU backend is only registered on TPU nodes: it depends on TPU
+	// process discovery, and registering it elsewhere would let an explicit
+	// BackendConfig.tpu request reach NVML-based PID discovery on a GPU
+	// node. Requests selecting it on other nodes fail with NotFound before
+	// any PID lookup.
+	accelType := os.Getenv("ACCELERATOR_TYPE")
+	if accelType == "tpu" {
+		registeredBackends[backends.BackendTpu] = backends.NewTpuCheckpoint()
+	}
+
 	if _, ok := registeredBackends[defBackend]; !ok {
-		slog.Error("Invalid default backend", "backend", defBackend)
+		slog.Error("Invalid default backend for this node", "backend", defBackend, "acceleratorType", accelType)
+		os.Exit(1)
+	}
+
+	// ACCELERATOR_TYPE and the default backend are configured independently
+	// but must agree: the GPU-memory backends cannot run on TPU nodes. (The
+	// reverse mismatch — a tpu default without ACCELERATOR_TYPE=tpu — is
+	// caught above, since the TPU backend is not registered.)
+	if accelType == "tpu" && (defBackend == backends.BackendCuda || defBackend == backends.BackendDirectMemory) {
+		slog.Error("ACCELERATOR_TYPE=tpu is incompatible with a GPU default backend; set DEFAULT_BACKEND=tpu",
+			"backend", defBackend, "acceleratorType", accelType)
 		os.Exit(1)
 	}
 
 	// On TPU nodes there is no NVML: swap in TPU process discovery (libtpu
 	// control threads + /dev/vfio fds) for the watcher and PID resolution.
-	if accel := os.Getenv("ACCELERATOR_TYPE"); accel == "tpu" {
-		utils.GetPodPIDs = utils.GetPodTpuPIDs
-		utils.HasGPUProcesses = utils.HasTpuProcesses
-		slog.InfoContext(ctx, "Using TPU process discovery", "acceleratorType", accel)
+	if accelType == "tpu" {
+		utils.GetPodPIDs = tpu.GetPodPIDs
+		utils.HasGPUProcesses = tpu.HasProcesses
+		slog.InfoContext(ctx, "Using TPU process discovery", "acceleratorType", accelType)
 	}
 
 	// GPU-CR housekeeping runs only when the shared checkpoint dir is

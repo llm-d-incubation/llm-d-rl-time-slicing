@@ -1,4 +1,4 @@
-package utils_test
+package tpu_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/tpu"
 	snapshotutils "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,9 +57,9 @@ func writeTpuProc(t *testing.T, root string, pid int, libtpuThread bool, podUID 
 	}
 }
 
-func TestGetPodTpuPIDs(t *testing.T) {
+func TestGetPodPIDs(t *testing.T) {
 	root := t.TempDir()
-	restoreProc := snapshotutils.SetProcRootForTest(root)
+	restoreProc := tpu.SetProcRootForTest(root)
 	defer restoreProc()
 
 	const podUID = "tpu-pod-uid"
@@ -80,57 +81,65 @@ func TestGetPodTpuPIDs(t *testing.T) {
 		return fake.NewSimpleClientset(pod), nil
 	}
 
-	pids, err := snapshotutils.GetPodTpuPIDs(context.Background(), "test-pod", "test-ns")
+	pids, err := tpu.GetPodPIDs(context.Background(), "test-pod", "test-ns")
 	if err != nil {
-		t.Fatalf("GetPodTpuPIDs() error = %v", err)
+		t.Fatalf("GetPodPIDs() error = %v", err)
 	}
 	if want := []int{100}; !reflect.DeepEqual(pids, want) {
-		t.Errorf("GetPodTpuPIDs() = %v, want %v", pids, want)
+		t.Errorf("GetPodPIDs() = %v, want %v", pids, want)
 	}
 }
 
-func TestHasTpuProcesses(t *testing.T) {
-	t.Run("RunningProc", func(t *testing.T) {
-		root := t.TempDir()
-		defer snapshotutils.SetProcRootForTest(root)()
-		writeTpuProc(t, root, 100, true, "uid", true)
+func TestHasProcesses(t *testing.T) {
+	tests := []struct {
+		name         string
+		libtpuThread bool
+		vfio         bool
+		want         bool
+	}{
+		{
+			name:         "RunningProc",
+			libtpuThread: true,
+			vfio:         true,
+			want:         true,
+		},
+		{
+			// A checkpointed proc keeps its control thread but holds no
+			// vfio fd.
+			name:         "OnlyCheckpointedProc",
+			libtpuThread: true,
+			vfio:         false,
+			want:         false,
+		},
+		{
+			name:         "NoTpuProcs",
+			libtpuThread: false,
+			vfio:         false,
+			want:         false,
+		},
+	}
 
-		got, err := snapshotutils.HasTpuProcesses(context.Background())
-		if err != nil || !got {
-			t.Errorf("HasTpuProcesses() = %v, %v; want true, nil", got, err)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			defer tpu.SetProcRootForTest(root)()
+			writeTpuProc(t, root, 100, tt.libtpuThread, "uid", tt.vfio)
 
-	t.Run("OnlyCheckpointedProc", func(t *testing.T) {
-		root := t.TempDir()
-		defer snapshotutils.SetProcRootForTest(root)()
-		writeTpuProc(t, root, 100, true, "uid", false)
-
-		got, err := snapshotutils.HasTpuProcesses(context.Background())
-		if err != nil || got {
-			t.Errorf("HasTpuProcesses() = %v, %v; want false, nil (checkpointed proc holds no vfio fd)", got, err)
-		}
-	})
-
-	t.Run("NoTpuProcs", func(t *testing.T) {
-		root := t.TempDir()
-		defer snapshotutils.SetProcRootForTest(root)()
-		writeTpuProc(t, root, 100, false, "uid", false)
-
-		got, err := snapshotutils.HasTpuProcesses(context.Background())
-		if err != nil || got {
-			t.Errorf("HasTpuProcesses() = %v, %v; want false, nil", got, err)
-		}
-	})
+			got, err := tpu.HasProcesses(context.Background())
+			if err != nil || got != tt.want {
+				t.Errorf("HasProcesses() = %v, %v; want %v, nil", got, err, tt.want)
+			}
+		})
+	}
 }
 
 func TestVfioGroupHolders(t *testing.T) {
 	root := t.TempDir()
-	defer snapshotutils.SetProcRootForTest(root)()
+	defer tpu.SetProcRootForTest(root)()
 	writeTpuProc(t, root, 100, true, "uid", true)  // holds /dev/vfio/0
 	writeTpuProc(t, root, 200, true, "uid", false) // holds nothing
 
-	holders := snapshotutils.VfioGroupHolders()
+	holders := tpu.VfioGroupHolders()
 	want := map[string][]string{"/dev/vfio/0": {"libtpu00030004"}}
 	if len(holders) != 1 || len(holders["/dev/vfio/0"]) != 1 {
 		t.Fatalf("VfioGroupHolders() = %v, want one holder of /dev/vfio/0 (%v)", holders, want)
@@ -152,8 +161,8 @@ func writeVfioGroups(t *testing.T, root string, groups ...string) {
 
 func TestWaitVfioFree(t *testing.T) {
 	t.Run("NoGroups", func(t *testing.T) {
-		defer snapshotutils.SetVfioRootForTest(t.TempDir())()
-		if err := snapshotutils.WaitVfioFree(context.Background(), time.Second); err != nil {
+		defer tpu.SetVfioRootForTest(t.TempDir())()
+		if err := tpu.WaitVfioFree(context.Background(), time.Second); err != nil {
 			t.Errorf("WaitVfioFree() with no groups = %v, want nil (skip)", err)
 		}
 	})
@@ -161,10 +170,10 @@ func TestWaitVfioFree(t *testing.T) {
 	t.Run("AllFree", func(t *testing.T) {
 		root := t.TempDir()
 		writeVfioGroups(t, root, "0", "1")
-		defer snapshotutils.SetVfioRootForTest(root)()
-		defer snapshotutils.SetOpenVfioGroupForTest(func(string) error { return nil })()
+		defer tpu.SetVfioRootForTest(root)()
+		defer tpu.SetOpenVfioGroupForTest(func(string) error { return nil })()
 
-		if err := snapshotutils.WaitVfioFree(context.Background(), time.Second); err != nil {
+		if err := tpu.WaitVfioFree(context.Background(), time.Second); err != nil {
 			t.Errorf("WaitVfioFree() = %v, want nil", err)
 		}
 	})
@@ -172,16 +181,16 @@ func TestWaitVfioFree(t *testing.T) {
 	t.Run("BusyThenFree", func(t *testing.T) {
 		root := t.TempDir()
 		writeVfioGroups(t, root, "0")
-		defer snapshotutils.SetVfioRootForTest(root)()
+		defer tpu.SetVfioRootForTest(root)()
 		var calls atomic.Int32
-		defer snapshotutils.SetOpenVfioGroupForTest(func(string) error {
+		defer tpu.SetOpenVfioGroupForTest(func(string) error {
 			if calls.Add(1) <= 2 {
 				return fmt.Errorf("EBUSY")
 			}
 			return nil
 		})()
 
-		if err := snapshotutils.WaitVfioFree(context.Background(), 10*time.Second); err != nil {
+		if err := tpu.WaitVfioFree(context.Background(), 10*time.Second); err != nil {
 			t.Errorf("WaitVfioFree() = %v, want nil once the group frees", err)
 		}
 		if calls.Load() < 3 {
@@ -192,10 +201,10 @@ func TestWaitVfioFree(t *testing.T) {
 	t.Run("Timeout", func(t *testing.T) {
 		root := t.TempDir()
 		writeVfioGroups(t, root, "0")
-		defer snapshotutils.SetVfioRootForTest(root)()
-		defer snapshotutils.SetOpenVfioGroupForTest(func(string) error { return fmt.Errorf("EBUSY") })()
+		defer tpu.SetVfioRootForTest(root)()
+		defer tpu.SetOpenVfioGroupForTest(func(string) error { return fmt.Errorf("EBUSY") })()
 
-		if err := snapshotutils.WaitVfioFree(context.Background(), 300*time.Millisecond); err == nil {
+		if err := tpu.WaitVfioFree(context.Background(), 300*time.Millisecond); err == nil {
 			t.Error("WaitVfioFree() = nil, want error when groups stay busy past the timeout")
 		}
 	})
@@ -203,20 +212,20 @@ func TestWaitVfioFree(t *testing.T) {
 	t.Run("ContextCanceled", func(t *testing.T) {
 		root := t.TempDir()
 		writeVfioGroups(t, root, "0")
-		defer snapshotutils.SetVfioRootForTest(root)()
-		defer snapshotutils.SetOpenVfioGroupForTest(func(string) error { return fmt.Errorf("EBUSY") })()
+		defer tpu.SetVfioRootForTest(root)()
+		defer tpu.SetOpenVfioGroupForTest(func(string) error { return fmt.Errorf("EBUSY") })()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		if err := snapshotutils.WaitVfioFree(ctx, time.Minute); err == nil {
+		if err := tpu.WaitVfioFree(ctx, time.Minute); err == nil {
 			t.Error("WaitVfioFree() = nil, want error when the context is canceled")
 		}
 	})
 }
 
-func TestClearTpuLockfiles(t *testing.T) {
+func TestClearLockfiles(t *testing.T) {
 	root := t.TempDir()
-	defer snapshotutils.SetProcRootForTest(root)()
+	defer tpu.SetProcRootForTest(root)()
 
 	lockDir := filepath.Join(root, "100", "root", "tmp")
 	if err := os.MkdirAll(lockDir, 0o755); err != nil {
@@ -228,9 +237,9 @@ func TestClearTpuLockfiles(t *testing.T) {
 	}
 
 	// PID 200 has no lockfile; must not error.
-	snapshotutils.ClearTpuLockfiles(context.Background(), []string{"100", "200"})
+	tpu.ClearLockfiles(context.Background(), []string{"100", "200"})
 
 	if _, err := os.Stat(lockfile); !os.IsNotExist(err) {
-		t.Errorf("lockfile still present after ClearTpuLockfiles: stat err = %v", err)
+		t.Errorf("lockfile still present after ClearLockfiles: stat err = %v", err)
 	}
 }

@@ -13,7 +13,7 @@
 // snapshot-agent specifics: agent deployment, engine specs, and the
 // agentctl.py call path.
 //
-// Test cases live in standalone_test.go, k8s_test.go and
+// Test cases live in standalone_test.go, k8s_test.go, tpu_test.go and
 // orchestrator_test.go. To add a test, add a t.Run(...) inside the engine
 // group that provides the pods it needs.
 package integration

@@ -236,3 +236,24 @@ def memory_regions_config(
             snapshot_name=snapshot_name,
         )
     )
+
+
+def tpu_config(
+    pids: Optional[Sequence[int]] = None,
+) -> snapshot_agent_pb2.BackendConfig:
+    """Builds a BackendConfig selecting the tpu (libtpu checkpoint/restore)
+    backend.
+
+    The agent drives gVisor's tpucheckpoint CLI against the job's PIDs;
+    targets must run with ``LIBTPU_CHECKPOINTING_ENABLED=true``. Pass ALL of
+    the job's TPU process PIDs in one config — restore is a slice-wide
+    rendezvous, and the agent issues it as a single batched CLI invocation.
+
+    In k8s mode the agent discovers PIDs itself from the
+    ``timeslice.io/job-id`` pod label, so ``pids`` may be omitted. Pass
+    explicit PIDs for standalone mode or to override discovery.
+    """
+    tpu = snapshot_agent_pb2.TpuBackendConfig()
+    if pids is not None:
+        tpu.explicit_target.CopyFrom(_process_target(pids))
+    return snapshot_agent_pb2.BackendConfig(tpu=tpu)

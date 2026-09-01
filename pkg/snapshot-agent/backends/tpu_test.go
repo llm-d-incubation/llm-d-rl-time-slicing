@@ -123,26 +123,55 @@ func TestTpuSnapshot(t *testing.T) {
 	}
 }
 
-// TestTpuSnapshotArgs pins the CLI contract: the gVisor tpucheckpoint CLI
-// is batch-native, so a job with N processes gets ONE invocation carrying
-// all PIDs comma-separated plus the per-process control timeout.
-func TestTpuSnapshotArgs(t *testing.T) {
-	c, log := newTestTpuCheckpoint(nil)
+// TestTpuCliArgs pins the CLI contract: the gVisor tpucheckpoint CLI is
+// batch-native, so a job with N processes gets ONE invocation carrying all
+// PIDs comma-separated plus the per-process control timeout. For restore the
+// single batched invocation is also the rendezvous contract: the CLI fans
+// out concurrently, which is what lets every mesh member's RESTORE be
+// pending at once, with the long rendezvous timeout.
+func TestTpuCliArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*backends.TpuCheckpoint) error
+		want [][]string
+	}{
+		{
+			name: "Snapshot",
+			call: func(c *backends.TpuCheckpoint) error {
+				return c.Snapshot(context.Background(), backends.Request{JobID: "j", Config: tpuConfig(11, 22)})
+			},
+			want: [][]string{
+				{"--action", "checkpoint", "--pid", "11,22", "--timeout", "120"},
+			},
+		},
+		{
+			name: "Restore",
+			call: func(c *backends.TpuCheckpoint) error {
+				return c.Restore(context.Background(), backends.Request{JobID: "j", Config: tpuConfig(11, 22)})
+			},
+			want: [][]string{
+				{"--action", "restore", "--pid", "11,22", "--timeout", "600"},
+			},
+		},
+	}
 
-	if err := c.Snapshot(context.Background(), backends.Request{JobID: "j", Config: tpuConfig(11, 22)}); err != nil {
-		t.Fatalf("Snapshot() error = %v", err)
-	}
-	want := [][]string{
-		{"--action", "checkpoint", "--pid", "11,22", "--timeout", "120"},
-	}
-	got := log.sorted()
-	if len(got) != len(want) {
-		t.Fatalf("Snapshot() made %d invocations, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if !slices.Equal(got[i], want[i]) {
-			t.Errorf("Snapshot() invocation %d args = %v, want %v", i, got[i], want[i])
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, log := newTestTpuCheckpoint(nil)
+
+			if err := tt.call(c); err != nil {
+				t.Fatalf("%s() error = %v", tt.name, err)
+			}
+			got := log.sorted()
+			if len(got) != len(tt.want) {
+				t.Fatalf("%s() made %d invocations, want %d: %v", tt.name, len(got), len(tt.want), got)
+			}
+			for i := range tt.want {
+				if !slices.Equal(got[i], tt.want[i]) {
+					t.Errorf("%s() invocation %d args = %v, want %v", tt.name, i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }
 
@@ -223,30 +252,6 @@ func TestTpuRestore(t *testing.T) {
 				t.Errorf("Restore() invoked the CLI %d times after failure, want exactly 1 (never retry)", log.count())
 			}
 		})
-	}
-}
-
-// TestTpuRestoreRendezvous pins the rendezvous contract: ALL of the job's
-// PIDs go into a single CLI invocation (the CLI fans out concurrently,
-// which is what lets every mesh member's RESTORE be pending at once), with
-// the long rendezvous timeout.
-func TestTpuRestoreRendezvous(t *testing.T) {
-	c, log := newTestTpuCheckpoint(nil)
-
-	if err := c.Restore(context.Background(), backends.Request{JobID: "j", Config: tpuConfig(11, 22)}); err != nil {
-		t.Fatalf("Restore() error = %v", err)
-	}
-	want := [][]string{
-		{"--action", "restore", "--pid", "11,22", "--timeout", "600"},
-	}
-	got := log.sorted()
-	if len(got) != len(want) {
-		t.Fatalf("Restore() made %d invocations, want %d: %v", len(got), len(want), got)
-	}
-	for i := range want {
-		if !slices.Equal(got[i], want[i]) {
-			t.Errorf("Restore() invocation %d args = %v, want %v", i, got[i], want[i])
-		}
 	}
 }
 

@@ -9,7 +9,11 @@
 #   orchestrator  TestOrchestrator against BOTH official Helm charts
 #                 (snapshot-agent + timeslice-orchestrator), driving real
 #                 scenario workloads through the orchestrator's gRPC API
-#   all           all of the above
+#   tpu           TestTpu against the `make standalone` agent plus the
+#                 gVisor tpucheckpoint CLI on a TPU node (TEST_NODE); needs
+#                 TPU_WORKLOAD_IMAGE and TPU_CHECKPOINT_URI (see tpu_test.go).
+#                 Not part of `all`: it needs a TPU node, the others GPUs.
+#   all           standalone + k8s + orchestrator
 #
 # The test suite itself is written in Go (see *_test.go) and runs INSIDE the
 # cluster: this script installs the chart fixture(s), deploys the test-runner
@@ -36,6 +40,7 @@ SKIP_CLEANUP=false
 NEED_STANDALONE=false
 NEED_SA_CHART=false
 NEED_ORCH_CHART=false
+NEED_TPU=false
 # CHART_AGENT_PORT lets the chart-deployed agent bind a non-default port so
 # the suite can coexist with an unrelated agent on 9001 (hostNetwork).
 CHART_AGENT_PORT="${CHART_AGENT_PORT:-9002}"
@@ -56,7 +61,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 usage() {
-  echo "Usage: $0 [--agent-image IMAGE] [--orch-image IMAGE] [--build --project PROJECT] [--cluster CLUSTER --zone ZONE] [--model MODEL] [--phase standalone|k8s|both|orchestrator|all]"
+  echo "Usage: $0 [--agent-image IMAGE] [--orch-image IMAGE] [--build --project PROJECT] [--cluster CLUSTER --zone ZONE] [--model MODEL] [--phase standalone|k8s|both|orchestrator|tpu|all]"
   echo ""
   echo "  --cluster/--zone/--project are optional; omit them to use your current kubectl context."
   echo "  --project is required with --build (Cloud Build needs it for the image registry)."
@@ -68,6 +73,7 @@ case "$PHASE" in
   both)         RUN_PATTERN='^(TestStandalone|TestK8s)$'
                 NEED_STANDALONE=true; NEED_SA_CHART=true ;;
   orchestrator) RUN_PATTERN='^TestOrchestrator$';       NEED_SA_CHART=true; NEED_ORCH_CHART=true ;;
+  tpu)          RUN_PATTERN='^TestTpu$';                NEED_STANDALONE=true; NEED_TPU=true ;;
   all)          RUN_PATTERN='^(TestStandalone|TestK8s|TestOrchestrator)$'
                 NEED_STANDALONE=true; NEED_SA_CHART=true; NEED_ORCH_CHART=true ;;
   *) echo "Unknown phase: $PHASE"; usage; exit 1 ;;
@@ -106,6 +112,18 @@ if [[ "$NEED_ORCH_CHART" == "true" ]]; then
   if [[ -z "${TEST_NODE_SAMPLERS:-}" || -z "${TEST_NODE_TRAINERS:-}" ]]; then
     echo "Error: TEST_NODE_SAMPLERS and TEST_NODE_TRAINERS must be set for the orchestrator phase" \
          "(one GPU node per group — the canonical deployment topology)"
+    exit 1
+  fi
+fi
+if [[ "$NEED_TPU" == "true" ]]; then
+  if [[ -z "${TEST_NODE:-}" || -z "${TPU_WORKLOAD_IMAGE:-}" ]]; then
+    echo "Error: the tpu phase needs TEST_NODE (a TPU node) and TPU_WORKLOAD_IMAGE" \
+         "(an image with python3 + JAX for that node's TPUs)"
+    exit 1
+  fi
+  if [[ -z "${TPU_CHECKPOINT_URI:-}" && ! -f "${REPO_ROOT}/bin/tpucheckpoint" ]]; then
+    echo "Error: the tpu phase needs the gVisor tpucheckpoint CLI: set TPU_CHECKPOINT_URI" \
+         "(gs:// or http(s) URI) or place the linux/amd64 binary at bin/tpucheckpoint"
     exit 1
   fi
 fi
@@ -231,6 +249,18 @@ if [[ "$NEED_ORCH_CHART" == "true" ]]; then
   wait_chart_pods_ready "$ORCH_SELECTOR" || chart_failure "orchestrator" "$ORCH_SELECTOR"
 fi
 
+# The tpu phase ships the gVisor tpucheckpoint CLI to the agent pod via the
+# repo copy below (the runner image has no gcloud).
+if [[ "$NEED_TPU" == "true" && -n "${TPU_CHECKPOINT_URI:-}" ]]; then
+  log "Fetching the tpucheckpoint CLI into bin/..."
+  mkdir -p "${REPO_ROOT}/bin"
+  case "$TPU_CHECKPOINT_URI" in
+    gs://*) gcloud storage cp "$TPU_CHECKPOINT_URI" "${REPO_ROOT}/bin/tpucheckpoint" ;;
+    *)      curl --proto '=https' --proto-redir '=https' -fsSL -o "${REPO_ROOT}/bin/tpucheckpoint" "$TPU_CHECKPOINT_URI" ;;
+  esac
+  chmod +x "${REPO_ROOT}/bin/tpucheckpoint"
+fi
+
 log "Deploying test runner..."
 $K apply -f "${SCRIPT_DIR}/runner.yaml"
 $K wait --for=condition=Ready pod/test-runner --timeout=300s
@@ -259,6 +289,9 @@ $K exec test-runner -- env "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
   "SA_CHART_DEPLOYED=${SA_CHART_DEPLOYED}" \
   "ORCH_CHART_DEPLOYED=${ORCH_CHART_DEPLOYED}" \
   "CHART_AGENT_PORT=${CHART_AGENT_PORT}" \
+  "TPU_WORKLOAD_IMAGE=${TPU_WORKLOAD_IMAGE:-}" \
+  "TPU_LIBTPU_URI=${TPU_LIBTPU_URI:-}" \
+  "TPU_CHIPS=${TPU_CHIPS:-}" \
   sh -c "cd /workspace && go test -tags=integration -count=1 -v -timeout 40m -run '${RUN_PATTERN}' ./tests/integration/..." \
   || EXIT=$?
 

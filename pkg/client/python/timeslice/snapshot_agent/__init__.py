@@ -6,6 +6,7 @@ from .configs import (
     direct_memory_config,
     memory_regions_config,
     sglang_config,
+    tpu_config,
     vllm_config,
 )
 from .types import MemoryRegion
@@ -22,5 +23,6 @@ __all__ = [
     "memory_regions_config",
     "register_workload",
     "sglang_config",
+    "tpu_config",
     "vllm_config",
 ]

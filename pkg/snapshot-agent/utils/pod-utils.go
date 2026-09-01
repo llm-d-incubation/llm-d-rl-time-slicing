@@ -113,7 +113,7 @@ var GetPodPIDs = getPodPIDsInternal
 func getPodPIDsInternal(ctx context.Context, podName, namespace string) ([]int, error) {
 	// 1. Get the pod UID
 
-	podUID, err := getPodUID(ctx, podName, namespace)
+	podUID, err := GetPodUID(ctx, podName, namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod UID: %w", err)
 	}
@@ -205,7 +205,9 @@ func getPodPIDsInternal(ctx context.Context, podName, namespace string) ([]int, 
 	return pids, nil
 }
 
-func getPodUID(ctx context.Context, podName, namespace string) (string, error) {
+// GetPodUID resolves a pod's UID via the k8s API. Exported for the tpu
+// package's process discovery.
+func GetPodUID(ctx context.Context, podName, namespace string) (string, error) {
 	clientset, err := GetK8sClient()
 	if err != nil {
 		return "", err

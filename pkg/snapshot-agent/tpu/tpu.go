@@ -1,4 +1,18 @@
-package utils
+// Package tpu implements TPU process discovery and vfio housekeeping for the
+// snapshot agent.
+//
+// There is no NVML equivalent for TPUs; a process is "on the accelerator"
+// when it (a) runs libtpu with checkpointing enabled — visible as a control
+// thread named "libtpu{RRRRSSSS}" in /proc/<pid>/task — and (b) holds an open
+// /dev/vfio/<group> fd (libtpu attaches chips through their vfio iommu
+// groups). A checkpointed process keeps its control thread but releases its
+// vfio fds, and a process that never initialized the TPU has neither, so
+// requiring both yields exactly the RUNNING set.
+//
+// Discovery runs on the host (the agent DaemonSet is privileged with
+// hostPID), so PIDs are host-namespace PIDs — the same namespace the
+// tpucheckpoint CLI targets.
+package tpu
 
 import (
 	"context"
@@ -10,21 +24,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 )
 
-// TPU process discovery. There is no NVML equivalent for TPUs; a process is
-// "on the accelerator" when it (a) runs libtpu with checkpointing enabled —
-// visible as a control thread named "libtpu{RRRRSSSS}" in /proc/<pid>/task —
-// and (b) holds an open /dev/vfio/<group> fd (libtpu attaches chips through
-// their vfio iommu groups). A checkpointed process keeps its control thread
-// but releases its vfio fds, and a process that never initialized the TPU has
-// neither, so requiring both yields exactly the RUNNING set.
-//
-// Discovery runs on the host (the agent DaemonSet is privileged with
-// hostPID), so PIDs are host-namespace PIDs — the same namespace the
-// tpucheckpoint CLI targets.
-
-var tpuControlThreadRe = regexp.MustCompile(`^libtpu[0-9a-fA-F]{8}$`)
+var controlThreadRe = regexp.MustCompile(`^libtpu[0-9a-fA-F]{8}$`)
 
 // procRoot is a package var so tests can point discovery at a fixture tree.
 var procRoot = "/proc"
@@ -44,23 +48,23 @@ var openVfioGroup = func(path string) error {
 	return f.Close()
 }
 
-// GetPodTpuPIDs returns the host PIDs of all TPU-attached processes belonging
-// to the specified pod. Drop-in replacement for GetPodPIDs (assigned over it
-// when the agent runs with ACCELERATOR_TYPE=tpu).
-func GetPodTpuPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
-	podUID, err := getPodUID(ctx, podName, namespace)
+// GetPodPIDs returns the host PIDs of all TPU-attached processes belonging
+// to the specified pod. Drop-in replacement for utils.GetPodPIDs (assigned
+// over it when the agent runs with ACCELERATOR_TYPE=tpu).
+func GetPodPIDs(ctx context.Context, podName, namespace string) ([]int, error) {
+	podUID, err := utils.GetPodUID(ctx, podName, namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod UID: %w", err)
 	}
 
-	candidates, err := listTpuProcesses()
+	candidates, err := listProcesses()
 	if err != nil {
 		return nil, err
 	}
 
 	var pids []int
 	for _, pid := range candidates {
-		inCgroup, err := IsPIDInPodCgroupInternal(fmt.Sprintf("%s/%d/cgroup", procRoot, pid), podUID)
+		inCgroup, err := utils.IsPIDInPodCgroupInternal(fmt.Sprintf("%s/%d/cgroup", procRoot, pid), podUID)
 		if err != nil || !inCgroup {
 			continue
 		}
@@ -71,10 +75,10 @@ func GetPodTpuPIDs(ctx context.Context, podName, namespace string) ([]int, error
 	return pids, nil
 }
 
-// HasTpuProcesses reports whether any process on the node is attached to the
-// TPU. Drop-in replacement for HasGPUProcesses on TPU nodes.
-func HasTpuProcesses(ctx context.Context) (bool, error) {
-	candidates, err := listTpuProcesses()
+// HasProcesses reports whether any process on the node is attached to the
+// TPU. Drop-in replacement for utils.HasGPUProcesses on TPU nodes.
+func HasProcesses(ctx context.Context) (bool, error) {
+	candidates, err := listProcesses()
 	if err != nil {
 		return false, err
 	}
@@ -86,8 +90,8 @@ func HasTpuProcesses(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// listTpuProcesses returns every PID with a libtpu control thread.
-func listTpuProcesses() ([]int, error) {
+// listProcesses returns every PID with a libtpu control thread.
+func listProcesses() ([]int, error) {
 	procs, err := os.ReadDir(procRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read %s: %w", procRoot, err)
@@ -108,7 +112,7 @@ func listTpuProcesses() ([]int, error) {
 			if err != nil {
 				continue
 			}
-			if tpuControlThreadRe.MatchString(strings.TrimSpace(string(comm))) {
+			if controlThreadRe.MatchString(strings.TrimSpace(string(comm))) {
 				pids = append(pids, pid)
 				break
 			}
@@ -240,12 +244,12 @@ func WaitVfioFree(ctx context.Context, timeout time.Duration) error {
 	}
 }
 
-// ClearTpuLockfiles removes each target container's /tmp/libtpu_lockfile
+// ClearLockfiles removes each target container's /tmp/libtpu_lockfile
 // (via /proc/<pid>/root). A stale lockfile blocks the next libtpu init in
 // that container. Running on the host, the container's /tmp is only
 // reachable through the process's root fs view. Best-effort: failures are
 // logged, never fatal.
-func ClearTpuLockfiles(ctx context.Context, pids []string) {
+func ClearLockfiles(ctx context.Context, pids []string) {
 	seen := make(map[string]bool)
 	for _, pid := range pids {
 		path := fmt.Sprintf("%s/%s/root/tmp/libtpu_lockfile", procRoot, pid)

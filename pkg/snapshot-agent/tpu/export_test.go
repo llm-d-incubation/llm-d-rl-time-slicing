@@ -1,4 +1,4 @@
-package utils
+package tpu
 
 // SetProcRootForTest points TPU process discovery at a fixture tree and
 // returns a restore function.
