@@ -32,14 +32,14 @@ func writeTpuProc(t *testing.T, root string, pid int, libtpuThread bool, podUID 
 	if libtpuThread {
 		comm = "libtpu00030004\n"
 	}
-	if err := os.WriteFile(filepath.Join(taskDir, "comm"), []byte(comm), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(taskDir, "comm"), []byte(comm), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(base, "comm"), []byte(comm), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "comm"), []byte(comm), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cgroup := fmt.Sprintf("0::/kubepods/burstable/pod%s/cont\n", podUID)
-	if err := os.WriteFile(filepath.Join(base, "cgroup"), []byte(cgroup), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, "cgroup"), []byte(cgroup), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	fdDir := filepath.Join(base, "fd")
@@ -144,7 +144,7 @@ func TestVfioGroupHolders(t *testing.T) {
 func writeVfioGroups(t *testing.T, root string, groups ...string) {
 	t.Helper()
 	for _, g := range groups {
-		if err := os.WriteFile(filepath.Join(root, g), nil, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, g), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -223,7 +223,7 @@ func TestClearTpuLockfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockfile := filepath.Join(lockDir, "libtpu_lockfile")
-	if err := os.WriteFile(lockfile, nil, 0o644); err != nil {
+	if err := os.WriteFile(lockfile, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 

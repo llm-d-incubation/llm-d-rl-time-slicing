@@ -2,12 +2,13 @@ package backends
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,9 +32,9 @@ const (
 	tpuVfioGateTimeout = 600 * time.Second
 
 	// tpuSnapshotTimeout is a context backstop for one Snapshot call: two
-	// checkpoint attempts per process (the CLI runs concurrently across
-	// processes) plus slack. The CLI enforces its own, tighter timeout and
-	// exits on its own.
+	// checkpoint attempts (the CLI runs concurrently across processes, so
+	// one attempt costs one per-process timeout) plus slack. The CLI
+	// enforces its own, tighter timeout and exits on its own.
 	tpuSnapshotTimeout = 300 * time.Second
 
 	// tpuRestoreTimeout is a context backstop for one Restore call: up to
@@ -53,20 +54,26 @@ const (
 // TpuCheckpoint implements the Backend interface for TPU processes using
 // gVisor's tpucheckpoint CLI (libtpu control-pipe protocol), mirroring how
 // the CUDA backend shells out to NVIDIA's cuda-checkpoint utility. The CLI
-// targets one PID per invocation, so the backend owns the job-level
-// contracts inherited from libtpu:
+// is batch-native (gVisor PR #14455): it takes --pid <pid>[,<pid>...], runs
+// the operation concurrently across PIDs, and reports per-PID failures on
+// stderr as "tpucheckpoint: pid <N>: <err>". The backend issues ONE
+// invocation per job and owns the job-level contracts inherited from
+// libtpu:
 //
 //   - Restore is a slice-wide rendezvous: every mesh member's RESTORE must
 //     be pending simultaneously (a lone request parks until its peers
-//     arrive), so the backend launches one CLI invocation per PID
-//     CONCURRENTLY and waits for all of them.
+//     arrive). The CLI's internal fan-out satisfies this as long as ALL of
+//     the job's PIDs go into a single invocation.
 //   - A failed restore must NEVER be retried (the job faults instead): a
 //     timed-out-but-pending RESTORE is still waiting in the barrier, and
 //     re-sending injects a duplicate request that wedges libtpu's state
 //     machine.
+//   - A checkpoint retry must target ONLY the PIDs the CLI reported as
+//     failed: the rest are already parked, and a second CHECKPOINT to a
+//     parked process is not part of the libtpu contract.
 //   - Restore gates on the previous occupant releasing its vfio iommu
-//     groups (utils.WaitVfioFree), ONCE per job before any process enters
-//     Restore — early members hold their own groups while parked, so gating
+//     groups (utils.WaitVfioFree), ONCE per job before the RESTORE is
+//     issued — early members hold their own groups while parked, so gating
 //     per-process would deadlock against the job's own mesh.
 type TpuCheckpoint struct {
 	mu           sync.Mutex
@@ -94,10 +101,10 @@ func NewTpuCheckpoint() *TpuCheckpoint {
 	}
 }
 
-// Snapshot parks the TPU state of every process of the job, one CLI
-// invocation per PID run concurrently. Each process gets one retry (a failed
-// checkpoint leaves the process attached and is safe to re-issue, unlike
-// restore).
+// Snapshot parks the TPU state of every process of the job with one batched
+// CLI invocation. Failed PIDs get one retry (a failed checkpoint leaves the
+// process attached and is safe to re-issue, unlike restore); PIDs that
+// succeeded are parked and are excluded from the retry.
 func (t *TpuCheckpoint) Snapshot(ctx context.Context, req Request) error {
 	pids := ExtractTpuPIDStrings(req.Config)
 	if len(pids) == 0 {
@@ -111,7 +118,7 @@ func (t *TpuCheckpoint) Snapshot(ctx context.Context, req Request) error {
 	t0 := time.Now()
 	cmdCtx, cancel := context.WithTimeout(ctx, tpuSnapshotTimeout)
 	defer cancel()
-	if err := t.fanOut(cmdCtx, "checkpoint", pids, tpuCheckpointTimeoutSecs, 1); err != nil {
+	if err := t.checkpointWithRetry(cmdCtx, pids); err != nil {
 		return fmt.Errorf("tpucheckpoint checkpoint failed: %w", err)
 	}
 	// A stale container-side lockfile blocks the next libtpu init; parked
@@ -124,9 +131,10 @@ func (t *TpuCheckpoint) Snapshot(ctx context.Context, req Request) error {
 }
 
 // Restore restores the TPU state of every process of the job: one vfio gate,
-// then one CLI invocation per PID launched concurrently (rendezvous). Exactly
-// one attempt: on failure the error propagates and the state machine marks
-// the job FAULTED — do not add retries at any layer.
+// then one batched CLI invocation carrying ALL PIDs (the CLI fans out
+// concurrently, satisfying the rendezvous). Exactly one attempt: on failure
+// the error propagates and the state machine marks the job FAULTED — do not
+// add retries at any layer.
 func (t *TpuCheckpoint) Restore(ctx context.Context, req Request) error {
 	pids := ExtractTpuPIDStrings(req.Config)
 	if len(pids) == 0 {
@@ -147,7 +155,7 @@ func (t *TpuCheckpoint) Restore(ctx context.Context, req Request) error {
 		return fmt.Errorf("vfio gate before restore failed (no RESTORE was issued; safe to retry after the groups free up): %w", err)
 	}
 
-	if err := t.fanOut(cmdCtx, "restore", pids, tpuRestoreCLITimeoutSecs, 0); err != nil {
+	if _, err := t.runBatch(cmdCtx, "restore", pids, tpuRestoreCLITimeoutSecs); err != nil {
 		return fmt.Errorf("tpucheckpoint restore failed (job must be treated as faulted, never re-issue a restore): %w", err)
 	}
 	slog.InfoContext(ctx, "tpucheckpoint restore took", "duration", time.Since(t0), "pids", pids)
@@ -166,49 +174,67 @@ func (t *TpuCheckpoint) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// fanOut runs one CLI invocation per PID concurrently and waits for all.
-// Concurrency is mandatory for restore (rendezvous semantics) and harmless
-// for checkpoint.
-func (t *TpuCheckpoint) fanOut(ctx context.Context, action string, pids []string, timeoutSecs, retries int) error {
-	binary := t.getTpuCheckpointPath()
-	errs := make([]error, len(pids))
-	var wg sync.WaitGroup
-	for i, pid := range pids {
-		wg.Add(1)
-		go func(i int, pid string) {
-			defer wg.Done()
-			errs[i] = t.runOne(ctx, binary, action, pid, timeoutSecs, retries)
-		}(i, pid)
+// checkpointWithRetry issues one batched checkpoint and, on failure, retries
+// exactly the PIDs the CLI reported as failed. PIDs absent from the failure
+// report are parked and must not receive a second CHECKPOINT.
+func (t *TpuCheckpoint) checkpointWithRetry(ctx context.Context, pids []string) error {
+	out, err := t.runBatch(ctx, "checkpoint", pids, tpuCheckpointTimeoutSecs)
+	if err == nil {
+		return nil
 	}
-	wg.Wait()
-	return errors.Join(errs...)
+	// If the CLI died without reporting per-PID results (exec failure,
+	// usage error — both happen before any control request is issued),
+	// re-issuing the whole batch is safe.
+	retryPids := failedPids(out, pids)
+	if len(retryPids) == 0 {
+		retryPids = pids
+	}
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("checkpoint pids %v: %w (last attempt: %w)", pids, ctx.Err(), err)
+	case <-time.After(t.retryBackoff):
+	}
+	if _, retryErr := t.runBatch(ctx, "checkpoint", retryPids, tpuCheckpointTimeoutSecs); retryErr != nil {
+		return fmt.Errorf("checkpoint pids %v failed after retry: %w (first attempt: %w)", retryPids, retryErr, err)
+	}
+	return nil
 }
 
-// runOne drives one PID through up to retries+1 CLI invocations. Callers
-// pass retries=0 for restore (see the type comment).
-func (t *TpuCheckpoint) runOne(ctx context.Context, binary, action, pid string, timeoutSecs, retries int) error {
-	args := []string{"--action", action, "--pid", pid, "--timeout", strconv.Itoa(timeoutSecs)}
-	var lastErr error
-	for attempt := 0; attempt <= retries; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("%s pid %s: %w (last attempt: %w)", action, pid, ctx.Err(), lastErr)
-			case <-time.After(t.retryBackoff):
-			}
-		}
-		t0 := time.Now()
-		out, err := t.execCommand(ctx, binary, args...)
-		if err == nil {
-			slog.InfoContext(ctx, "tpucheckpoint succeeded",
-				"action", action, "pid", pid, "duration", time.Since(t0), "output", string(out))
-			return nil
-		}
-		lastErr = fmt.Errorf("command failed: %w, output: %s", err, string(out))
-		slog.WarnContext(ctx, "tpucheckpoint attempt failed",
-			"action", action, "pid", pid, "attempt", attempt+1, "duration", time.Since(t0), "error", lastErr)
+// runBatch runs one CLI invocation covering all pids; the CLI processes them
+// concurrently, which restore's rendezvous semantics depend on.
+func (t *TpuCheckpoint) runBatch(ctx context.Context, action string, pids []string, timeoutSecs int) ([]byte, error) {
+	args := []string{"--action", action, "--pid", strings.Join(pids, ","), "--timeout", strconv.Itoa(timeoutSecs)}
+	t0 := time.Now()
+	out, err := t.execCommand(ctx, t.getTpuCheckpointPath(), args...)
+	if err != nil {
+		wrapped := fmt.Errorf("%s pids %v: command failed: %w, output: %s", action, pids, err, string(out))
+		slog.WarnContext(ctx, "tpucheckpoint failed",
+			"action", action, "pids", pids, "duration", time.Since(t0), "error", wrapped)
+		return out, wrapped
 	}
-	return fmt.Errorf("%s pid %s failed after %d attempt(s): %w", action, pid, retries+1, lastErr)
+	slog.InfoContext(ctx, "tpucheckpoint succeeded",
+		"action", action, "pids", pids, "duration", time.Since(t0), "output", string(out))
+	return out, nil
+}
+
+// tpuFailureLine matches the CLI's per-PID failure report on stderr:
+// "tpucheckpoint: pid <N>: <err>".
+var tpuFailureLine = regexp.MustCompile(`(?m)^tpucheckpoint: pid (\d+):`)
+
+// failedPids extracts the PIDs the CLI reported as failed, restricted to the
+// PIDs that were actually requested (in request order).
+func failedPids(out []byte, requested []string) []string {
+	reported := make(map[string]bool)
+	for _, m := range tpuFailureLine.FindAllSubmatch(out, -1) {
+		reported[string(m[1])] = true
+	}
+	var failed []string
+	for _, pid := range requested {
+		if reported[pid] {
+			failed = append(failed, pid)
+		}
+	}
+	return failed
 }
 
 func (t *TpuCheckpoint) getTpuCheckpointPath() string {

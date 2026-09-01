@@ -249,14 +249,14 @@ func ClearTpuLockfiles(ctx context.Context, pids []string) {
 	seen := make(map[string]bool)
 	for _, pid := range pids {
 		path := fmt.Sprintf("%s/%s/root/tmp/libtpu_lockfile", procRoot, pid)
-		real, err := filepath.EvalSymlinks(path)
+		resolved, err := filepath.EvalSymlinks(path)
 		if err != nil {
-			real = path
+			resolved = path
 		}
-		if seen[real] {
+		if seen[resolved] {
 			continue
 		}
-		seen[real] = true
+		seen[resolved] = true
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}

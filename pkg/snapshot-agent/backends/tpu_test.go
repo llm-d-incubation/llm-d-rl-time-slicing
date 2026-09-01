@@ -24,7 +24,7 @@ func tpuConfig(pids ...int32) *pb.BackendConfig {
 
 // newTestTpuCheckpoint returns a backend with the vfio gate and lockfile
 // cleanup stubbed out and no retry backoff, plus a thread-safe recorder of
-// CLI invocations (the backend launches one per PID concurrently).
+// CLI invocations (the backend batches all PIDs into one invocation).
 func newTestTpuCheckpoint(execErr error) (*backends.TpuCheckpoint, *invocationLog) {
 	c := backends.NewTpuCheckpoint()
 	c.SetRetryBackoff(0)
@@ -59,7 +59,7 @@ func (l *invocationLog) sorted() [][]string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	out := slices.Clone(l.calls)
-	slices.SortFunc(out, func(a, b []string) int { return slices.Compare(a, b) })
+	slices.SortFunc(out, slices.Compare)
 	return out
 }
 
@@ -75,14 +75,14 @@ func TestTpuSnapshot(t *testing.T) {
 		config      *pb.BackendConfig
 		execErr     error
 		expectedErr bool
-		// The backend retries a failed checkpoint once per PID; a failed
-		// restore is never retried (see TestTpuRestore).
+		// The backend retries a failed checkpoint once; a failed restore
+		// is never retried (see TestTpuRestore).
 		wantCalls int
 	}{
 		{
 			name:      "Success",
 			config:    tpuConfig(123, 456),
-			wantCalls: 2,
+			wantCalls: 1, // all PIDs batched into one invocation
 		},
 		{
 			name:        "ExecFailure",
@@ -124,8 +124,8 @@ func TestTpuSnapshot(t *testing.T) {
 }
 
 // TestTpuSnapshotArgs pins the CLI contract: the gVisor tpucheckpoint CLI
-// targets ONE PID per invocation, so a job with N processes gets N
-// invocations, each carrying the per-process control timeout.
+// is batch-native, so a job with N processes gets ONE invocation carrying
+// all PIDs comma-separated plus the per-process control timeout.
 func TestTpuSnapshotArgs(t *testing.T) {
 	c, log := newTestTpuCheckpoint(nil)
 
@@ -133,7 +133,40 @@ func TestTpuSnapshotArgs(t *testing.T) {
 		t.Fatalf("Snapshot() error = %v", err)
 	}
 	want := [][]string{
-		{"--action", "checkpoint", "--pid", "11", "--timeout", "120"},
+		{"--action", "checkpoint", "--pid", "11,22", "--timeout", "120"},
+	}
+	got := log.sorted()
+	if len(got) != len(want) {
+		t.Fatalf("Snapshot() made %d invocations, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if !slices.Equal(got[i], want[i]) {
+			t.Errorf("Snapshot() invocation %d args = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestTpuSnapshotPartialRetry pins the retry contract: when the CLI reports
+// per-PID failures on stderr ("tpucheckpoint: pid <N>: ..."), the retry
+// carries ONLY the failed PIDs — the rest are parked and must not receive a
+// second CHECKPOINT.
+func TestTpuSnapshotPartialRetry(t *testing.T) {
+	c, log := newTestTpuCheckpoint(nil)
+	calls := 0
+	c.SetExecCommand(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		log.record(args)
+		calls++
+		if calls == 1 {
+			return []byte("pid 11: checkpoint complete (1.234s)\ntpucheckpoint: pid 22: device busy\n"), fmt.Errorf("exit status 1")
+		}
+		return nil, nil
+	})
+
+	if err := c.Snapshot(context.Background(), backends.Request{JobID: "j", Config: tpuConfig(11, 22)}); err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	want := [][]string{
+		{"--action", "checkpoint", "--pid", "11,22", "--timeout", "120"},
 		{"--action", "checkpoint", "--pid", "22", "--timeout", "120"},
 	}
 	got := log.sorted()
@@ -193,9 +226,10 @@ func TestTpuRestore(t *testing.T) {
 	}
 }
 
-// TestTpuRestoreRendezvous pins the rendezvous contract: every PID's restore
-// is issued (concurrently, in separate CLI invocations), each with the long
-// rendezvous timeout.
+// TestTpuRestoreRendezvous pins the rendezvous contract: ALL of the job's
+// PIDs go into a single CLI invocation (the CLI fans out concurrently,
+// which is what lets every mesh member's RESTORE be pending at once), with
+// the long rendezvous timeout.
 func TestTpuRestoreRendezvous(t *testing.T) {
 	c, log := newTestTpuCheckpoint(nil)
 
@@ -203,8 +237,7 @@ func TestTpuRestoreRendezvous(t *testing.T) {
 		t.Fatalf("Restore() error = %v", err)
 	}
 	want := [][]string{
-		{"--action", "restore", "--pid", "11", "--timeout", "600"},
-		{"--action", "restore", "--pid", "22", "--timeout", "600"},
+		{"--action", "restore", "--pid", "11,22", "--timeout", "600"},
 	}
 	got := log.sorted()
 	if len(got) != len(want) {
