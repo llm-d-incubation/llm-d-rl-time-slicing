@@ -112,7 +112,7 @@ func TestOrchestrator(t *testing.T) {
 		}
 	})
 
-	t.Run("MultiNodeSamplers", func(t *testing.T) {
+	t.Run("MultiNodeGroups", func(t *testing.T) {
 		if os.Getenv("TEST_NODE_SAMPLERS_B") == "" {
 			t.Skip("TEST_NODE_SAMPLERS_B not set; multi-node samplers topology not provisioned")
 		}
@@ -130,7 +130,7 @@ func TestOrchestrator(t *testing.T) {
 
 		client := pb.NewTimeSliceOrchestratorServiceClient(conn)
 
-		err = scenarios.RunMultiNodeSamplersScenario(
+		err = scenarios.RunMultiNodeGroupsScenario(
 			ctx,
 			h.Client,
 			client,
@@ -139,7 +139,7 @@ func TestOrchestrator(t *testing.T) {
 			"",  // trainer template key (default: PyTorch GPU burner)
 		)
 		if err != nil {
-			t.Fatalf("MultiNodeSamplers scenario failed: %v", err)
+			t.Fatalf("MultiNodeGroups scenario failed: %v", err)
 		}
 	})
 }

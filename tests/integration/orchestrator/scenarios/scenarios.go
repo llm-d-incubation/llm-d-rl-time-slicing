@@ -267,13 +267,13 @@ func RunQueuedRLJobsScenario(
 	return nil
 }
 
-// RunMultiNodeSamplersScenario validates concurrent multi-node checkpoint/
+// RunMultiNodeGroupsScenario validates concurrent multi-node checkpoint/
 // restore on a samplers group spanning two or more nodes. Each job deploys
 // one GPU pod pinned to EVERY sampler node (per-node shared claims), so each
 // samplers handoff must snapshot the outgoing job and restore the incoming
 // job on ALL nodes of the group — exercising the concurrent fan-out in
 // reconcileNonActiveJobsSnapshot / reconcileActiveJobRestore on real GPUs.
-func RunMultiNodeSamplersScenario(
+func RunMultiNodeGroupsScenario(
 	ctx context.Context,
 	clientset kubernetes.Interface,
 	client pb.TimeSliceOrchestratorServiceClient,
@@ -281,14 +281,14 @@ func RunMultiNodeSamplersScenario(
 	samplerTemplateKey string,
 	trainerTemplateKey string,
 ) error {
-	logger.Log("Starting Multi-Node Samplers Scenario")
+	logger.Log("Starting Multi-Node Groups Scenario")
 
 	samplerNodes, err := listGroupNodes(ctx, clientset, "samplers")
 	if err != nil {
 		return err
 	}
 	if len(samplerNodes) < 2 {
-		return fmt.Errorf("multi-node samplers scenario needs >=2 sampler nodes, found %d", len(samplerNodes))
+		return fmt.Errorf("multi-node groups scenario needs >=2 sampler nodes, found %d", len(samplerNodes))
 	}
 	trainerNodes, err := listGroupNodes(ctx, clientset, "trainers")
 	if err != nil {
@@ -411,7 +411,7 @@ func RunMultiNodeSamplersScenario(
 		return fmt.Errorf("timed out waiting for pods cleanup: %w", err)
 	}
 
-	logger.Log("Multi-Node Samplers Scenario completed successfully")
+	logger.Log("Multi-Node Groups Scenario completed successfully")
 	return nil
 }
 

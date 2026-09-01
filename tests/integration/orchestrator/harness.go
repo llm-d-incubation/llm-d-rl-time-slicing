@@ -115,7 +115,7 @@ func NewComposedHarness(t *testing.T) *ComposedHarness {
 	h.exclusiveLabel(t, trainerNode, integTrainers)
 
 	// Optional second sampler node: makes the samplers group multi-node for
-	// the MultiNodeSamplers scenario (labeled AFTER exclusiveLabel so it is
+	// the MultiNodeGroups scenario (labeled AFTER exclusiveLabel so it is
 	// not stripped).
 	if nodeB := os.Getenv("TEST_NODE_SAMPLERS_B"); nodeB != "" {
 		if nodeB == samplerNode || nodeB == trainerNode {

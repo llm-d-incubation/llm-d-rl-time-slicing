@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 # TEST_RUN_PATTERN overrides the phase-derived go test -run pattern (e.g. a
-# single subtest like TestOrchestrator/MultiNodeSamplers).
+# single subtest like TestOrchestrator/MultiNodeGroups).
 RUN_PATTERN="${TEST_RUN_PATTERN:-$RUN_PATTERN}"
 done
 
