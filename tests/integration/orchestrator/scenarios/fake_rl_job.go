@@ -40,9 +40,25 @@ type FakeRLJob struct {
 	samplerSharedClaimName string
 	trainerSharedClaimName string
 
+	// perNodeClaims optionally maps groupID → nodeName → ResourceClaim name.
+	// When set for a group, deployPods pins one pod to each group node by
+	// hostname and wires it to that node's claim, producing a true multi-node
+	// group (context on every node). Without it, all of the group's pods use
+	// the single shared claim and DRA co-locates them on the claim's node.
+	perNodeClaims map[string]map[string]string
+
 	// Callbacks to control sampling/training behavior/duration
 	OnSampling func(ctx context.Context)
 	OnTraining func(ctx context.Context)
+}
+
+// SetPerNodeClaims registers a nodeName→claimName mapping for a group,
+// switching that group's pod deployment to one hostname-pinned pod per node.
+func (f *FakeRLJob) SetPerNodeClaims(groupID string, claimsByNode map[string]string) {
+	if f.perNodeClaims == nil {
+		f.perNodeClaims = make(map[string]map[string]string)
+	}
+	f.perNodeClaims[groupID] = claimsByNode
 }
 
 func NewFakeRLJob(
@@ -280,7 +296,8 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 		return fmt.Errorf("no nodes found for group %s", groupID)
 	}
 
-	for range nodes.Items {
+	for i := range nodes.Items {
+		nodeName := nodes.Items[i].Name
 		podName := fmt.Sprintf("pod-%s-%s-%s", f.name, groupID, uuid.NewString()[:8])
 
 		var sharedClaimName string
@@ -289,6 +306,13 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 			sharedClaimName = f.samplerSharedClaimName
 		case "trainers":
 			sharedClaimName = f.trainerSharedClaimName
+		}
+		if byNode := f.perNodeClaims[groupID]; byNode != nil {
+			claim, ok := byNode[nodeName]
+			if !ok {
+				return fmt.Errorf("no per-node claim registered for group %s node %s", groupID, nodeName)
+			}
+			sharedClaimName = claim
 		}
 
 		// Pull pod definition from factory using the correct template key
@@ -311,6 +335,11 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 			pod.Spec.NodeSelector = make(map[string]string)
 		}
 		pod.Spec.NodeSelector[fmt.Sprintf("group.timeslice.io/%s", groupID)] = "true"
+		if f.perNodeClaims[groupID] != nil {
+			// Multi-node group: pin this pod to its node so each node gets
+			// exactly one pod wired to that node's claim.
+			pod.Spec.NodeSelector["kubernetes.io/hostname"] = nodeName
+		}
 
 		// Add tolerations for timeslice.io/shared and default GKE GPU taints
 		pod.Spec.Tolerations = append(pod.Spec.Tolerations,

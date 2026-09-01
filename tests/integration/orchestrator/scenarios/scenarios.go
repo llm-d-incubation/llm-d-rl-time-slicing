@@ -17,6 +17,7 @@ package scenarios
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -264,6 +265,170 @@ func RunQueuedRLJobsScenario(
 
 	logger.Log("Queued RL Jobs Scenario completed successfully")
 	return nil
+}
+
+// RunMultiNodeSamplersScenario validates concurrent multi-node checkpoint/
+// restore on a samplers group spanning two or more nodes. Each job deploys
+// one GPU pod pinned to EVERY sampler node (per-node shared claims), so each
+// samplers handoff must snapshot the outgoing job and restore the incoming
+// job on ALL nodes of the group — exercising the concurrent fan-out in
+// reconcileNonActiveJobsSnapshot / reconcileActiveJobRestore on real GPUs.
+func RunMultiNodeSamplersScenario(
+	ctx context.Context,
+	clientset kubernetes.Interface,
+	client pb.TimeSliceOrchestratorServiceClient,
+	logger Logger,
+	samplerTemplateKey string,
+	trainerTemplateKey string,
+) error {
+	logger.Log("Starting Multi-Node Samplers Scenario")
+
+	samplerNodes, err := listGroupNodes(ctx, clientset, "samplers")
+	if err != nil {
+		return err
+	}
+	if len(samplerNodes) < 2 {
+		return fmt.Errorf("multi-node samplers scenario needs >=2 sampler nodes, found %d", len(samplerNodes))
+	}
+	trainerNodes, err := listGroupNodes(ctx, clientset, "trainers")
+	if err != nil {
+		return err
+	}
+	if len(trainerNodes) == 0 {
+		return fmt.Errorf("no trainer nodes labeled")
+	}
+
+	// One shared claim per node per group; both jobs reference the same claim
+	// on a given node, so their pods co-reside on that node's GPU.
+	samplerClaims := make(map[string]string, len(samplerNodes))
+	trainerClaims := make(map[string]string, len(trainerNodes))
+	var allClaims []string
+	for i, node := range samplerNodes {
+		name := fmt.Sprintf("claim-mn-samplers-%d", i)
+		samplerClaims[node] = name
+		allClaims = append(allClaims, name)
+	}
+	for i, node := range trainerNodes {
+		name := fmt.Sprintf("claim-mn-trainers-%d", i)
+		trainerClaims[node] = name
+		allClaims = append(allClaims, name)
+	}
+	for _, name := range allClaims {
+		if err := createSharedClaim(ctx, clientset, name); err != nil {
+			return err
+		}
+		claimName := name
+		defer func() {
+			if err := deleteSharedClaim(ctx, clientset, claimName); err != nil {
+				logger.Errorf("Failed to delete shared claim %s: %v", claimName, err)
+			}
+		}()
+	}
+
+	newJob := func(name string) *FakeRLJob {
+		j := NewFakeRLJob(
+			name, client, clientset, 2, logger,
+			samplerTemplateKey, trainerTemplateKey,
+			"", "", // shared claim names unused: per-node claims below
+		)
+		j.SetPerNodeClaims("samplers", samplerClaims)
+		j.SetPerNodeClaims("trainers", trainerClaims)
+		return j
+	}
+	jobA := newJob("job-mn-a")
+	jobB := newJob("job-mn-b")
+
+	// Coordination mirrors RunQueuedRLJobsScenario: A blocks in its first
+	// sampling phase (holding the multi-node samplers lock) until the test
+	// has confirmed B is queued behind it.
+	jobASampling := make(chan struct{})
+	unblockJobA := make(chan struct{})
+	var coordOnce sync.Once
+	jobA.OnSampling = func(ctx context.Context) {
+		coordOnce.Do(func() {
+			logger.Log("[Test] Job A is sampling on the multi-node group, blocking...")
+			close(jobASampling)
+			select {
+			case <-unblockJobA:
+			case <-ctx.Done():
+			}
+		})
+	}
+	quick := func(ctx context.Context) { time.Sleep(10 * time.Millisecond) }
+	jobA.OnTraining = quick
+	jobB.OnSampling = quick
+	jobB.OnTraining = quick
+
+	jobAErr := make(chan error, 1)
+	go func() { jobAErr <- jobA.Run(ctx) }()
+
+	select {
+	case <-jobASampling:
+		logger.Log("[Test] Confirmed Job A holds the multi-node samplers lock")
+	case <-time.After(10 * time.Minute):
+		return fmt.Errorf("timed out waiting for Job A to start sampling")
+	}
+
+	jobBErr := make(chan error, 1)
+	go func() { jobBErr <- jobB.Run(ctx) }()
+	time.Sleep(1 * time.Second)
+
+	resp, err := client.GetGroupStatus(ctx, &pb.GetGroupStatusRequest{GroupId: "samplers"})
+	if err != nil {
+		return fmt.Errorf("failed to get samplers group status: %w", err)
+	}
+	if resp.Group.LockingJob != "job-mn-a" {
+		return fmt.Errorf("expected lockingJob job-mn-a, got %q", resp.Group.LockingJob)
+	}
+	logger.Log("[Test] Job B queued; unblocking Job A...")
+	close(unblockJobA)
+
+	for _, j := range []struct {
+		name string
+		ch   chan error
+	}{{"job-mn-a", jobAErr}, {"job-mn-b", jobBErr}} {
+		select {
+		case err := <-j.ch:
+			if err != nil {
+				return fmt.Errorf("%s failed: %w", j.name, err)
+			}
+		case <-time.After(15 * time.Minute):
+			return fmt.Errorf("timed out waiting for %s to complete", j.name)
+		}
+	}
+
+	// Post-cleanup: no pods left for either job.
+	err = wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+		pods, err := clientset.CoreV1().Pods("default").List(ctx, metav1.ListOptions{
+			LabelSelector: "timeslice.io/job-id in (job-mn-a, job-mn-b)",
+		})
+		if err != nil {
+			return false, err
+		}
+		return len(pods.Items) == 0, nil
+	})
+	if err != nil {
+		return fmt.Errorf("timed out waiting for pods cleanup: %w", err)
+	}
+
+	logger.Log("Multi-Node Samplers Scenario completed successfully")
+	return nil
+}
+
+// listGroupNodes returns the sorted names of nodes labeled for the group.
+func listGroupNodes(ctx context.Context, clientset kubernetes.Interface, groupID string) ([]string, error) {
+	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("group.timeslice.io/%s=true", groupID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes for group %s: %w", groupID, err)
+	}
+	names := make([]string, 0, len(nodes.Items))
+	for i := range nodes.Items {
+		names = append(names, nodes.Items[i].Name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 //nolint:gocritic

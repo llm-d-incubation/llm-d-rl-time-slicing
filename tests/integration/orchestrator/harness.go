@@ -114,6 +114,18 @@ func NewComposedHarness(t *testing.T) *ComposedHarness {
 	h.exclusiveLabel(t, samplerNode, integSamplers)
 	h.exclusiveLabel(t, trainerNode, integTrainers)
 
+	// Optional second sampler node: makes the samplers group multi-node for
+	// the MultiNodeSamplers scenario (labeled AFTER exclusiveLabel so it is
+	// not stripped).
+	if nodeB := os.Getenv("TEST_NODE_SAMPLERS_B"); nodeB != "" {
+		if nodeB == samplerNode || nodeB == trainerNode {
+			t.Fatalf("TEST_NODE_SAMPLERS_B %q must differ from TEST_NODE_SAMPLERS and TEST_NODE_TRAINERS", nodeB)
+		}
+		ip := h.WaitPodReadyByLabel(t, chartNamespace, saSelector, nodeB, orchPodTimeout)
+		t.Logf("snapshot-agent chart pod ready at %s:%d on %s (samplers node B)", ip, agentPort, nodeB)
+		h.labelNode(t, nodeB, integSamplers)
+	}
+
 	// Pre-clean: remove any leaked pods from a previous failed run.
 	h.cleanLeakedPods(t)
 

@@ -112,4 +112,34 @@ func TestOrchestrator(t *testing.T) {
 		}
 	})
 
+	t.Run("MultiNodeSamplers", func(t *testing.T) {
+		if os.Getenv("TEST_NODE_SAMPLERS_B") == "" {
+			t.Skip("TEST_NODE_SAMPLERS_B not set; multi-node samplers topology not provisioned")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+
+		conn, err := grpc.NewClient(
+			h.OrchAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			t.Fatalf("dialing orchestrator at %s: %v", h.OrchAddr, err)
+		}
+		defer conn.Close()
+
+		client := pb.NewTimeSliceOrchestratorServiceClient(conn)
+
+		err = scenarios.RunMultiNodeSamplersScenario(
+			ctx,
+			h.Client,
+			client,
+			t,
+			"",  // sampler template key (default: PyTorch GPU burner)
+			"",  // trainer template key (default: PyTorch GPU burner)
+		)
+		if err != nil {
+			t.Fatalf("MultiNodeSamplers scenario failed: %v", err)
+		}
+	})
 }
