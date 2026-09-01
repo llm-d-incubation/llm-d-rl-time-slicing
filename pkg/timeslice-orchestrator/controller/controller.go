@@ -267,12 +267,13 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 		}
 	}
 
-	// 3b. Park (snapshot) any OTHER job that still has context loaded, fanning
-	// the snapshots out CONCURRENTLY across all nodes. A healthy host's snapshot
-	// is per-host independent, but issuing serially and blocking per node lets a
-	// single host's checkpoint stall freeze the whole group pass, delay the peer
-	// hosts' snapshots, and cascade into the waiting job's restore faulting.
-	if err := c.reconcileOtherJobsSnapshot(ctx, group, activeJob); err != nil {
+	// 3b. Park (snapshot) any non-active job that still has context loaded,
+	// fanning the snapshots out CONCURRENTLY across all nodes. A healthy host's
+	// snapshot is per-host independent, but issuing serially and blocking per
+	// node lets a single host's checkpoint stall freeze the whole group pass,
+	// delay the peer hosts' snapshots, and cascade into the waiting job's
+	// restore faulting.
+	if err := c.reconcileNonActiveJobsSnapshot(ctx, group, activeJob); err != nil {
 		return fmt.Errorf("failed to snapshot non-active jobs: %w", err)
 	}
 
@@ -337,7 +338,7 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 		}
 	}
 
-	// Snapshotting OTHER jobs (RUNNING -> SAVED) and restoring the active job
+	// Snapshotting non-active jobs (RUNNING -> SAVED) and restoring the active job
 	// (SAVED -> RUNNING) are intentionally NOT done here. Both are handled after
 	// this per-node pass so the operations can be issued concurrently across all
 	// hosts of the slice (required for the multi-host libtpu restore rendezvous,
@@ -346,8 +347,8 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 	return nil
 }
 
-// reconcileOtherJobsSnapshot parks (snapshots) every non-active job that still
-// has accelerator context loaded on any node of the group, issuing all
+// reconcileNonActiveJobsSnapshot parks (snapshots) every non-active job that
+// still has accelerator context loaded on any node of the group, issuing all
 // snapshots before waiting on any of them (mirroring reconcileActiveJobRestore).
 //
 // Unlike restore, a snapshot has no hard concurrency requirement on a healthy
@@ -355,7 +356,7 @@ func (c *Controller) reconcileNode(ctx context.Context, groupID, nodeName, activ
 // checkpoint stall into a group-wide freeze that delays the peers' snapshots
 // and cascades into the waiting job's restore faulting. Concurrent issuance
 // contains the blast radius.
-func (c *Controller) reconcileOtherJobsSnapshot(ctx context.Context, group *store.Group, activeJobID string) error {
+func (c *Controller) reconcileNonActiveJobsSnapshot(ctx context.Context, group *store.Group, activeJobID string) error {
 	jobs, err := c.jobStore.ListByGroup(ctx, group.ID())
 	if err != nil {
 		return fmt.Errorf("failed to list jobs for group %s: %w", group.ID(), err)
