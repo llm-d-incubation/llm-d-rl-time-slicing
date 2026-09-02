@@ -111,7 +111,7 @@ func TestSimulated_MultiNodeGroup_RendezvousSwitch(t *testing.T) {
 	// moment to catch up before asserting exact values.
 	// A timeout here just means the exact-count asserts below fail with details.
 	waitForCounts := func(counts map[string]int, want int) {
-		_ = wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 2*time.Second, true,
+		err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 2*time.Second, true,
 			func(ctx context.Context) (bool, error) {
 				mu.Lock()
 				defer mu.Unlock()
@@ -122,6 +122,9 @@ func TestSimulated_MultiNodeGroup_RendezvousSwitch(t *testing.T) {
 				}
 				return true, nil
 			})
+		if err != nil {
+			t.Logf("counters did not converge to %d: %v (exact-count asserts below report details)", want, err)
+		}
 	}
 
 	// 4. Switch 1: job-2 becomes active. The controller must checkpoint job-1 on all

@@ -313,16 +313,19 @@ func RunMultiNodeGroupsScenario(
 		trainerClaims[node] = name
 		allClaims = append(allClaims, name)
 	}
+	var createdClaims []string
+	defer func() {
+		for _, name := range createdClaims {
+			if err := deleteSharedClaim(ctx, clientset, name); err != nil {
+				logger.Errorf("Failed to delete shared claim %s: %v", name, err)
+			}
+		}
+	}()
 	for _, name := range allClaims {
 		if err := createSharedClaim(ctx, clientset, name); err != nil {
 			return err
 		}
-		claimName := name
-		defer func() {
-			if err := deleteSharedClaim(ctx, clientset, claimName); err != nil {
-				logger.Errorf("Failed to delete shared claim %s: %v", claimName, err)
-			}
-		}()
+		createdClaims = append(createdClaims, name)
 	}
 
 	newJob := func(name string) *FakeRLJob {
