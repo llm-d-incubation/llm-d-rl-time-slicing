@@ -60,6 +60,17 @@ func (s *WorkloadSession) close() {
 	s.closeOnce.Do(func() { close(s.closed) })
 }
 
+// Closed reports whether the session is gone (its stream dropped or its
+// registration was replaced). A closed session cannot receive commands.
+func (s *WorkloadSession) Closed() bool {
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Dispatch assigns the command a unique ID, sends it once, and waits for the
 // matching CommandResult, the session to drop, or ctx to expire.
 func (s *WorkloadSession) Dispatch(ctx context.Context, cmd *pb.AgentCommand) error {

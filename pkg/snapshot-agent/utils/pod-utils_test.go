@@ -13,6 +13,7 @@ import (
 	snapshotutils "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
@@ -315,6 +316,127 @@ func TestGetLocalPods(t *testing.T) {
 			}
 			if !tt.expectError && len(pods) != tt.expectedLen {
 				t.Errorf("GetLocalPods() len = %d, expected %d", len(pods), tt.expectedLen)
+			}
+		})
+	}
+}
+
+func TestGetJobBackendAnnotation(t *testing.T) {
+	origGetK8sClient := snapshotutils.GetK8sClient
+	defer func() { snapshotutils.GetK8sClient = origGetK8sClient }()
+
+	nodeName := "test-node"
+	jobID := "test-job"
+
+	newPod := func(name string, annotations map[string]string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        name,
+				Labels:      map[string]string{snapshotutils.JobIDLabel: jobID},
+				Annotations: annotations,
+			},
+			Spec: corev1.PodSpec{NodeName: nodeName},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		nodeEnv     string
+		pods        []*corev1.Pod
+		want        *snapshotutils.JobBackendAnnotation
+		expectError bool
+	}{
+		{
+			name:    "Backend with config declared",
+			nodeEnv: nodeName,
+			pods: []*corev1.Pod{
+				newPod("pod1", map[string]string{
+					snapshotutils.BackendAnnotation:       "app_endpoint",
+					snapshotutils.BackendConfigAnnotation: `{"endpoints": ["http://localhost:8000"]}`,
+				}),
+			},
+			want: &snapshotutils.JobBackendAnnotation{
+				Backend: "app_endpoint",
+				Config:  `{"endpoints": ["http://localhost:8000"]}`,
+			},
+		},
+		{
+			name:    "Backend without config declared",
+			nodeEnv: nodeName,
+			pods:    []*corev1.Pod{newPod("pod1", map[string]string{snapshotutils.BackendAnnotation: "cuda"})},
+			want:    &snapshotutils.JobBackendAnnotation{Backend: "cuda"},
+		},
+		{
+			name:    "No declaration",
+			nodeEnv: nodeName,
+			pods:    []*corev1.Pod{newPod("pod1", nil)},
+			want:    nil,
+		},
+		{
+			name:    "Agreeing pods",
+			nodeEnv: nodeName,
+			pods: []*corev1.Pod{
+				newPod("pod1", map[string]string{snapshotutils.BackendAnnotation: "cuda"}),
+				newPod("pod2", map[string]string{snapshotutils.BackendAnnotation: "cuda"}),
+				newPod("pod3", nil), // silent pods do not conflict
+			},
+			want: &snapshotutils.JobBackendAnnotation{Backend: "cuda"},
+		},
+		{
+			name:    "Conflicting backends",
+			nodeEnv: nodeName,
+			pods: []*corev1.Pod{
+				newPod("pod1", map[string]string{snapshotutils.BackendAnnotation: "cuda"}),
+				newPod("pod2", map[string]string{snapshotutils.BackendAnnotation: "app_endpoint"}),
+			},
+			expectError: true,
+		},
+		{
+			name:    "Conflicting configs",
+			nodeEnv: nodeName,
+			pods: []*corev1.Pod{
+				newPod("pod1", map[string]string{
+					snapshotutils.BackendAnnotation:       "app_endpoint",
+					snapshotutils.BackendConfigAnnotation: `{"endpoints": ["http://localhost:8000"]}`,
+				}),
+				newPod("pod2", map[string]string{
+					snapshotutils.BackendAnnotation:       "app_endpoint",
+					snapshotutils.BackendConfigAnnotation: `{"endpoints": ["http://localhost:9000"]}`,
+				}),
+			},
+			expectError: true,
+		},
+		{
+			name:        "Missing NODE_NAME",
+			nodeEnv:     "",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.nodeEnv != "" {
+				os.Setenv("NODE_NAME", tt.nodeEnv)
+				defer os.Setenv("NODE_NAME", "")
+			} else {
+				os.Unsetenv("NODE_NAME")
+			}
+
+			objects := make([]runtime.Object, 0, len(tt.pods))
+			for _, pod := range tt.pods {
+				objects = append(objects, pod)
+			}
+			snapshotutils.GetK8sClient = func() (kubernetes.Interface, error) {
+				return fake.NewSimpleClientset(objects...), nil
+			}
+
+			got, err := snapshotutils.GetJobBackendAnnotation(context.Background(), jobID)
+			if (err != nil) != tt.expectError {
+				t.Errorf("GetJobBackendAnnotation() error = %v, expectError %v", err, tt.expectError)
+				return
+			}
+			if !tt.expectError && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("GetJobBackendAnnotation() = %v, expected %v", got, tt.want)
 			}
 		})
 	}
