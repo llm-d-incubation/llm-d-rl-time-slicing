@@ -79,9 +79,20 @@ func (m *MockWorkQueue) ShutDown()                     {}
 
 // MockGroupStore is exported for external tests.
 type MockGroupStore struct {
-	GetFunc  func(ctx context.Context, id string) (*store.Group, error)
-	ListFunc func(ctx context.Context) ([]*store.Group, error)
-	SetGroup func(g *store.Group)
+	GetFunc         func(ctx context.Context, id string) (*store.Group, error)
+	GetOrCreateFunc func(ctx context.Context, id string) (*store.Group, bool, error)
+	ListFunc        func(ctx context.Context) ([]*store.Group, error)
+	SetGroup        func(g *store.Group)
+}
+
+// GetOrCreate defaults to delegating to GetFunc so existing tests keep
+// their view of the store.
+func (m *MockGroupStore) GetOrCreate(ctx context.Context, id string) (*store.Group, bool, error) {
+	if m.GetOrCreateFunc != nil {
+		return m.GetOrCreateFunc(ctx, id)
+	}
+	g, err := m.Get(ctx, id)
+	return g, false, err
 }
 
 func (m *MockGroupStore) Get(ctx context.Context, id string) (*store.Group, error) {

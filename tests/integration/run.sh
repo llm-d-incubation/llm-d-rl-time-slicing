@@ -259,6 +259,7 @@ $K exec test-runner -- env "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
   "SA_CHART_DEPLOYED=${SA_CHART_DEPLOYED}" \
   "ORCH_CHART_DEPLOYED=${ORCH_CHART_DEPLOYED}" \
   "CHART_AGENT_PORT=${CHART_AGENT_PORT}" \
+  "INTEG_EMERGENT=${INTEG_EMERGENT:-}" \
   sh -c "cd /workspace && go test -tags=integration -count=1 -v -timeout 40m -run '${RUN_PATTERN}' ./tests/integration/..." \
   || EXIT=$?
 

@@ -86,8 +86,6 @@ spec:
             timeslice.io/job-id: "${JOB_NAME}"
             timeslice.io/group: "trainers"
         spec:
-          nodeSelector:
-            group.timeslice.io/trainers: "true"
           tolerations:
           - key: "nvidia.com/gpu"
             operator: "Exists"
@@ -145,8 +143,6 @@ spec:
             timeslice.io/job-id: "${JOB_NAME}"
             timeslice.io/group: "${SAMPLER_TS_GROUP}"
         spec:
-          nodeSelector:
-            group.timeslice.io/samplers: "true"
           tolerations:
           - key: "nvidia.com/gpu"
             operator: "Exists"

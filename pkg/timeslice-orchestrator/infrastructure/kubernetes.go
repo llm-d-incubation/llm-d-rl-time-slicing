@@ -19,13 +19,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/logging"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/timeslice-orchestrator/controller"
 	"github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/timeslice-orchestrator/store"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	corev1listers "k8s.io/client-go/listers/core/v1"
@@ -33,6 +33,9 @@ import (
 )
 
 const (
+	// NodeLabelPrefix is deprecated: node labels no longer define group
+	// membership and are ignored by the orchestrator. Kept only until the
+	// rlts CLI diagnostics are migrated to the orchestrator API.
 	NodeLabelPrefix = "group.timeslice.io/"
 	PodLabelKey     = "timeslice.io/group"
 	JobLabelKey     = "timeslice.io/job-id"
@@ -86,21 +89,52 @@ func (k *KubernetesOrchestrator) Init(ctx context.Context) error {
 	return nil
 }
 
-// getNodesForGroup returns the names of the nodes that belong to the given group.
+// isTerminalPod reports whether the pod has run to completion (successfully
+// or not). Terminal pods no longer host accelerator processes, so both group
+// node membership and job/pod bookkeeping must ignore them; the pod objects
+// themselves may linger until Kubernetes garbage-collects them.
+func isTerminalPod(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+}
+
+// getNodesForGroup returns the names of the nodes that belong to the given
+// group: a node is a member iff a live pod labeled timeslice.io/group=<group>
+// is bound to it. Placement is the scheduler's decision (shared DRA claims);
+// the orchestrator observes the outcome. Node labels are not consulted.
 func (k *KubernetesOrchestrator) getNodesForGroup(groupID string) ([]string, error) {
-	selector := labels.SelectorFromSet(labels.Set{NodeLabelPrefix + groupID: "true"})
-	nodes, err := k.nodeLister.List(selector)
+	selector := labels.SelectorFromSet(labels.Set{PodLabelKey: groupID})
+	pods, err := k.podLister.List(selector)
 	if err != nil {
 		return nil, err
 	}
+	nodeSet := make(map[string]bool)
 	var groupNodes []string
-	for _, node := range nodes {
-		groupNodes = append(groupNodes, node.Name)
+	for _, pod := range pods {
+		// Skip pods that are not scheduled yet: they contribute no hardware
+		// to the group until the scheduler binds them to a node.
+		if pod.Spec.NodeName == "" {
+			continue
+		}
+		// Skip terminal pods: their accelerator processes are gone, so the
+		// node no longer hosts this group's context through them.
+		if isTerminalPod(pod) {
+			continue
+		}
+		if !nodeSet[pod.Spec.NodeName] {
+			nodeSet[pod.Spec.NodeName] = true
+			groupNodes = append(groupNodes, pod.Spec.NodeName)
+		}
 	}
 	return groupNodes, nil
 }
 
-// getPodsForGroup returns the pods that are tied to the given group.
+// getPodsForGroup returns the live pods that are tied to the given group.
+// It applies the same liveness rule as getNodesForGroup: terminal pods are
+// excluded, so a job whose pods have all finished drops out of the store and
+// a group whose pods have all finished becomes eligible for cleanup instead
+// of lingering until Kubernetes garbage-collects the pod objects. (Unscheduled
+// pods ARE included: a pending pod is a live member whose job must be
+// tracked; it just contributes no node yet.)
 func (k *KubernetesOrchestrator) getPodsForGroup(groupID string) ([]PodInfo, error) {
 	selector := labels.SelectorFromSet(labels.Set{PodLabelKey: groupID})
 	pods, err := k.podLister.List(selector)
@@ -109,6 +143,9 @@ func (k *KubernetesOrchestrator) getPodsForGroup(groupID string) ([]PodInfo, err
 	}
 	var podInfos []PodInfo
 	for _, pod := range pods {
+		if isTerminalPod(pod) {
+			continue
+		}
 		jobID := pod.Labels[JobLabelKey]
 		if jobID == "" {
 			continue
@@ -137,8 +174,22 @@ func (k *KubernetesOrchestrator) ObserveGroupState(ctx context.Context, groupID 
 		return fmt.Errorf("failed to get pods for group %s: %w", groupID, err)
 	}
 
-	// If no nodes and no pods, we clean up the group and its jobs and return early.
+	// If no nodes and no pods, clean up the group and its jobs — unless the
+	// group has lock activity. Groups are created on demand by the first
+	// Acquire, which in the lock-then-deploy pattern happens BEFORE any
+	// member pods exist; deleting such a group would pull it out from under
+	// its lock holder.
 	if len(groupNodes) == 0 && len(pods) == 0 {
+		if g, err := k.groupStore.Get(ctx, groupID); err == nil && g != nil {
+			snap := g.Snapshot()
+			if snap.LockingJob != "" || snap.ActiveJob != "" || snap.WaiterQueueDepth > 0 {
+				slog.InfoContext(ctx, "Group has no nodes or pods but has lock activity; skipping cleanup",
+					"lockingJob", snap.LockingJob, "activeJob", snap.ActiveJob, "waiters", snap.WaiterQueueDepth)
+				// Still record the (empty) node membership so reconciliation
+				// sees an up-to-date view.
+				return k.updateGroupNodes(ctx, groupID, groupNodes)
+			}
+		}
 		if err := k.cleanupGroup(ctx, groupID); err != nil {
 			return fmt.Errorf("failed to cleanup group %s: %w", groupID, err)
 		}
@@ -296,14 +347,31 @@ func (k *KubernetesOrchestrator) enqueueNode(ctx context.Context, obj interface{
 	}
 }
 
+// getGroupsFromNode returns the groups that have member pods bound to the
+// node, so node events (e.g. deletion) requeue exactly the groups whose
+// membership they affect.
 func (k *KubernetesOrchestrator) getGroupsFromNode(node *corev1.Node) []string {
+	// List all pods carrying the timeslice group label, then filter to this node.
+	req, err := labels.NewRequirement(PodLabelKey, selection.Exists, nil)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("failed to build pod label requirement: %w", err))
+		return nil
+	}
+	pods, err := k.podLister.List(labels.NewSelector().Add(*req))
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("failed to list timeslice pods for node %s: %w", node.Name, err))
+		return nil
+	}
+	groupSet := make(map[string]bool)
 	var groups []string
-	for k := range node.Labels {
-		if strings.HasPrefix(k, NodeLabelPrefix) {
-			group := strings.TrimPrefix(k, NodeLabelPrefix)
-			if group != "" {
-				groups = append(groups, group)
-			}
+	for _, pod := range pods {
+		if pod.Spec.NodeName != node.Name {
+			continue
+		}
+		group := pod.Labels[PodLabelKey]
+		if group != "" && !groupSet[group] {
+			groupSet[group] = true
+			groups = append(groups, group)
 		}
 	}
 	return groups
