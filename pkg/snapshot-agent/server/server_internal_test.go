@@ -628,6 +628,89 @@ func TestServer_Snapshot_StandaloneMode(t *testing.T) {
 // inference engine configs are passed through to the backend without PID
 // discovery: no pods or PIDs are mocked for this job, so the snapshot only
 // succeeds if the server skipped the CUDA discovery path.
+// TestServer_Snapshot_K8sMode_WorkloadExited covers the end-of-run teardown
+// race (issue #164): a job yields with its snapshot deferred, exits, and only
+// then does lazy eviction snapshot it. Whether the job's pods are gone
+// entirely or linger with no GPU processes, the operation must COMPLETE and
+// the job must return to IDLE — a FAULTED ghost blocks the whole group.
+func TestServer_Snapshot_K8sMode_WorkloadExited(t *testing.T) {
+	initGRPCServer()
+	ctx := context.Background()
+	conn, err := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(bufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to dial bufnet: %v", err)
+	}
+	defer conn.Close()
+	client := pb.NewSnapshotAgentServiceClient(conn)
+
+	tests := []struct {
+		name    string
+		jobID   string
+		podName string // empty: no pods at all ("no pods found" path)
+	}{
+		{
+			name:  "PodsDeleted",
+			jobID: "test-job-exited-nopods",
+		},
+		{
+			name:    "PodsLingerWithoutGPUProcesses",
+			jobID:   "test-job-exited-nogpupids",
+			podName: "pod-exited-nogpupids",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.podName != "" {
+				// A live pod whose GPU processes have exited: GetPodPIDs
+				// returns nothing (no mockedPIDs entry).
+				createFakePod(ctx, t, tc.jobID, tc.podName)
+			}
+
+			// The agent believes the job is RUNNING with cached PIDs — the
+			// stale occupancy record left by the deferred final snapshot.
+			testServer.state.RegisterJob(tc.jobID, "test-group")
+			if err := testServer.state.TransitionToRunning(tc.jobID, []int{4242}); err != nil {
+				t.Fatalf("Failed to transition job to RUNNING: %v", err)
+			}
+
+			resp, err := client.Snapshot(ctx, &pb.SnapshotRequest{JobId: tc.jobID, Group: "test-group"})
+			if err != nil {
+				t.Fatalf("Snapshot RPC failed: %v", err)
+			}
+
+			var opResp *pb.GetOperationResponse
+			for range 100 {
+				opResp, err = client.GetOperation(ctx, &pb.GetOperationRequest{OperationId: resp.GetOperationId()})
+				if err != nil {
+					t.Fatalf("GetOperation failed: %v", err)
+				}
+				if opResp.GetStatus() != pb.OperationStatus_OPERATION_STATUS_PENDING {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if opResp.GetStatus() != pb.OperationStatus_OPERATION_STATUS_COMPLETE {
+				t.Fatalf("Expected operation COMPLETE for exited workload, got %v (error: %q)",
+					opResp.GetStatus(), opResp.GetError())
+			}
+
+			statusResp, err := client.Status(ctx, &pb.StatusRequest{})
+			if err != nil {
+				t.Fatalf("Status RPC failed: %v", err)
+			}
+			for _, js := range statusResp.GetJobStatuses() {
+				if js.GetJobId() == tc.jobID && js.GetState() != pb.JobState_JOB_STATE_IDLE {
+					t.Fatalf("Expected job %s to be IDLE after exited-workload snapshot, got %v",
+						tc.jobID, js.GetState())
+				}
+			}
+		})
+	}
+}
+
 func TestServer_Snapshot_K8sMode_InferenceEngine(t *testing.T) {
 	initGRPCServer()
 	ctx := context.Background()
