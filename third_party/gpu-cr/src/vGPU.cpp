@@ -729,6 +729,11 @@ void cr_ipc_signal_handler(int signum) {
 // Library constructor: register all signal handlers
 // ---------------------------------------------------------------------------
 __attribute__((constructor)) void init() {
+    // Resolve buffer config FIRST — a function-local-static
+    // singleton invoked here (not a second ELF constructor, whose order vs
+    // this one would be unspecified). Signal handlers only read the cache.
+    gpu_cr::Config();
+
     fprintf(stderr, "[vGPU] Library loaded! Registering signal handlers...\n");
     fprintf(stderr, "[vGPU] Multi-GPU CR support enabled (IPC hook mode)\n");
     fflush(stderr);
