@@ -103,7 +103,8 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 		return nil, fnErr
 	}
 
-	opID, err := s.state.StartSnapshot(req.GetJobId(), req.GetGroup(), snapshotFn)
+	slot := memoryRegionsSlot(config, req.GetJobId())
+	opID, err := s.state.StartSnapshotSlot(req.GetJobId(), req.GetGroup(), slot, snapshotFn)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to start snapshot", "error", err)
 		return nil, err
@@ -217,12 +218,57 @@ func (s *Server) buildSnapshotFn(
 				slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
 				return backend.Snapshot(bgCtx, backends.Request{JobID: jobID, Config: config})
 			}, nil
+		case backends.BackendMemoryRegions:
+			// Regions are explicit in the config; no PID discovery. The
+			// config is passed through, and the region PIDs are cached for
+			// Status parity with the CUDA backend.
+			return func() error {
+				slog.InfoContext(bgCtx, "Background: Starting snapshot", "backend", backendType)
+				if err := backend.Snapshot(bgCtx, backends.Request{JobID: jobID, Config: config}); err != nil {
+					return fmt.Errorf("failed to snapshot job %s: %w", jobID, err)
+				}
+				s.state.UpdateJobPIDs(jobID, pidsFromMemoryRegions(config))
+				return nil
+			}, nil
 		default:
 			return nil, status.Errorf(codes.InvalidArgument, "backend %q is not supported in k8s mode", backendType)
 		}
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown deployment mode %q", s.deploymentMode)
 	}
+}
+
+// memoryRegionsSlot returns the snapshot slot a memory-regions request
+// targets (snapshot_name, defaulting to the job ID), or "" for any other
+// backend config. Slot-aware state transitions (live slot swap, fault
+// recovery) only apply when this is non-empty.
+func memoryRegionsSlot(config *pb.BackendConfig, jobID string) string {
+	cfg := config.GetMemoryRegions()
+	if cfg == nil {
+		return ""
+	}
+	if s := cfg.GetSnapshotName(); s != "" {
+		return s
+	}
+	return jobID
+}
+
+// pidsFromMemoryRegions returns the deduplicated PIDs referenced by a
+// memory-regions BackendConfig, in first-appearance order.
+func pidsFromMemoryRegions(config *pb.BackendConfig) []int {
+	cfg := config.GetMemoryRegions()
+	if cfg == nil {
+		return nil
+	}
+	seen := make(map[int32]bool)
+	var pids []int
+	for _, r := range cfg.GetRegions() {
+		if !seen[r.GetPid()] {
+			seen[r.GetPid()] = true
+			pids = append(pids, int(r.GetPid()))
+		}
+	}
+	return pids
 }
 
 // extractExplicitPIDs returns the explicitly targeted PIDs from a CUDA
@@ -290,7 +336,10 @@ func (s *Server) buildRestoreFn(
 				}
 				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: reqConfig})
 			}, nil
-		case backends.BackendAppEndpoint, backends.BackendAppChannel:
+		case backends.BackendAppEndpoint, backends.BackendAppChannel, backends.BackendMemoryRegions:
+			// App backends resolve their own targets; the memory-regions
+			// backend restores the explicit regions in the config. Both are
+			// pass-through.
 			return func() error {
 				slog.InfoContext(bgCtx, "Background: Starting restore", "backend", backendType)
 				return backend.Restore(bgCtx, backends.Request{JobID: jobID, Config: config})
@@ -329,7 +378,8 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 		return nil, fnErr
 	}
 
-	opID, err := s.state.StartRestore(req.GetJobId(), req.GetGroup(), restoreFn)
+	slot := memoryRegionsSlot(restoreConfig, req.GetJobId())
+	opID, err := s.state.StartRestoreSlot(req.GetJobId(), req.GetGroup(), slot, restoreFn)
 	if err != nil {
 		return nil, err
 	}

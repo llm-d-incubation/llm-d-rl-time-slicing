@@ -35,3 +35,21 @@ func (d *DirectMemory) SetStatFunc(f func(string) (os.FileInfo, error)) {
 
 // CrClientPath exposes the fixed cr_client install location for tests.
 const CrClientPath = crClientPath
+
+func (g *MemoryRegions) SetExecCommand(f func(ctx context.Context, name string, args ...string) ([]byte, error)) {
+	g.execCommand = f
+}
+
+func (g *MemoryRegions) SetStatFunc(f func(string) (os.FileInfo, error)) {
+	g.statFunc = f
+}
+
+func (g *MemoryRegions) SetProcRoot(dir string) {
+	g.procRoot = dir
+}
+
+// SetStarttimeFunc replaces the pid-starttime reader, so tests can use pids
+// that have no procfs entry (and pin the starttime half of owner dirnames).
+func (g *MemoryRegions) SetStarttimeFunc(f func(pid string) (int64, error)) {
+	g.starttime = f
+}
