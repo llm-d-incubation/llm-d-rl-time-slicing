@@ -3,10 +3,12 @@
 import unittest
 
 from timeslice.snapshot_agent import (
+    MemoryRegion,
     app_channel_config,
     app_endpoint_config,
     cuda_config,
     direct_memory_config,
+    memory_regions_config,
     sglang_config,
     vllm_config,
 )
@@ -60,6 +62,19 @@ class TestBackendConfigBuilders(unittest.TestCase):
                 cuda_config(pids)
             with self.assertRaises((ValueError, TypeError)):
                 direct_memory_config(pids)
+
+    def test_memory_regions_config_builds_regions(self):
+        """Regions and snapshot_name land in the memory_regions oneof."""
+        cfg = memory_regions_config(
+            [MemoryRegion(pid=123, address=0x7F00, size_bytes=1024)],
+            snapshot_name="slot-a",
+        )
+        self.assertEqual(cfg.WhichOneof("backend"), "memory_regions")
+        self.assertEqual(cfg.memory_regions.snapshot_name, "slot-a")
+        region = cfg.memory_regions.regions[0]
+        self.assertEqual(region.pid, 123)
+        self.assertEqual(region.address, 0x7F00)
+        self.assertEqual(region.size_bytes, 1024)
 
     def test_app_endpoint_config_builds_full_config(self):
         cfg = app_endpoint_config(
