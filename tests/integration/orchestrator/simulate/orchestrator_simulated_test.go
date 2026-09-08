@@ -20,10 +20,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
 
@@ -132,25 +132,15 @@ func TestE2E_SingleRLJob(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewTimeSliceOrchestratorServiceClient(conn)
 
-	// Nodes already populated at startup
-
-	// Wait for K8s caches to sync and infra orchestrator to populate stores
-	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
-		gs, err := groupStore.Get(ctx, "samplers")
-		if err != nil {
-			return false, nil //nolint:nilerr // Intentional to allow polling to retry on transient "not found" errors
-		}
-		gt, err := groupStore.Get(ctx, "trainers")
-		if err != nil {
-			return false, nil //nolint:nilerr // Intentional to allow polling to retry on transient "not found" errors
-		}
-		return len(gs.Status().Nodes()) == 1 && len(gt.Status().Nodes()) == 1, nil
-	})
-	if err != nil {
-		t.Fatalf("Timed out waiting for store initialization: %v", err)
+	// Groups are no longer seeded from node labels: they are created on first
+	// Acquire and their nodes discovered from scheduled member pods, so the
+	// stores start empty. Just wait for the informer caches to sync so the
+	// infra orchestrator observes the pod events the scenario generates.
+	if !cache.WaitForCacheSync(ctx.Done(), nodeInformer.Informer().HasSynced, podInformer.Informer().HasSynced) {
+		t.Fatal("Timed out waiting for informer caches to sync")
 	}
 
-	t.Log("Store initialized with samplers and trainers groups")
+	t.Log("Informer caches synced; groups will be created on first Acquire")
 
 	// Run Scenario
 	if err := scenarios.RunSingleRLJobScenario(ctx, clientset, client, t, "", ""); err != nil {
@@ -263,25 +253,15 @@ func TestE2E_QueuedRLJobs(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewTimeSliceOrchestratorServiceClient(conn)
 
-	// Nodes already populated at startup
-
-	// Wait for K8s caches to sync and infra orchestrator to populate stores
-	err = wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
-		gs, err := groupStore.Get(ctx, "samplers")
-		if err != nil {
-			return false, nil //nolint:nilerr // Intentional to allow polling to retry on transient "not found" errors
-		}
-		gt, err := groupStore.Get(ctx, "trainers")
-		if err != nil {
-			return false, nil //nolint:nilerr // Intentional to allow polling to retry on transient "not found" errors
-		}
-		return len(gs.Status().Nodes()) == 1 && len(gt.Status().Nodes()) == 1, nil
-	})
-	if err != nil {
-		t.Fatalf("Timed out waiting for store initialization: %v", err)
+	// Groups are no longer seeded from node labels: they are created on first
+	// Acquire and their nodes discovered from scheduled member pods, so the
+	// stores start empty. Just wait for the informer caches to sync so the
+	// infra orchestrator observes the pod events the scenario generates.
+	if !cache.WaitForCacheSync(ctx.Done(), nodeInformer.Informer().HasSynced, podInformer.Informer().HasSynced) {
+		t.Fatal("Timed out waiting for informer caches to sync")
 	}
 
-	t.Log("Store initialized with samplers and trainers groups")
+	t.Log("Informer caches synced; groups will be created on first Acquire")
 
 	// Run Scenario
 	if err := scenarios.RunQueuedRLJobsScenario(ctx, clientset, client, t, "", ""); err != nil {

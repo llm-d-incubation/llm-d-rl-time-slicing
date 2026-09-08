@@ -40,22 +40,18 @@ Before deploying cooperative time-slicing for Slime, ensure your Kubernetes clus
 * GPU memory capacity must be sufficient to hold the active working set of a single Slime job's trainer or sampler at any one time (since inactive jobs will have their GPU memory checkpointed and evicted).
 * Sampler/trainer node host memory capacity must be sufficient to hold the GPU memory footprint of the trainers/samplers needed for the number of parallel Slime jobs. Worker pod memory limits must account for cuda-checkpoint saving GPU state to host memory — set the pod memory limit to at least 2× the GPU memory footprint of the workload (e.g., 128Gi for a sampler using ~33GB GPU memory with two time-sliced jobs).
 
-### Node Labeling and Tainting for Time-Slice Pools
-The `timeslice` platform relies on node labels and taints to identify resource pools (groups) and isolate time-sliced workloads. For disaggregated Slime executions, label and taint your GPU nodes accordingly:
+### Node Tainting for Time-Slice Pools
+The `timeslice` platform uses a node taint to keep non-time-sliced workloads off shared accelerator nodes:
 
-* **Enable Time-Slicing & Taint Nodes**:
+* **Taint the time-slicing nodes** (prefer node-pool-level taints — hand-applied node metadata does not survive node recreation by auto-repair/upgrade):
   ```bash
-  kubectl label nodes <node-name> timeslice.io/enabled=true
   kubectl taint nodes <node-name> timeslice.io/shared=true:NoSchedule
   ```
-* **Trainer Nodes**:
-  ```bash
-  kubectl label nodes <trainer-node> group.timeslice.io/trainers=true
-  ```
-* **Sampler Nodes**:
-  ```bash
-  kubectl label nodes <sampler-node> group.timeslice.io/samplers=true
-  ```
+
+**No group node labels are needed.** Groups (`samplers`, `trainers`) are created automatically when a job first acquires their lock, and each group's node membership is discovered from where its pods are scheduled. Pod placement itself is driven by the shared DRA `ResourceClaim`s: all jobs' sampler pods reference the samplers claim and therefore co-locate on the claim's allocated GPU (and likewise for trainers), while the scheduler keeps different claims on different devices.
+
+> [!NOTE]
+> `group.timeslice.io/<group>` node labels from older setups are ignored by the platform and can be removed. If your pod templates still carry the matching `nodeSelector`s, ensure the labels exist on nodes or drop the selectors — otherwise the pods will be unschedulable.
 
 ### Shared DRA Resource Claims
 Cooperative time-slicing leverages Kubernetes **Dynamic Resource Allocation (DRA)** so multiple jobs' worker pods can share physical GPU hardware without scheduler blocking. Before submitting jobs, create shared `ResourceClaim` manifests for both the trainer and sampler pools in your target namespace:
@@ -214,7 +210,7 @@ When deploying Slime across independent Ray clusters, use KubeRay `RayJob` manif
 
 A complete disaggregated Slime workload requires defining **two separate worker groups** under `workerGroupSpecs`: one for trainers and one for rollouts (samplers). For each group:
 * **Custom Ray Resources**: Include custom resource counts in `rayStartParams` (`"{\"trainers\": 1}"` for trainers and `"{\"samplers\": 1}"` for rollouts) so that Ray placement groups can bind tasks to the appropriate worker pool.
-* **Pool-Specific Identifiers**: Ensure each worker group is configured with its corresponding node selector (`group.timeslice.io/trainers: "true"` vs. `samplers: "true"`), pod labels (`timeslice.io/group: trainers` vs. `samplers`), and shared DRA claim (`shared-trainers-gpu-claim` vs. `shared-samplers-gpu-claim`).
+* **Pool-Specific Identifiers**: Ensure each worker group is configured with its corresponding pod labels (`timeslice.io/group: trainers` vs. `samplers`) and shared DRA claim (`shared-trainers-gpu-claim` vs. `shared-samplers-gpu-claim`). The claim determines placement — no node selector is required.
 * **Time-Slicing Environment Variables**: Set `TIMESLICE_JOB_ID`, `TIMESLICE_ORCH_ADDR`, `TIMESLICE_TRAINER_GROUP`, `TIMESLICE_SAMPLER_GROUP`, and NCCL env vars in `runtimeEnvYAML`.
 
 For **async RL**, set `TIMESLICE_SAMPLER_GROUP` to a per-job value (e.g., `samplers-${JOB_NAME}`) so each job gets its own sampler group with no contention.

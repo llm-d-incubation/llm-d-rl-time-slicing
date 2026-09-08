@@ -29,14 +29,21 @@ func TestServer_Acquire(t *testing.T) {
 		verify        func(t *testing.T, resp *pb.AcquireResponse, err error)
 	}{
 		{
-			name: "group not found",
+			// An unknown group on Acquire is not an error: Acquire creates the
+			// group and queues the lock request. With no controller running
+			// here the request never completes, so the client deadline is the
+			// expected outcome. Group creation itself is asserted in
+			// TestServer_AcquireCreatesGroup.
+			name: "unknown group is created, not rejected",
 			setupStores: func(t *testing.T, ctx context.Context) (server.GroupStore, server.JobStore) {
 				t.Helper()
 				return store.NewGroupStore(store.NewMemLockStore()), store.NewJobStore()
 			},
-			groupID:      "unknown-group",
-			jobID:        "job-1",
-			expectedCode: codes.NotFound,
+			groupID:       "unknown-group",
+			jobID:         "job-1",
+			timeout:       1500 * time.Millisecond,
+			expectedCode:  codes.DeadlineExceeded,
+			expectEnqueue: true,
 		},
 		{
 			name: "group faulted",
@@ -672,5 +679,49 @@ func TestServer_GetGroupStatus(t *testing.T) {
 				tc.verify(t, resp)
 			}
 		})
+	}
+}
+
+// TestServer_AcquireCreatesGroup verifies that Acquire on a group that does
+// not exist yet creates it and records the lock request on the new group.
+func TestServer_AcquireCreatesGroup(t *testing.T) {
+	ctx := context.Background()
+	gs := store.NewGroupStore(store.NewMemLockStore())
+	js := store.NewJobStore()
+
+	_, mq, cleanup := server.InitGRPCServer(gs, js)
+	defer cleanup()
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(server.BufDialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("Failed to dial bufnet: %v", err)
+	}
+	defer conn.Close()
+	client := pb.NewTimeSliceOrchestratorServiceClient(conn)
+
+	// No controller runs here, so the acquire cannot complete; a short client
+	// deadline bounds the call.
+	clientCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	_, err = client.Acquire(clientCtx, &pb.AcquireRequest{GroupId: "brand-new-group", JobId: "job-1"})
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("Expected DeadlineExceeded while waiting for load, got: %v", err)
+	}
+
+	// The group must now exist with the lock request recorded.
+	g, err := gs.Get(ctx, "brand-new-group")
+	if err != nil {
+		t.Fatalf("Expected group to be created by Acquire, got: %v", err)
+	}
+	snap := g.Snapshot()
+	if snap.LockingJob != "job-1" && snap.WaiterQueueDepth == 0 {
+		t.Errorf("Expected job-1 to hold or wait for the lock, got locking=%q waiters=%d",
+			snap.LockingJob, snap.WaiterQueueDepth)
+	}
+	if added := mq.GetAdded(); len(added) == 0 || added[0] != "brand-new-group" {
+		t.Errorf("Expected brand-new-group to be enqueued for reconciliation, got %v", added)
 	}
 }

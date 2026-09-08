@@ -40,6 +40,13 @@ type FakeRLJob struct {
 	samplerSharedClaimName string
 	trainerSharedClaimName string
 
+	// EmergentNodes, when non-empty, runs the job in label-free mode: it maps
+	// groupID -> the node the group's pods should land on. Pods are pinned
+	// via the kubernetes.io/hostname selector (NOT Spec.NodeName, which would
+	// bypass the scheduler and break DRA claim allocation), and the
+	// orchestrator must discover membership from the scheduled pods alone.
+	EmergentNodes map[string]string
+
 	// Callbacks to control sampling/training behavior/duration
 	OnSampling func(ctx context.Context)
 	OnTraining func(ctx context.Context)
@@ -269,18 +276,33 @@ func (f *FakeRLJob) cleanup(ctx context.Context) error {
 }
 
 func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
-	// Find nodes for group
-	selector := fmt.Sprintf("group.timeslice.io/%s=true", groupID)
-	nodes, err := f.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: selector})
-	if err != nil {
-		return fmt.Errorf("failed to list nodes: %w", err)
+	// Find the target nodes for the group: configured directly in label-free
+	// mode (no node labels exist to list by), from node labels otherwise.
+	var err error
+	var expectedNodes []string
+	if len(f.EmergentNodes) > 0 {
+		node, ok := f.EmergentNodes[groupID]
+		if !ok || node == "" {
+			return fmt.Errorf("emergent mode: no target node configured for group %s", groupID)
+		}
+		expectedNodes = []string{node}
+	} else {
+		selector := fmt.Sprintf("group.timeslice.io/%s=true", groupID)
+		var nodes *corev1.NodeList
+		nodes, err = f.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err != nil {
+			return fmt.Errorf("failed to list nodes: %w", err)
+		}
+		for i := range nodes.Items {
+			expectedNodes = append(expectedNodes, nodes.Items[i].Name)
+		}
 	}
 
-	if len(nodes.Items) == 0 {
+	if len(expectedNodes) == 0 {
 		return fmt.Errorf("no nodes found for group %s", groupID)
 	}
 
-	for range nodes.Items {
+	for _, targetNode := range expectedNodes {
 		podName := fmt.Sprintf("pod-%s-%s-%s", f.name, groupID, uuid.NewString()[:8])
 
 		var sharedClaimName string
@@ -306,11 +328,18 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 		pod.Namespace = "default"
 		pod.Spec.NodeName = "" // Let scheduler handle it
 
-		// Set NodeSelector to target the group
 		if pod.Spec.NodeSelector == nil {
 			pod.Spec.NodeSelector = make(map[string]string)
 		}
-		pod.Spec.NodeSelector[fmt.Sprintf("group.timeslice.io/%s", groupID)] = "true"
+		if len(f.EmergentNodes) > 0 {
+			// Emergent mode: pin to the chosen node by hostname. The
+			// scheduler still runs (required for DRA claim allocation);
+			// no group node labels are involved.
+			pod.Spec.NodeSelector["kubernetes.io/hostname"] = targetNode
+		} else {
+			// Legacy mode: target the group's labeled nodes.
+			pod.Spec.NodeSelector[fmt.Sprintf("group.timeslice.io/%s", groupID)] = "true"
+		}
 
 		// Add tolerations for timeslice.io/shared and default GKE GPU taints
 		pod.Spec.Tolerations = append(pod.Spec.Tolerations,
@@ -373,8 +402,8 @@ func (f *FakeRLJob) deployPods(ctx context.Context, groupID string) error {
 
 				// Verify it is one of the expected nodes for the group
 				isExpectedNode := false
-				for j := range nodes.Items {
-					if pod.Spec.NodeName == nodes.Items[j].Name {
+				for _, n := range expectedNodes {
+					if pod.Spec.NodeName == n {
 						isExpectedNode = true
 						break
 					}

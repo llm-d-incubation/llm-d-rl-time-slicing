@@ -361,6 +361,15 @@ func (c *Controller) tryDeduceActiveJob(ctx context.Context, group *store.Group)
 		return nil
 	}
 
+	// isJobLoaded treats a zero-node group as vacuously loaded, which would
+	// make every job of such a group look loaded here and lead to a spurious
+	// deduction (e.g. while all member pods are still Pending). Deduction
+	// recovers on-hardware state after a restart; with no member nodes there
+	// is nothing to recover, so skip it.
+	if len(group.Status().Nodes()) == 0 {
+		return nil
+	}
+
 	jobs, err := c.jobStore.ListByGroup(ctx, group.ID())
 	if err != nil {
 		return fmt.Errorf("failed to list jobs for group %s: %w", group.ID(), err)
@@ -409,7 +418,12 @@ func (c *Controller) isJobLoaded(ctx context.Context, group *store.Group, jobID 
 
 	nodes := group.Status().Nodes()
 	if len(nodes) == 0 {
-		return false, nil
+		// A group legitimately has zero nodes between its creation (first
+		// Acquire) and the deployment of its first pods (lock-then-deploy).
+		// With no member nodes there is no accelerator context to restore,
+		// so the job is vacuously loaded; returning false would make the
+		// initial Acquire wait forever for a load that cannot happen.
+		return true, nil
 	}
 
 	// Map of node -> jobID of the job running on it.

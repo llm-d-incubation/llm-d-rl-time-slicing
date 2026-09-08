@@ -72,9 +72,9 @@ To enable time-slicing, the cluster must be configured with:
 - **Kubernetes Version:** 1.34 or later (required for DRA v1).
 - **At least one GPU node with:**
   - **NVIDIA Driver:** 565 or later (required for DRA Driver).
-  - **Labels & Taints:** `timeslice.io/enabled=true` and tainted with `timeslice.io/shared=true:NoSchedule` to isolate time-slicing workloads.
-  - **Group Labels:** `group.timeslice.io/<group-id>=true` (e.g., `group.timeslice.io/group-ab-sampler=true`) to schedule grouped pods together.
-- **Deployment Ordering:** Nodes for a group must be active and labeled **before** workloads attempt to acquire the lock. The orchestrator uses these labels for topology discovery; for now, empty groups cannot be managed.
+  - **Taint:** `timeslice.io/shared=true:NoSchedule` to isolate time-slicing workloads. Prefer applying taints at the node-pool level (e.g., `gcloud container node-pools ... --node-taints`) — hand-applied node metadata is lost when the cloud provider recreates a node (auto-repair/upgrade).
+- **Group membership is automatic:** groups are created when a job first calls `acquire()`, and each group's node membership is derived from where its member pods (labeled `timeslice.io/group=<group-id>`) are actually scheduled. Physical placement is driven by the shared DRA `ResourceClaim` (see below): all pods referencing a group's claim co-locate on the claim's allocated device(s), and other claims are excluded from those devices. No node labeling is required, and there is no deployment-ordering constraint — a group may be acquired before any of its pods exist.
+- **Node group labels are ignored:** `group.timeslice.io/<group-id>` node labels from older deployments have no effect and can be removed. (Pod templates that still carry matching `nodeSelector`s continue to schedule normally — the selector is then plain Kubernetes scheduling, not a platform mechanism.)
 
 ### Installation via Helm
 The TimeSlice Orchestrator is co-deployed with the Snapshot Agent using the parent Timeslice Helm chart.
@@ -126,18 +126,9 @@ spec:
     resourceClaimName: group-ab-sampler-claim # References the ResourceClaim above
 ```
 
-#### Required Node Selectors & Tolerations
+#### Required Tolerations
 
-To ensure work pods are scheduled on the correct isolated accelerator nodes, you must configure both `nodeSelector` and `tolerations` in the pod specification.
-
-##### Node Selectors
-Work pods must target nodes that are enabled for time-slicing and belong to their specific resource Group:
-
-```yaml
-spec:
-  nodeSelector:
-    group.timeslice.io/group-ab-sampler: "true" # Matches the node Group label
-```
+Work pod placement is handled by the scheduler through the shared DRA `ResourceClaim` — pods referencing the same claim automatically co-locate on the claim's devices, so **no `nodeSelector` is needed**. (Legacy deployments using `group.timeslice.io/*` node labels may keep their `nodeSelector`s; they are compatible but not required.)
 
 ##### Tolerations
 Because time-slicing nodes are tainted to prevent regular workloads from scheduling on them, work pods must explicitly tolerate the time-slicing taint:
@@ -172,9 +163,7 @@ spec:
       - name: accelerator
   resourceClaims:
   - name: accelerator
-    resourceClaimName: group-ab-sampler-claim # References an external ResourceClaim
-  nodeSelector:
-    group.timeslice.io/group-ab-sampler: "true" # Matches the node Group label
+    resourceClaimName: group-ab-sampler-claim # References an external ResourceClaim (placement follows the claim)
   tolerations:
   - key: "timeslice.io/shared"
     operator: "Equal"

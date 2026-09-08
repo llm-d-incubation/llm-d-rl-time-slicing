@@ -110,9 +110,16 @@ func NewComposedHarness(t *testing.T) *ComposedHarness {
 		t.Logf("snapshot-agent chart pod ready at %s:%d on %s", ip, agentPort, node)
 	}
 
-	// Label each group node exclusively.
-	h.exclusiveLabel(t, samplerNode, integSamplers)
-	h.exclusiveLabel(t, trainerNode, integTrainers)
+	// Label each group node exclusively — unless the run validates label-free
+	// membership (INTEG_EMERGENT set), in which case NO node labels may
+	// exist: the orchestrator must create groups on first Acquire and
+	// discover their nodes from scheduled pods.
+	if os.Getenv("INTEG_EMERGENT") == "" {
+		h.exclusiveLabel(t, samplerNode, integSamplers)
+		h.exclusiveLabel(t, trainerNode, integTrainers)
+	} else {
+		t.Log("INTEG_EMERGENT set: skipping group node labeling (label-free membership mode)")
+	}
 
 	// Pre-clean: remove any leaked pods from a previous failed run.
 	h.cleanLeakedPods(t)
