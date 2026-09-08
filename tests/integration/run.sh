@@ -58,9 +58,6 @@ while [[ $# -gt 0 ]]; do
     --skip-cleanup) SKIP_CLEANUP=true; shift ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
-# TEST_RUN_PATTERN overrides the phase-derived go test -run pattern (e.g. a
-# single subtest like TestOrchestrator/MultiNodeGroups).
-RUN_PATTERN="${TEST_RUN_PATTERN:-$RUN_PATTERN}"
 done
 
 usage() {
@@ -81,6 +78,9 @@ case "$PHASE" in
                 NEED_STANDALONE=true; NEED_SA_CHART=true; NEED_ORCH_CHART=true ;;
   *) echo "Unknown phase: $PHASE"; usage; exit 1 ;;
 esac
+# TEST_RUN_PATTERN overrides the phase-derived go test -run pattern (e.g. a
+# single subtest like TestOrchestrator/MultiNodeGroups).
+RUN_PATTERN="${TEST_RUN_PATTERN:-$RUN_PATTERN}"
 
 # --build produces the image(s) from the working directory via Cloud Build,
 # tagged with the current commit so repeated runs don't fight IfNotPresent

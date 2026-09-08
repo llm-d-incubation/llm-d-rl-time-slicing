@@ -204,13 +204,18 @@ func (f *FakeSnapshotAgentStore) GetOperation(
 		required = f.SnapshotRendezvous
 	}
 	if required > 1 && !f.releasedOps[operationID] {
+		// The rendezvous requires DISTINCT nodes in flight — counting bare
+		// operations would let two ops on one node (e.g. a retried trigger)
+		// satisfy a "multi-node" threshold.
 		cohort := []string{}
+		cohortNodes := map[string]bool{}
 		for id, p := range f.pendingOperations {
 			if p.opType == op.opType && p.job == op.job {
 				cohort = append(cohort, id)
+				cohortNodes[p.node] = true
 			}
 		}
-		if len(cohort) < required {
+		if len(cohortNodes) < required {
 			return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_PENDING}, nil
 		}
 		for _, id := range cohort {

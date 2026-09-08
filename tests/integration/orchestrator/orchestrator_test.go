@@ -113,9 +113,15 @@ func TestOrchestrator(t *testing.T) {
 	})
 
 	t.Run("MultiNodeGroups", func(t *testing.T) {
-		if os.Getenv("TEST_NODE_SAMPLERS_B") == "" {
+		nodeB := os.Getenv("TEST_NODE_SAMPLERS_B")
+		if nodeB == "" {
 			t.Skip("TEST_NODE_SAMPLERS_B not set; multi-node samplers topology not provisioned")
 		}
+		// Label nodeB here, not in harness setup, so the samplers group is
+		// multi-node only for this scenario (the earlier scenarios assume a
+		// single-node group); the subtest's cleanup removes the label.
+		h.labelNode(t, nodeB, integSamplers)
+
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
 
