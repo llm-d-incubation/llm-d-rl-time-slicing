@@ -19,7 +19,25 @@ const (
 	// JobIDLabel is the label used to identify pods by their job ID.
 	JobIDLabel = "timeslice.io/job-id"
 	GroupLabel = "timeslice.io/group"
+	// BackendAnnotation declares which snapshot/restore backend handles the
+	// pod's workload when a request carries no explicit BackendConfig and the
+	// job has no live workload channel. Values are BackendConfig field names
+	// (cuda, app_endpoint, app_channel, direct_memory) or noop.
+	BackendAnnotation = "timeslice.io/backend"
+	// BackendConfigAnnotation optionally accompanies BackendAnnotation with
+	// the protojson encoding of the declared backend's config message, e.g.
+	// {"endpoints": ["http://localhost:8000"]} for app_endpoint.
+	BackendConfigAnnotation = "timeslice.io/backend-config"
 )
+
+// JobBackendAnnotation is a backend declaration read from a job's pods.
+type JobBackendAnnotation struct {
+	// Backend is the value of the timeslice.io/backend annotation.
+	Backend string
+	// Config is the value of the timeslice.io/backend-config annotation, or
+	// empty when the pods declare none.
+	Config string
+}
 
 var (
 	// For mocking in tests.
@@ -105,6 +123,40 @@ func GetLocalPods(ctx context.Context, jobID string) ([]corev1.Pod, error) {
 	}
 
 	return podList.Items, nil
+}
+
+// GetJobBackendAnnotation returns the backend declared on the job's local
+// pods (the same pods job discovery matches by the timeslice.io/job-id
+// label), or nil when no pod declares one. Pods of the same job must agree:
+// conflicting declarations are an error rather than an arbitrary pick.
+func GetJobBackendAnnotation(ctx context.Context, jobID string) (*JobBackendAnnotation, error) {
+	pods, err := GetLocalPods(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+
+	var declared *JobBackendAnnotation
+	var declaredBy string
+	for i := range pods {
+		pod := &pods[i]
+		backend, ok := pod.Annotations[BackendAnnotation]
+		if !ok {
+			continue
+		}
+		current := &JobBackendAnnotation{
+			Backend: backend,
+			Config:  pod.Annotations[BackendConfigAnnotation],
+		}
+		if declared == nil {
+			declared, declaredBy = current, pod.Name
+			continue
+		}
+		if *declared != *current {
+			return nil, fmt.Errorf("pods %s and %s of job %s carry conflicting %s declarations",
+				declaredBy, pod.Name, jobID, BackendAnnotation)
+		}
+	}
+	return declared, nil
 }
 
 // GetPodPIDs returns the host-namespace PIDs of all CUDA-context-holding processes belonging to the specified pod.

@@ -775,7 +775,7 @@ func (m *mockDirectMemoryBackend) Restore(ctx context.Context, req backends.Requ
 	return nil
 }
 
-func TestServer_GetSnapshotBackendType_DirectMemory(t *testing.T) {
+func TestServer_ResolverTypeForConfig_DirectMemory(t *testing.T) {
 	srv := NewServer(nil, backends.BackendCuda, "k8s", backends.NewChannelRegistry(),
 		features.Gates{features.DirectMemoryBackend: true})
 	cfg := &pb.BackendConfig{
@@ -783,9 +783,9 @@ func TestServer_GetSnapshotBackendType_DirectMemory(t *testing.T) {
 			DirectMemory: &pb.DirectMemoryBackendConfig{},
 		},
 	}
-	got := srv.getSnapshotBackendType(cfg)
+	got := srv.resolver.typeForConfig(cfg)
 	if got != backends.BackendDirectMemory {
-		t.Errorf("getSnapshotBackendType() = %v, want %v", got, backends.BackendDirectMemory)
+		t.Errorf("typeForConfig() = %v, want %v", got, backends.BackendDirectMemory)
 	}
 }
 

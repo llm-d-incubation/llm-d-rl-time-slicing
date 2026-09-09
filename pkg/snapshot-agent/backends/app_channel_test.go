@@ -180,6 +180,29 @@ func TestAppChannelReregistrationReplacesSession(t *testing.T) {
 	}
 }
 
+func TestWorkloadSessionClosed(t *testing.T) {
+	registry := backends.NewChannelRegistry()
+	send := func(*pb.AgentCommand) error { return nil }
+
+	s1 := registry.Register("job-1", nil, send)
+	if s1.Closed() {
+		t.Error("Expected a freshly registered session to not be closed")
+	}
+
+	s2 := registry.Register("job-1", nil, send)
+	if !s1.Closed() {
+		t.Error("Expected a replaced session to be closed")
+	}
+	if s2.Closed() {
+		t.Error("Expected the replacement session to not be closed")
+	}
+
+	registry.Unregister(s2)
+	if !s2.Closed() {
+		t.Error("Expected an unregistered session to be closed")
+	}
+}
+
 func TestAppChannelModeResolution(t *testing.T) {
 	offloadOnly := &pb.WorkloadCapabilities{
 		SupportedModes: []pb.SuspendMode{pb.SuspendMode_SUSPEND_MODE_OFFLOAD},

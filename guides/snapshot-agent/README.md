@@ -145,7 +145,7 @@ result = client.snapshot_and_wait(job_id="my-k8s-job-id")
 
 ## 3. Backends
 
-The Snapshot Agent supports multiple backends for different GPU memory management strategies. Each backend is selected per-request via the `backend_config` field.
+The Snapshot Agent supports multiple backends for different GPU memory management strategies. Each request's backend is picked by the [resolution chain](#backend-resolution) below; passing an explicit `backend_config` (as in the examples that follow) is the first and strongest link of that chain.
 
 | Backend | Config | How it works | VRAM Freed | Resume Time |
 |---------|--------|-------------|------------|-------------|
@@ -154,6 +154,52 @@ The Snapshot Agent supports multiple backends for different GPU memory managemen
 | Application-Aware | `app_channel` | Suspend/resume pushed over a channel the workload registered (Python-API workloads, no HTTP server) | ~96% | ~50-100ms |
 
 The VRAM Freed and Resume Time figures are illustrative, measured with a small model (Qwen2.5-0.5B) on an H100; actual numbers depend on the model size, hardware, and engine version.
+
+### Backend resolution
+
+Every Snapshot and Restore request resolves its backend through one chain, in
+strict precedence order — the first source that applies wins, and the agent
+logs one line per resolution stating the source and the chosen backend:
+
+1. **Explicit `backend_config` in the request** — honored as-is (all the
+   examples below use this).
+2. **Live workload channel** — a config-less request for a job with a live
+   registered workload channel routes to the
+   [app_channel](#application-aware-app_channel) backend. This is how
+   orchestrator-driven requests (which carry no `backend_config`) reach
+   application-aware workloads.
+3. **Pod annotation** (Kubernetes mode) — a backend declared on the
+   workload's pods via the `timeslice.io/backend` annotation, read through
+   the same Kubernetes client that discovers the job's pods. Values are
+   `BackendConfig` field names — `cuda`, `app_endpoint`, `app_channel`,
+   `direct_memory` — or `noop`. Backends that need configuration take it from
+   the companion `timeslice.io/backend-config` annotation, holding the
+   backend's config message in protobuf JSON form. A malformed or unknown
+   declaration fails the operation — it never falls through silently.
+4. **Agent default** — the `cuda` backend.
+
+Declaring the backend on the workload's pods:
+
+```yaml
+metadata:
+  labels:
+    timeslice.io/job-id: my-vllm-job
+  annotations:
+    timeslice.io/backend: app_endpoint
+    timeslice.io/backend-config: |
+      {"app": "APP_VLLM", "endpoints": ["http://localhost:8000"]}
+```
+
+```yaml
+metadata:
+  labels:
+    timeslice.io/job-id: my-training-job
+  annotations:
+    timeslice.io/backend: cuda   # explicit; same as the agent default
+```
+
+When a job spans several local pods, their declarations must agree —
+conflicting annotations fail the operation.
 
 ### CUDA Checkpoint
 
@@ -330,7 +376,9 @@ before any command is sent (e.g. DISCARD against a trainer that only supports
 OFFLOAD fails the operation immediately).
 
 **Caller side** — the usual `Snapshot`/`Restore` with an `app_channel` config.
-An empty config means "suspend however the workload declared at registration":
+An empty config means "suspend however the workload declared at registration".
+Callers that send no `backend_config` at all (e.g. the orchestrator) land here
+too, through step 2 of the [resolution chain](#backend-resolution):
 
 ```python
 channel_config = snapshot.BackendConfig(app_channel=snapshot.AppChannelConfig())
