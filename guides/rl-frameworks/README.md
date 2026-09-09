@@ -100,7 +100,7 @@ Add time-slicing configuration options to the framework's argument parser:
 ```python
 parser.add_argument("--enable-timeslice", action="store_true", default=False)
 parser.add_argument("--timeslice-orchestrator-addr", type=str,
-    default="timeslice-acceleratororchestrator.timeslice-system.svc.cluster.local:50051")
+    default="timeslice-timesliceorchestrator.timeslice-system.svc.cluster.local:50051")
 parser.add_argument("--timeslice-job-id", type=str, default=None)
 parser.add_argument("--timeslice-sampler-group", type=str, default="samplers")
 parser.add_argument("--timeslice-trainer-group", type=str, default="trainers")
