@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
 	pb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
@@ -174,5 +175,31 @@ func TestHealthCheck(t *testing.T) {
 				t.Errorf("HealthCheck() error = %v, expectedErr %v", err, tt.expectedErr)
 			}
 		})
+	}
+}
+
+func TestCudaCheckpointOpTimeout(t *testing.T) {
+	t.Setenv("CUDA_CHECKPOINT_OP_TIMEOUT_SEC", "1")
+
+	c := backends.NewCudaCheckpoint()
+	c.SetExecCommand(func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		// Simulate cuda-checkpoint hanging on a dead workload:
+		// block until the per-operation deadline cancels the context.
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+
+	start := time.Now()
+	err := c.Snapshot(context.Background(), backends.Request{JobID: "test-job", Config: cudaConfig(123)})
+	if err == nil {
+		t.Fatal("Snapshot() expected timeout error, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Snapshot() took %v; the 1s CUDA_CHECKPOINT_OP_TIMEOUT_SEC deadline was not applied", elapsed)
+	}
+
+	err = c.Restore(context.Background(), backends.Request{JobID: "test-job", Config: cudaConfig(123)})
+	if err == nil {
+		t.Fatal("Restore() expected timeout error, got nil")
 	}
 }

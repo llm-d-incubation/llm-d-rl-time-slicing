@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
 	"sync"
@@ -138,10 +139,25 @@ func (c *CudaCheckpoint) getCudaCheckpointPath() string {
 }
 
 func (c *CudaCheckpoint) runSudoCommand(ctx context.Context, name string, args ...string) error {
+	// A hung cuda-checkpoint (e.g. a workload that dies mid-lock) would
+	// otherwise hold c.mu forever and wedge every later snapshot/restore.
+	ctx, cancel := context.WithTimeout(ctx, cudaCheckpointOpTimeout())
+	defer cancel()
 	if out, err := c.execCommand(ctx, name, args...); err != nil {
 		return fmt.Errorf("command failed: %w, output: %s", err, string(out))
 	}
 	return nil
+}
+
+// cudaCheckpointOpTimeout is the per-cuda-checkpoint-invocation deadline,
+// configurable via CUDA_CHECKPOINT_OP_TIMEOUT_SEC (default 120).
+func cudaCheckpointOpTimeout() time.Duration {
+	if v := os.Getenv("CUDA_CHECKPOINT_OP_TIMEOUT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 120 * time.Second
 }
 
 func (c *CudaCheckpoint) checkpointPIDs(ctx context.Context, pids []string) error {
