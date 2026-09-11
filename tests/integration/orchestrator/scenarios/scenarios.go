@@ -271,8 +271,8 @@ func RunQueuedRLJobsScenario(
 // restore on a samplers group spanning two or more nodes. Each job deploys
 // one GPU pod pinned to EVERY sampler node (per-node shared claims), so each
 // samplers handoff must snapshot the outgoing job and restore the incoming
-// job on ALL nodes of the group — exercising the concurrent fan-out in
-// reconcileNonActiveJobsSnapshot / reconcileActiveJobRestore on real GPUs.
+// job on ALL nodes of the group — exercising the concurrent per-node
+// reconcile fan-out (parallel reconcileNode) on real GPUs.
 func RunMultiNodeGroupsScenario(
 	ctx context.Context,
 	clientset kubernetes.Interface,
@@ -315,8 +315,11 @@ func RunMultiNodeGroupsScenario(
 	}
 	var createdClaims []string
 	defer func() {
+		// Survive scenario-deadline expiry: a leaked still-allocated claim
+		// poisons the next run (createSharedClaim tolerates AlreadyExists).
+		cleanupCtx := context.WithoutCancel(ctx)
 		for _, name := range createdClaims {
-			if err := deleteSharedClaim(ctx, clientset, name); err != nil {
+			if err := deleteSharedClaim(cleanupCtx, clientset, name); err != nil {
 				logger.Errorf("Failed to delete shared claim %s: %v", name, err)
 			}
 		}

@@ -64,9 +64,10 @@ type FakeSnapshotAgentStore struct {
 	// simultaneously. GetOperation reports PENDING below the threshold, so a
 	// controller that issues restores serially and blocks per node deadlocks.
 	RestoreRendezvous int
-	// SnapshotRendezvous is the same gate for snapshot operations. Real
-	// hardware has no snapshot rendezvous; the gate lets tests verify the
-	// controller issues snapshots concurrently across nodes.
+	// SnapshotRendezvous is the same gate for snapshot operations. Multi-host
+	// checkpoint is also effectively rendezvoused: a host cannot quiesce and
+	// park while its peers are still issuing collectives, so the checkpoint
+	// only completes once every host of the slice is snapshotting.
 	SnapshotRendezvous int
 
 	// Optional hooks for tests to observe events

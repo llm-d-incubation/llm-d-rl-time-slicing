@@ -2518,6 +2518,80 @@ func TestController_Reconcile_MultiNodeRestore_FailurePropagates(t *testing.T) {
 	}
 }
 
+// A failed trigger on one node must cancel the peers' operation waits: with a
+// cohort member missing the rendezvous can never complete, so without the
+// cancellation the peer would poll a forever-PENDING operation and wedge the
+// reconcile worker.
+func TestController_Reconcile_MultiNodeRestore_TriggerFailureCancelsPeers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+	testQueue := &trackQueue{
+		TypedRateLimitingInterface: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "test"},
+		),
+	}
+
+	groupID := "group-1"
+	nodeNames := []string{"node-1", "node-2"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+	group.Spec().SetActiveJob("job-1")
+
+	job1 := store.NewJob(groupID, "job-1")
+	for _, node := range nodeNames {
+		job1.UpdateContextState(node, pb.SnapshotAgentJobState_STATE_SAVED)
+	}
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		RestoreFunc: func(ctx context.Context, node, jobID, gID string) (*agentpb.RestoreResponse, error) {
+			// node-2's trigger fails outright; node-1's succeeds.
+			if node == "node-2" {
+				return nil, fmt.Errorf("agent unreachable on node-2")
+			}
+			return &agentpb.RestoreResponse{OperationId: "op-restore-" + node}, nil
+		},
+		OperationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+			// node-1's restore parks in the rendezvous and never completes.
+			return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_PENDING}, nil
+		},
+	}
+
+	mockOrch := &mockInfrastructureOrchestrator{
+		observeFunc: func(ctx context.Context, gID string) error {
+			return nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, testQueue, mockOrch, mockAgentStore)
+
+	go func() {
+		if err := c.Run(ctx, 1); err != nil {
+			t.Errorf("Controller Run failed: %v", err)
+		}
+	}()
+
+	testQueue.Add(groupID)
+
+	// The trigger failure must abort the whole fan-out (cancelling node-1's
+	// wait) so the reconcile fails and requeues instead of hanging.
+	err = waitWithTimeout(func() bool { return testQueue.getAddRateLimitedCount() > 0 }, 5*time.Second)
+	if err != nil {
+		t.Fatal("Timed out waiting for requeue: peer wait was not cancelled after the trigger failure")
+	}
+}
+
 func TestController_Reconcile_PreemptionSafetyGates_ActiveJobTransitioning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
