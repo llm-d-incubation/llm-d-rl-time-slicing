@@ -301,6 +301,7 @@ func (c *Controller) reconcileGroup(ctx context.Context, groupID string) error {
 			}()
 			if err := c.reconcileNode(opCtx, group.ID(), node, activeJob, cancelPeers); err != nil {
 				nodeErrs[idx] = fmt.Errorf("failed to reconcile node %s: %w", node, err)
+				cancelPeers()
 			}
 		}()
 	}
