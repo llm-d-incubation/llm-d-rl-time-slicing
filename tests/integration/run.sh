@@ -78,6 +78,9 @@ case "$PHASE" in
                 NEED_STANDALONE=true; NEED_SA_CHART=true; NEED_ORCH_CHART=true ;;
   *) echo "Unknown phase: $PHASE"; usage; exit 1 ;;
 esac
+# TEST_RUN_PATTERN overrides the phase-derived go test -run pattern (e.g. a
+# single subtest like TestOrchestrator/MultiNodeGroups).
+RUN_PATTERN="${TEST_RUN_PATTERN:-$RUN_PATTERN}"
 
 # --build produces the image(s) from the working directory via Cloud Build,
 # tagged with the current commit so repeated runs don't fight IfNotPresent
@@ -143,6 +146,9 @@ cleanup() {
     fi
     if [[ -n "${TEST_NODE_TRAINERS:-}" ]]; then
       $K label node "$TEST_NODE_TRAINERS" "group.timeslice.io/trainers-" 2>/dev/null || true
+    fi
+    if [[ -n "${TEST_NODE_SAMPLERS_B:-}" ]]; then
+      $K label node "$TEST_NODE_SAMPLERS_B" "group.timeslice.io/samplers-" 2>/dev/null || true
     fi
   fi
   if [[ "$NEED_SA_CHART" == "true" ]]; then
@@ -219,7 +225,7 @@ if [[ "$NEED_SA_CHART" == "true" ]]; then
     log "Installing the official snapshot-agent chart (both group nodes, port ${CHART_AGENT_PORT})..."
     $HELM upgrade --install sa-chart-test "${REPO_ROOT}/deploy/snapshot-agent" "${SA_HELM_ARGS[@]}"
     SA_SELECTOR="app.kubernetes.io/name=snapshot-agent,app.kubernetes.io/instance=sa-chart-test"
-    for NODE in "$TEST_NODE_SAMPLERS" "$TEST_NODE_TRAINERS"; do
+    for NODE in "$TEST_NODE_SAMPLERS" "$TEST_NODE_TRAINERS" ${TEST_NODE_SAMPLERS_B:+"$TEST_NODE_SAMPLERS_B"}; do
       log "Waiting for the chart's DaemonSet pod to become Ready on ${NODE}..."
       wait_chart_pods_ready "$SA_SELECTOR" "$NODE" || chart_failure "snapshot-agent" "$SA_SELECTOR"
     done
@@ -286,6 +292,7 @@ EXIT=0
 $K exec test-runner -- env "MODEL=${MODEL}" "TEST_NODE=${TEST_NODE:-}" \
   "TEST_NODE_SAMPLERS=${TEST_NODE_SAMPLERS:-}" \
   "TEST_NODE_TRAINERS=${TEST_NODE_TRAINERS:-}" \
+  "TEST_NODE_SAMPLERS_B=${TEST_NODE_SAMPLERS_B:-}" \
   "SA_CHART_DEPLOYED=${SA_CHART_DEPLOYED}" \
   "ORCH_CHART_DEPLOYED=${ORCH_CHART_DEPLOYED}" \
   "CHART_AGENT_PORT=${CHART_AGENT_PORT}" \

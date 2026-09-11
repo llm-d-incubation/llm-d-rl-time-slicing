@@ -55,7 +55,20 @@ type FakeSnapshotAgentStore struct {
 	mu                sync.Mutex
 	jobStates         map[string]map[string]agentpb.JobState // node -> job -> state
 	pendingOperations map[string]pendingOp
+	releasedOps       map[string]bool // op IDs whose rendezvous cohort already met the threshold
 	opCounter         int
+
+	// RestoreRendezvous, when set to N > 1, models a multi-host accelerator
+	// slice (e.g. TPU libtpu): a restore operation for a job cannot complete
+	// until restores for that job are pending on at least N nodes
+	// simultaneously. GetOperation reports PENDING below the threshold, so a
+	// controller that issues restores serially and blocks per node deadlocks.
+	RestoreRendezvous int
+	// SnapshotRendezvous is the same gate for snapshot operations. Multi-host
+	// checkpoint is also effectively rendezvoused: a host cannot quiesce and
+	// park while its peers are still issuing collectives, so the checkpoint
+	// only completes once every host of the slice is snapshotting.
+	SnapshotRendezvous int
 
 	// Optional hooks for tests to observe events
 	OnSnapshot func(node, jobID string)
@@ -66,6 +79,7 @@ func NewFakeSnapshotAgentStore() *FakeSnapshotAgentStore {
 	return &FakeSnapshotAgentStore{
 		jobStates:         make(map[string]map[string]agentpb.JobState),
 		pendingOperations: make(map[string]pendingOp),
+		releasedOps:       make(map[string]bool),
 	}
 }
 
@@ -179,9 +193,41 @@ func (f *FakeSnapshotAgentStore) GetOperation(
 		return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_FAILED}, nil
 	}
 
+	// Enforce the rendezvous gate: the operation stays pending until enough
+	// peer operations of the same type for the same job are in flight. Once the
+	// threshold is met the whole cohort is released together (completed members
+	// leaving pendingOperations must not re-block their peers).
+	required := 0
+	switch op.opType {
+	case "restore":
+		required = f.RestoreRendezvous
+	case "snapshot":
+		required = f.SnapshotRendezvous
+	}
+	if required > 1 && !f.releasedOps[operationID] {
+		// The rendezvous requires DISTINCT nodes in flight — counting bare
+		// operations would let two ops on one node (e.g. a retried trigger)
+		// satisfy a "multi-node" threshold.
+		cohort := []string{}
+		cohortNodes := map[string]bool{}
+		for id, p := range f.pendingOperations {
+			if p.opType == op.opType && p.job == op.job {
+				cohort = append(cohort, id)
+				cohortNodes[p.node] = true
+			}
+		}
+		if len(cohortNodes) < required {
+			return &agentpb.GetOperationResponse{Status: agentpb.OperationStatus_OPERATION_STATUS_PENDING}, nil
+		}
+		for _, id := range cohort {
+			f.releasedOps[id] = true
+		}
+	}
+
 	// Apply the transition
 	f.jobStates[op.node][op.job] = op.targetState
 	delete(f.pendingOperations, operationID)
+	delete(f.releasedOps, operationID)
 
 	return &agentpb.GetOperationResponse{
 		Status:    agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,

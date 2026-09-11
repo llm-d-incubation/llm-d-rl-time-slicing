@@ -112,4 +112,40 @@ func TestOrchestrator(t *testing.T) {
 		}
 	})
 
+	t.Run("MultiNodeGroups", func(t *testing.T) {
+		nodeB := os.Getenv("TEST_NODE_SAMPLERS_B")
+		if nodeB == "" {
+			t.Skip("TEST_NODE_SAMPLERS_B not set; multi-node samplers topology not provisioned")
+		}
+		// Label nodeB here, not in harness setup, so the samplers group is
+		// multi-node only for this scenario (the earlier scenarios assume a
+		// single-node group); the subtest's cleanup removes the label.
+		h.labelNode(t, nodeB, integSamplers)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+
+		conn, err := grpc.NewClient(
+			h.OrchAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if err != nil {
+			t.Fatalf("dialing orchestrator at %s: %v", h.OrchAddr, err)
+		}
+		defer conn.Close()
+
+		client := pb.NewTimeSliceOrchestratorServiceClient(conn)
+
+		err = scenarios.RunMultiNodeGroupsScenario(
+			ctx,
+			h.Client,
+			client,
+			t,
+			"",  // sampler template key (default: PyTorch GPU burner)
+			"",  // trainer template key (default: PyTorch GPU burner)
+		)
+		if err != nil {
+			t.Fatalf("MultiNodeGroups scenario failed: %v", err)
+		}
+	})
 }

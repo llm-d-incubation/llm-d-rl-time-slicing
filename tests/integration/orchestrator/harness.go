@@ -110,8 +110,23 @@ func NewComposedHarness(t *testing.T) *ComposedHarness {
 		t.Logf("snapshot-agent chart pod ready at %s:%d on %s", ip, agentPort, node)
 	}
 
-	// Label each group node exclusively.
-	h.exclusiveLabel(t, samplerNode, integSamplers)
+	// Optional second sampler node for the MultiNodeGroups scenario. Only
+	// validated here — the label is applied by that subtest itself, so the
+	// samplers group stays single-node for every other scenario (a second
+	// labeled node would give their jobs a second pod on the one shared claim).
+	nodeB := os.Getenv("TEST_NODE_SAMPLERS_B")
+	if nodeB != "" {
+		if nodeB == samplerNode || nodeB == trainerNode {
+			t.Fatalf("TEST_NODE_SAMPLERS_B %q must differ from TEST_NODE_SAMPLERS and TEST_NODE_TRAINERS", nodeB)
+		}
+		ip := h.WaitPodReadyByLabel(t, chartNamespace, saSelector, nodeB, orchPodTimeout)
+		t.Logf("snapshot-agent chart pod ready at %s:%d on %s (samplers node B)", ip, agentPort, nodeB)
+	}
+
+	// Label each group node exclusively. nodeB is test-managed: a samplers
+	// label found on it is a leftover from an aborted run, stripped without a
+	// restore-on-cleanup.
+	h.exclusiveLabel(t, samplerNode, integSamplers, nodeB)
 	h.exclusiveLabel(t, trainerNode, integTrainers)
 
 	// Pre-clean: remove any leaked pods from a previous failed run.
@@ -123,10 +138,23 @@ func NewComposedHarness(t *testing.T) *ComposedHarness {
 // exclusiveLabel ensures TEST_NODE is the ONLY node with the given group
 // label: it removes the label from all other nodes (restoring on cleanup)
 // and adds it to TEST_NODE (removing on cleanup).
-func (h *ComposedHarness) exclusiveLabel(t *testing.T, testNode, group string) {
+//
+// testManagedNodes are nodes this test run labels and unlabels itself (e.g.
+// TEST_NODE_SAMPLERS_B): a group label found on one is a leftover from an
+// aborted run, so it is stripped WITHOUT a restore cleanup — cleanups run
+// LIFO, so a restore registered here would run after the test's own label
+// removal and resurrect the leak.
+func (h *ComposedHarness) exclusiveLabel(t *testing.T, testNode, group string, testManagedNodes ...string) {
 	t.Helper()
 	ctx := context.Background()
 	labelKey := fmt.Sprintf("group.timeslice.io/%s", group)
+
+	testManaged := make(map[string]bool, len(testManagedNodes))
+	for _, n := range testManagedNodes {
+		if n != "" {
+			testManaged[n] = true
+		}
+	}
 
 	nodes, err := h.Client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -143,6 +171,10 @@ func (h *ComposedHarness) exclusiveLabel(t *testing.T, testNode, group string) {
 		delete(n.Labels, labelKey)
 		if _, err := h.Client.CoreV1().Nodes().Update(ctx, n, metav1.UpdateOptions{}); err != nil {
 			t.Fatalf("removing label %s from node %s: %v", labelKey, n.Name, err)
+		}
+		if testManaged[n.Name] {
+			t.Logf("removed stale label %s from test-managed node %s (no restore)", labelKey, n.Name)
+			continue
 		}
 		t.Logf("temporarily removed label %s from node %s", labelKey, n.Name)
 		nodeName := n.Name
