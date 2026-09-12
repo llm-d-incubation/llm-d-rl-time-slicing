@@ -152,6 +152,7 @@ The Snapshot Agent supports multiple backends for different GPU memory managemen
 | CUDA Checkpoint | `cuda` | Process-level CUDA state save/restore via `cuda-checkpoint` | ~100% | ~1-3s |
 | Application-Aware | `app_endpoint` | Suspend/resume through the application's own HTTP API (vLLM, SGLang) | ~96% | ~50-100ms |
 | Application-Aware | `app_channel` | Suspend/resume pushed over a channel the workload registered (Python-API workloads, no HTTP server) | ~96% | ~50-100ms |
+| Direct Memory | `direct_memory` | Full-process park/resume via GPU-CR `cr_client`: the workload's preloader dumps device state to node shared memory and the process stays alive | ~100% | ~0.5-2s |
 
 The VRAM Freed and Resume Time figures are illustrative, measured with a small model (Qwen2.5-0.5B) on an H100; actual numbers depend on the model size, hardware, and engine version.
 
@@ -344,6 +345,154 @@ A request for a job with no registered channel fails fast with
 `no workload channel registered for job "..."`. If the workload's suspend
 raises, the operation fails with the workload's error text.
 
+### Direct Memory (direct_memory)
+
+Full-process GPU park/resume driven by GPU-CR's `cr_client`. Like the CUDA
+Checkpoint backend it saves and restores the process's entire device state,
+and it uses the same `cuda-checkpoint` toggle for the CUDA context — the
+difference is who moves the bytes. Plain `cuda-checkpoint` copies all
+device memory through the driver into the process's own pageable host RAM.
+Here, the workload's GPU-CR preloader first drains the device memory it
+tracked into hugepage-backed files on the node through a pinned DMA
+pipeline and frees it; the context toggle then freezes what is by that
+point a nearly empty context. The bulk bytes never cross the slow pageable
+path — which is why park and resume are several times faster for
+large-VRAM workloads — and the parked state lives in node-local files that
+survive independently of the process's memory.
+
+Requirements:
+
+* The target workload runs under the GPU-CR vGPU preloader
+  (`LD_PRELOAD=vGPU-NVIDIA.so`), built from the same `third_party/gpu-cr`
+  tree as the `cr_client` shipped in the agent image — the two share
+  compiled-in constants and are version-locked.
+* Agent and workload share the GPU-CR checkpoint/control directory (the
+  agent's `EXPORT_FILE_PATH`; in Kubernetes, the `directMemory` block in
+  the Helm chart under `deploy/snapshot-agent` renders the shared mount
+  plus, by default, init containers that mount hugetlbfs for the dump
+  store, mount the control-file tmpfs nested at `<store>/ctl` (discovered
+  by both sides with no configuration; it keeps the agent free of hugepage
+  requests), and provision the node's 2Mi hugepage pool at deploy time —
+  so no special node image or pre-sized nodepool is needed).
+* Node hugepage capacity for whole-VRAM dumps, sized to the GPU-CR build's
+  dump extent (the chart's bootstrap provisions this by default; size it
+  via `directMemory.hugetlbfs.bootstrap.pages2Mi`).
+
+The backend is experimental and gated off by default: requests fail with
+`FAILED_PRECONDITION` unless the agent runs with
+`--feature-gates=DirectMemoryBackend=true` (or the `FEATURE_GATES` env
+var). The Helm chart sets the gate automatically when
+`directMemory.enabled=true`.
+
+```python
+from timeslice.snapshot_agent import SnapshotAgentClient, direct_memory_config
+
+with SnapshotAgentClient("localhost:9001") as client:
+    # Park: device state is dumped node-locally, VRAM is freed,
+    # the process stays alive.
+    client.snapshot_and_wait(
+        job_id="my-job",
+        backend_config=direct_memory_config(pids=[1234]),
+    )
+    # Resume: parked state is mapped back and execution continues.
+    client.restore_and_wait(
+        job_id="my-job",
+        backend_config=direct_memory_config(pids=[1234]),
+    )
+```
+
+In Kubernetes mode PIDs are discovered from the `timeslice.io/job-id` pod
+label — omit `pids` (i.e. `direct_memory_config()`).
+
+#### Setting up a workload pod
+
+Bake the preloader into your workload image, copied from the artifact image
+that `third_party/gpu-cr/Dockerfile.build` produces (building both it and
+the agent's `cr_client` from the same tree is what keeps them compatible):
+
+```dockerfile
+FROM <registry>/gpucr-so:<tag> AS gpucr
+FROM vllm/vllm-openai:v0.22.0
+COPY --from=gpucr /vGPU-NVIDIA.so /usr/local/lib/vGPU-NVIDIA.so
+RUN chmod 755 /usr/local/lib/vGPU-NVIDIA.so
+```
+
+Then the pod needs the job-id label, the shared checkpoint-dir mount, a
+hugepage allowance for its dumps, and a handful of env vars:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-sampler
+  labels:
+    timeslice.io/job-id: "my-job"   # how the agent finds this pod's PIDs
+spec:
+  # The preloader names its control file after the process's own PID; the
+  # agent signals the HOST PID it discovered. These only match in the host
+  # PID namespace.
+  hostPID: true
+  containers:
+  - name: workload
+    image: <your image with vGPU-NVIDIA.so baked in>
+    securityContext:
+      runAsUser: 0
+    env:
+    # Required: inject the preloader and point it at the dump-store ROOT
+    # (the chart's directMemory.ctlDir value — /mnt/huge-ckpt by default).
+    # GPU-CR discovers the control directory at <root>/ctl on its own;
+    # never set EXPORT_FILE_PATH to the nested ctl path itself.
+    - name: LD_PRELOAD
+      value: "/usr/local/lib/vGPU-NVIDIA.so"
+    - name: GPU_VENDOR
+      value: "NVIDIA"
+    - name: EXPORT_FILE_PATH
+      value: "/mnt/huge-ckpt"
+    # Dump-buffer size in GiB. Unset = the build default (25). Size it to
+    # the VRAM working set you actually park.
+    - name: GPU_CR_SHM_GB
+      value: "8"
+    # Part of the configuration all published direct_memory results were
+    # measured with (vLLM in eager mode, caching allocator off); running
+    # without them is untested.
+    - name: PYTORCH_NO_CUDA_MEMORY_CACHING
+      value: "1"
+    - name: CUDA_LAUNCH_BLOCKING
+      value: "1"
+    resources:
+      requests:
+        nvidia.com/gpu: "1"
+        memory: "6Gi"
+        # The dump buffer plus headroom: ~12Gi for GPU_CR_SHM_GB=8,
+        # ~28Gi for the unset (25 GiB) default. Kubernetes requires a
+        # memory request alongside hugepages.
+        hugepages-2Mi: "12Gi"
+      limits:
+        nvidia.com/gpu: "1"
+        memory: "6Gi"
+        hugepages-2Mi: "12Gi"
+    volumeMounts:
+    - name: huge-ckpt
+      mountPath: /mnt/huge-ckpt
+      # Pick up the hugetlbfs + control-tmpfs mounts the agent's init
+      # containers made on the host, even if this pod started first.
+      mountPropagation: HostToContainer
+  volumes:
+  - name: huge-ckpt
+    hostPath:
+      path: /var/tmp/huge-ckpt   # the chart's directMemory.hostCtlPath
+      type: DirectoryOrCreate
+```
+
+No control-plane configuration is needed: the preloader discovers the
+control-file tmpfs at `<store>/ctl` through this same mount.
+
+Each `cr_client` invocation runs under a per-operation deadline
+(`DIRECT_MEMORY_OP_TIMEOUT_SEC`, default 120 s): a workload that dies
+mid-operation fails that operation instead of wedging the job in
+TRANSITIONING. Health: `grpc.health.v1.Health/Check` with
+`service: "direct-memory"` reports whether `cr_client` is available.
+
 ### Composing Backends
 
 Application-aware suspend (either transport) and CUDA checkpoint are separate operations that compose. Suspend first, then checkpoint; restore in reverse order:
@@ -423,3 +572,5 @@ grpcurl -plaintext \
 - **GPU Not Found:** Check that the `nvidia.driver.hostPath` in the agent's configuration matches your node's setup.
 - **Garbage inference after resume (vLLM):** The workload was suspended with `SUSPEND_MODE_DISCARD`, which drops weights. Suspend with `SUSPEND_MODE_OFFLOAD` (vLLM's default when the mode is unspecified), or have the application push new weights after resume.
 - **Garbage inference after SGLang resume:** The SGLang server was started without `--enable-weights-cpu-backup`. Restart with this flag.
+- **`cr_client not found at /usr/local/bin/cr_client` (direct_memory):** The agent image was built without the GPU-CR builder stage. Deploy the standard snapshot-agent image; there is no path override.
+- **direct_memory operation times out:** `cr_client` talks to the workload's preloader over a shared-memory control channel; a timeout usually means the workload is not running under `LD_PRELOAD=vGPU-NVIDIA.so`, the preloader and `cr_client` were built from different GPU-CR trees, or the target process died mid-operation. The deadline is `DIRECT_MEMORY_OP_TIMEOUT_SEC` (default 120 s).
