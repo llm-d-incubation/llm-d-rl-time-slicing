@@ -23,6 +23,12 @@ stub that records having been invoked, so freeze/thaw behavior is
 observable without a driver. Exit-code contract asserted throughout:
 0 OK / 1 usage / 2 op failed / 3 refused pre-signal / 4 timeout.
 
+In this tree the suite runs the shared cases under the **ctl-mode env**
+(`EXPORT_FILE_PATH` + `GPU_CR_CTL_PATH`, the "ctl:" prefix in test
+names) and adds ctl-plane sections: advertisement gating, broken ctl
+paths, zero-config `<data>/ctl` discovery, and legacy mode (env-only
+control channel).
+
 `fake_workload` knobs used by the cases below:
 
 | Env | Fake behavior |
@@ -66,6 +72,23 @@ Test cases (in script order):
 | Usage | restore from a missing file | — | `-r -s -o <nonexistent>` | 2 |
 | Dest hardening | relative `-o` refused | — | `-o rel/dump.bin` | 2 |
 | Dest hardening | symlink dest refused | `ln -s /etc/hostname <path>` | `-c -s -o <path>` | 2 (ELOOP via `O_NOFOLLOW`) |
+
+Ctl-plane, discovery, and legacy-mode cases (this tree only):
+
+| Group | Test case | Setup | `cr_client` invocation | Expected |
+|---|---|---|---|---|
+| Advertisement gate | no advertisement → refused | `FAKE_NOT_READY=1` (nothing advertised) | `-c -s` | 3 |
+| Advertisement gate | starttime mismatch (PID reuse) → refused | advert edited to `starttime=1` | `-c -s` | 3 |
+| Advertisement gate | owner uid mismatch (forged advert) → refused | advert `chown`ed to 65534 (root-only; skipped elsewhere) | `-c -s` | 3 |
+| Broken ctl path | non-tmpfs `GPU_CR_CTL_PATH` refused | `GPU_CR_CTL_PATH` on disk-backed fs | `-c -s` | 3 |
+| Broken ctl path | missing `GPU_CR_CTL_PATH` dir refused | `GPU_CR_CTL_PATH=/nonexistent-ctl` | `-c -s` | 3 |
+| Discovery | advert + control channel land on `<data>/ctl` | no ctl env at all (tmpfs data dir) | `-i` | 0; both files under `<data>/ctl` |
+| Discovery | dest-path selective ckpt/restore | no ctl env | `-c -s -o`, `-r -s -o` | 0 each |
+| Discovery | starttime mismatch → refused | advert edited to `starttime=1` | `-c -s` | 3 |
+| Legacy mode | init / buffer ckpt / dest-path ckpt | `EXPORT_FILE_PATH` only | `-i`, `-c -s`, `-c -s -o` | 0 each |
+
+The five not-ready refusal rows in the main table run in legacy mode in
+this tree (ctl mode refuses earlier, at the advertisement gate).
 
 File-existence assertions (`dump created`, toggle-marker checks, the
 timeout artifact) count as separate pass/fail lines in the script's

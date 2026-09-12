@@ -83,8 +83,12 @@ echo "perf regression: ${NUM_BUFFERS}x${BUFFER_MB}MiB buffers, $ITERS iters, thr
 
 # Perf tests run in the legacy (no-ctl) layout: the e9bbb52 baseline
 # predates the ctl-path control plane and both variants must see identical
-# plumbing.
+# plumbing. Unsetting the env is not enough on the nested-ctl pod layout —
+# the candidate would zero-config-discover $STORE/ctl — so dumps move to a
+# ctl-free subdirectory of the store (same hugetlbfs, no ctl/ inside).
 unset GPU_CR_CTL_PATH
+STORE="$STORE/perf-legacy"
+mkdir -p "$STORE"
 
 BASE=$(measure baseline "$BASELINE_SO" "$BASELINE_CLIENT") || exit 1
 CAND=$(measure candidate "$CANDIDATE_SO" "$CANDIDATE_CLIENT") || exit 1

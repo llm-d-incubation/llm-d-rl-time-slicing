@@ -1,7 +1,8 @@
 // GPU-free stand-in for the vGPU.so side of the control channel, used by
 // the cr_client integration tests. It reuses the REAL product pieces —
-// ShareMemComm, FinishOpControls, ValidateDumpFd — and fakes only the
-// GPU work (dump extents are pattern bytes instead of VRAM).
+// ShareMemComm, gpu_cr::Config, WriteAdvertisement, FinishOpControls,
+// ValidateDumpFd — and fakes only the GPU work (dump extents are pattern
+// bytes instead of VRAM).
 //
 // Behavior knobs (env):
 //   FAKE_OP_STATUS   errno-style status to report at FINISH (default 0)
@@ -22,6 +23,7 @@
 #include <unistd.h>
 
 #include "common.h"
+#include "ctl_path.h"
 #include "dump_format.h"
 #include "comm/comm.h"
 
@@ -129,9 +131,18 @@ int main() {
   const char* st = getenv("FAKE_OP_STATUS");
   if (st) g_fake_status = atoi(st);
 
+  const gpu_cr::BufConfig& cfg = gpu_cr::Config();
+
   g_comm = new ShareMemComm(getpid());
   g_comm->setup();
   if (!g_not_ready) g_comm->control->selective_ready = gpu_cr::kSelectiveReady;
+
+  bool ctl_mode = false;
+  const char* ctl_dir = gpu_cr::CtlDir(&ctl_mode);
+  if (ctl_mode && !g_not_ready) {
+    gpu_cr::WriteAdvertisement(ctl_dir, getpid(), cfg.shm_size >> 20,
+                               cfg.staging_size >> 20, cfg.shm_deferred);
+  }
 
   signal(CR_INIT_SIGNAL, SignalHandler);
   signal(CR_CKPT_SIGNAL, SignalHandler);
@@ -146,7 +157,7 @@ int main() {
     }
   }
 
-  fprintf(stderr, "[fake-workload] ready, pid=%d not_ready=%d\n",
-          getpid(), g_not_ready ? 1 : 0);
+  fprintf(stderr, "[fake-workload] ready, pid=%d ctl_mode=%d not_ready=%d\n",
+          getpid(), ctl_mode ? 1 : 0, g_not_ready ? 1 : 0);
   for (;;) pause();
 }

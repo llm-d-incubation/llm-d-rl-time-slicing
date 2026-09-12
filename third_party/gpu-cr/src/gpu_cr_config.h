@@ -18,8 +18,10 @@
 //            Σ destination files.
 //   GPU_CR_STAGING_MB               each of the two DMA staging buffers
 //
-// The coordinator maps worker buffers at its own SHM_SIZE, so the
-// coordinator and its workers must run with identical GPU_CR_* env.
+// The coordinator maps only the fixed header window of each worker
+// buffer (see multi_cr_client) and treats the worker-ftruncate'd file
+// size as authoritative (fstat-checked), so the coordinator and its
+// workers may run with different GPU_CR_* env.
 //
 // No upper clamp: the hugepage pool is the real bound and mmap reports
 // ENOMEM honestly. The only "too big" that is rejected at parse time is

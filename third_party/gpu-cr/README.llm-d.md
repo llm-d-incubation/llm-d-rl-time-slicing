@@ -27,7 +27,13 @@ required, cleaned up and tested:
 
 - memory-address (selective) checkpoint backend, unrounded allocation-size
   dumps, and granule-chunked copies
-- destination-path selective checkpoints
+- destination-path selective checkpoints,
+  control channel off hugetlbfs (readiness advertisements),
+  runtime-sizable checkpoint buffers (`GPU_CR_SHM_GB`/`_MB`,
+  `GPU_CR_STAGING_MB`) — destination-path-only deployments should set
+  `GPU_CR_SHM_MB=0`: dest-path ops never touch the dump buffer, so
+  deferred mode drops the reservation entirely (pool sizing rule in
+  `src/gpu_cr_config.h`)
 - Google C++ Style Guide cleanup of the added code, and cr_client
   hardening (`GPU_CR_CUDA_CHECKPOINT` override; restore fails on a failed
   cuda-checkpoint toggle)

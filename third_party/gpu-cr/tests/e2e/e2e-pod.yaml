@@ -53,7 +53,10 @@ spec:
     - |
       set -e
       export STORE=/mnt/huge-ckpt
-      export GPU_CR_CTL_PATH=/var/run/gpu-cr-ctl
+      # Env-configured ctl mode for the main pass; the tmpfs is mounted
+      # NESTED at $STORE/ctl (production layout), so the G8 gate can prove
+      # zero-config discovery against the very same backing.
+      export GPU_CR_CTL_PATH=/mnt/huge-ckpt/ctl
       /opt/gpu-cr/e2e/run_e2e.sh
       unset GPU_CR_CTL_PATH
       /opt/gpu-cr/e2e/perf_regression.sh \
@@ -79,6 +82,9 @@ spec:
         hugepages-2Mi: 16Gi
         memory: 8Gi
     volumeMounts:
+    # ctl nests INSIDE the store (production layout for zero-config
+    # discovery); keep huge-ckpt listed first so the runtime mounts the
+    # parent before the nested path.
     - {name: huge-ckpt, mountPath: /mnt/huge-ckpt}
-    - {name: ctl, mountPath: /var/run/gpu-cr-ctl}
+    - {name: ctl, mountPath: /mnt/huge-ckpt/ctl}
     - {name: baseline, mountPath: /baseline}

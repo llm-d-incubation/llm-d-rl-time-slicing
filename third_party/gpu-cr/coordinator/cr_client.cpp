@@ -20,6 +20,7 @@
 #endif
 
 #include "common.h"
+#include "ctl_path.h"
 #include "dump_format.h"
 #include "selective_spec.h"
 #include "comm/comm.h"
@@ -28,7 +29,8 @@ namespace {
 
 // Exit codes (consumed by the snapshot agent):
 //   0 OK, 1 usage/parse, 2 op failed (op_status or invalid dump),
-//   3 refused pre-signal (.so not ready, or target dead), 4 timeout.
+//   3 refused pre-signal (.so not ready / no advertisement, or target
+//   dead), 4 timeout.
 // Exit 4 poisons the channel: the flock releases at exit while the
 // wedged handler may still be mid-op, so the workload must be restarted
 // (or proven idle) before another op targets this PID.
@@ -192,6 +194,75 @@ bool ValidateDestDump(const char* path) {
     return ok;
 }
 
+// Pre-signal gate: refuse to kill() unless the target's .so wrote
+// a readiness advertisement into OUR ctl dir. Presence in this dir proves
+// shared backing (the only way the file got here); proto proves the
+// library level; starttime kills the PID-reuse case, where the signal
+// would terminate an innocent recycled PID; the file's owner uid must
+// match the target process's uid — on a shared ctl dir a co-tenant under
+// another uid cannot vouch for a victim PID (and the sticky bit keeps it
+// from replacing the victim's real advert). Path equality is a warning
+// only (same tmpfs may be mounted at different container paths).
+bool CheckAdvertisement(const char* ctl_dir, int pid) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/ctl-ready-%d", ctl_dir, pid);
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "Error: no readiness advertisement at %s — vGPU.so not loaded in PID %d, "
+                        "GPU_CR_CTL_PATH mismatch, or a library without ctl support\n", path, pid);
+        return false;
+    }
+    // fstat the OPEN file (no rename/replace TOCTOU) against /proc/<pid>,
+    // whose st_uid is the target's effective uid.
+    struct stat adv_st, proc_st;
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d", pid);
+    if (fstat(fileno(f), &adv_st) != 0 || stat(proc_path, &proc_st) != 0) {
+        fclose(f);
+        fprintf(stderr, "Error: cannot stat advertisement %s or %s (%s)\n",
+                path, proc_path, strerror(errno));
+        return false;
+    }
+    if (adv_st.st_uid != proc_st.st_uid) {
+        fclose(f);
+        fprintf(stderr, "Error: advertisement %s owned by uid %u but PID %d runs as uid %u — "
+                        "forged or stale advert, refusing to signal\n",
+                path, static_cast<unsigned>(adv_st.st_uid), pid,
+                static_cast<unsigned>(proc_st.st_uid));
+        return false;
+    }
+    char buf[600] = "";
+    if (!fgets(buf, sizeof(buf), f)) {
+        fclose(f);
+        fprintf(stderr, "Error: empty advertisement %s\n", path);
+        return false;
+    }
+    fclose(f);
+    gpu_cr::Advertisement adv;
+    if (!gpu_cr::ParseAdvertisement(buf, &adv)) {
+        fprintf(stderr, "Error: unparsable advertisement %s\n", path);
+        return false;
+    }
+    if (adv.proto < gpu_cr::kCtlProto) {
+        fprintf(stderr, "Error: advertisement proto=%d too low (need >=%d)\n", adv.proto, gpu_cr::kCtlProto);
+        return false;
+    }
+    long long cur_start = gpu_cr::ProcStarttime(pid);
+    if (cur_start < 0) {
+        fprintf(stderr, "Error: PID %d no longer exists\n", pid);
+        return false;
+    }
+    if (adv.starttime != cur_start) {
+        fprintf(stderr, "Error: starttime mismatch for PID %d (advertised %lld, current %lld) — "
+                        "PID reuse, refusing to signal\n", pid, adv.starttime, cur_start);
+        return false;
+    }
+    if (adv.ctl[0] && strcmp(adv.ctl, ctl_dir) != 0)
+        fprintf(stderr, "Warning: advertisement names ctl=%s, ours is %s (same backing store, "
+                        "different mount points?)\n", adv.ctl, ctl_dir);
+    return true;
+}
+
 // Polls for FINISH with a deadline: a dead or wedged workload must fail this
 // invocation, not hang it (and the agent behind it) forever.
 bool WaitFinished(ShareMemComm* comm) {
@@ -314,14 +385,45 @@ int main(int argc, char* argv[]) {
     assert(pid != 0);
     if (criu_pid == 0) criu_pid = pid;
 
+    // A configured-but-broken ctl path is refused HERE, loudly.
+    // (The .so falls back to legacy instead — it must not die — so the
+    // coordinator is where the misconfiguration surfaces.)
+    bool ctl_mode = false;
+    const char* ctl_dir = gpu_cr::CtlDir(&ctl_mode);
+    const char* ctl_env = getenv("GPU_CR_CTL_PATH");
+    if (ctl_env && ctl_env[0] && !ctl_mode) {
+        fprintf(stderr, "Error: GPU_CR_CTL_PATH=%s is missing or not tmpfs-backed "
+                        "(mount-order shadowing?) — refusing to operate\n", ctl_env);
+        exit(kExitRefused);
+    }
+
+    // Pre-signal gate: never kill() a PID whose .so hasn't
+    // advertised readiness in our ctl dir — covers not-loaded, env
+    // mismatch, older libraries and PID reuse in one check. The
+    // gate-to-signal window is a narrow, accepted TOCTOU: the starttime
+    // check excludes reuse, and SignalOrDie fails crisply if the target
+    // vanishes inside it.
+    if (ctl_mode && !CheckAdvertisement(ctl_dir, pid))
+        exit(kExitRefused);
+
     ShareMemComm *comm = new ShareMemComm(pid);
     comm->setup();
 
     // Serialize concurrent cr_clients against the same PID for the whole
-    // op: nothing else orders two writers of selective_req. The control
-    // file was opened with open(O_CREAT) by setup(), and an inode lock
-    // faults no hugetlb pages, so it stays safe with a zero hugepages
-    // request; a failed flock warns and proceeds (historical behavior).
+    // op: nothing else orders two writers of selective_req.
+    // Fixed order, legacy lock first: the legacy file is
+    // taken with open(O_CREAT)+flock only — an inode lock faults no
+    // hugetlb pages, so it stays safe with a zero hugepages request.
+    if (ctl_mode) {
+        char legacy_lock_path[512];
+        snprintf(legacy_lock_path, sizeof(legacy_lock_path), "%s/control-%d", gpu_cr::DataDir(), pid);
+        int legacy_lock_fd = open(legacy_lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+        if (legacy_lock_fd >= 0) {
+            if (flock(legacy_lock_fd, LOCK_EX) != 0)
+                fprintf(stderr, "Warning: flock(%s) failed: %s\n", legacy_lock_path, strerror(errno));
+            // held (with the fd) until process exit
+        }
+    }
     if (flock(comm->fd_control, LOCK_EX) != 0)
         fprintf(stderr, "Warning: flock(control-%d) failed: %s\n", pid, strerror(errno));
 
@@ -330,8 +432,10 @@ int main(int argc, char* argv[]) {
     // armed handlers — a signaled op would just burn the FINISH timeout,
     // and a dest-path restore served from the per-PID buffer would replay
     // stale bytes into GPU memory, which no post-op check can undo.
-    // Full-process ops stay ungated (historical behavior).
-    if (selective_spec &&
+    // Full-process ops stay ungated (historical behavior). In ctl mode
+    // the advertisement already proved the library is armed, without
+    // needing a prior -i.
+    if (selective_spec && !ctl_mode &&
         comm->control->selective_ready != gpu_cr::kSelectiveReady) {
         fprintf(stderr, "Error: vGPU.so has not published selective support "
                         "(run -i first, or fix the preloaded library)\n");

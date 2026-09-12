@@ -67,8 +67,11 @@ stop_workload() {
     # hugetlbfs pages are freed only when the backing files go away: purge
     # the per-run buffers or back-to-back runs exhaust the pool. NOTE:
     # clears every ckpt-*/control*/pid_map_* under $STORE — point STORE
-    # at a dedicated volume, not a shared store.
-    rm -f "$STORE"/ckpt-* "$STORE"/control* "$STORE"/pid_map_* 2>/dev/null
+    # at a dedicated volume, not a shared store. $STORE/ctl is the
+    # zero-config discovery dir (harmless no-op when absent).
+    rm -f "$STORE"/ckpt-* "$STORE"/control* "$STORE"/pid_map_* \
+          "$STORE"/ctl/control* "$STORE"/ctl/pid_map_* \
+          "$STORE"/ctl/ctl-ready-* 2>/dev/null
     WL_PID=""
     return 0
 }

@@ -58,6 +58,7 @@ TEST_F(ShareMemCommTest, BaseCommIsInert) {
 TEST_F(ShareMemCommTest, SetupCreatesControlFile) {
   ShareMemComm comm(111);
   comm.setup();
+  EXPECT_GE(comm.fd_control, 0);  // kept open so callers can flock the op
 
   struct stat st;
   ASSERT_EQ(stat(ControlPath(111).c_str(), &st), 0);
@@ -166,8 +167,9 @@ TEST_F(ShareMemCommTest, MessageConstantsDistinct) {
                              RESTORE_MSG,       FINISH_MSG,
                              IPC_TEARDOWN_MSG,  IPC_EXPORT_MSG,
                              IPC_IMPORT_MSG,    NCCL_SUSPEND_MSG,
-                             NCCL_RESUME_MSG};
-  EXPECT_EQ(msgs.size(), 9u);
+                             NCCL_RESUME_MSG,   SELECTIVE_CKPT_MSG,
+                             SELECTIVE_RESTORE_MSG};
+  EXPECT_EQ(msgs.size(), 11u);
 }
 
 // setup() keeps the historical fatal-exit contract when the data dir is
