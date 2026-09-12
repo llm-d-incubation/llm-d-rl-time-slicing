@@ -1,0 +1,10 @@
+{{- if and .Values.directMemory.enabled .Values.directMemory.hugetlbfs.mount .Values.directMemory.hugetlbfs.bootstrap.enabled .Values.priorityClass.create }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.priorityClass.name }}
+value: {{ .Values.priorityClass.value }}
+description: >-
+  Snapshot agent + hugepage bootstrap; must win node placement over GPU
+  workloads so hugepage capacity is provisioned before anything needs it.
+{{- end }}

@@ -25,6 +25,104 @@ spec:
       serviceAccountName: {{ include "snapshot-agent.serviceAccountName" . }}
       hostNetwork: true
       hostPID: true
+      {{- $bootstrap := and .Values.directMemory.enabled .Values.directMemory.hugetlbfs.mount .Values.directMemory.hugetlbfs.bootstrap.enabled }}
+      {{- if and $bootstrap (ne .Values.directMemory.hugetlbfs.pagesize "2M") }}
+      {{- fail "directMemory.hugetlbfs.bootstrap provisions 2Mi pages only; disable it or set pagesize: 2M" }}
+      {{- end }}
+      {{- if and $bootstrap .Values.directMemory.hugepagesResource }}
+      {{- fail "directMemory.hugepagesResource cannot be combined with hugetlbfs.bootstrap: a pod that requests hugepages cannot schedule before its own bootstrap publishes capacity. On pre-provisioned nodes set hugetlbfs.bootstrap.enabled=false; otherwise drop hugepagesResource (the ctl tmpfs keeps the agent hugetlb-free)" }}
+      {{- end }}
+      {{- if .Values.directMemory.enabled }}
+      {{- if and $bootstrap .Values.priorityClass.name }}
+      # Referenced only when the PriorityClass is also created (see
+      # templates/priorityclass.yaml): the bootstrap must win node placement.
+      priorityClassName: {{ .Values.priorityClass.name }}
+      {{- end }}
+      {{- if .Values.directMemory.hugetlbfs.mount }}
+      initContainers:
+        {{- if .Values.directMemory.hugetlbfs.bootstrap.enabled }}
+        # Runtime hugepage provisioning for WORKLOAD pods (the agent itself
+        # requests none unless hugepagesResource is set). Once per node boot:
+        # allocate the 2Mi pool, then restart the kubelet so the node
+        # publishes hugepages-2Mi capacity. On shortfall it exits 1 WITHOUT
+        # restarting the kubelet, so an undersized pool surfaces as this pod
+        # CrashLooping, not as workload SIGBUS. Scheduling deadlock is
+        # impossible ONLY while the agent container carries no hugepages
+        # request (combining hugepagesResource with this bootstrap is
+        # rejected at render time).
+        - name: provision-hugepages
+          image: alpine:latest
+          securityContext:
+            privileged: true
+          env:
+            - name: HUGEPAGES_2M
+              value: {{ .Values.directMemory.hugetlbfs.bootstrap.pages2Mi | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              apk add --no-cache util-linux >/dev/null
+              target=$HUGEPAGES_2M
+              current=$(nsenter -t 1 -m -- cat /proc/sys/vm/nr_hugepages)
+              if [ "$current" -ge "$target" ]; then
+                echo "hugepage pool already provisioned ($current/$target pages), nothing to do"
+                exit 0
+              fi
+              echo "reserving $target 2Mi hugepages (currently $current)"
+              nsenter -t 1 -m -- sh -c "echo $target > /proc/sys/vm/nr_hugepages"
+              current=$(nsenter -t 1 -m -- cat /proc/sys/vm/nr_hugepages)
+              if [ "$current" -lt "$target" ]; then
+                echo "short by $((target - current)) pages; compacting and retrying"
+                nsenter -t 1 -m -- sh -c 'echo 3 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/compact_memory'
+                nsenter -t 1 -m -- sh -c "echo $target > /proc/sys/vm/nr_hugepages"
+                current=$(nsenter -t 1 -m -- cat /proc/sys/vm/nr_hugepages)
+              fi
+              if [ "$current" -lt "$target" ]; then
+                echo "ERROR: only $current of $target pages allocated (memory fragmented or exhausted)"
+                exit 1
+              fi
+              echo "pool ready; restarting kubelet so the node reports hugepages-2Mi (running pods unaffected)"
+              nsenter -t 1 -m -- systemctl restart kubelet
+        {{- end }}
+        # Mount hugetlbfs at the shared checkpoint path on the HOST. GPU-CR
+        # relies on the filesystem itself being hugetlbfs (it does not pass
+        # MAP_HUGETLB); without this mount dumps land in boot-disk page
+        # cache and the node's hugepage pool goes unused.
+        - name: mount-hugetlbfs
+          image: alpine:latest
+          securityContext:
+            privileged: true
+          command:
+            - sh
+            - -c
+            - |
+              apk add --no-cache util-linux >/dev/null && \
+              nsenter -t 1 -m -- sh -c 'mkdir -p {{ .Values.directMemory.hostCtlPath }}; grep -q " {{ .Values.directMemory.hostCtlPath }} hugetlbfs" /proc/mounts || mount -t hugetlbfs -o pagesize={{ .Values.directMemory.hugetlbfs.pagesize }},mode=0777 nodev {{ .Values.directMemory.hostCtlPath }}; chmod 0777 {{ .Values.directMemory.hostCtlPath }}' && \
+              echo "hugetlbfs mounted at {{ .Values.directMemory.hostCtlPath }}"
+        # The agent's cr_client and the workload's preloader coordinate
+        # through small control files. This tmpfs, nested INSIDE the dump
+        # store at <hostCtlPath>/ctl, is where GPU-CR puts them: both sides
+        # discover it through the store mount they already share, so neither
+        # needs any extra configuration. Ordered after mount-hugetlbfs (the
+        # subdir must live on the real store; GPU-CR refuses mixed mount
+        # orders). Without it GPU-CR falls back to keeping control files on
+        # the dump store itself — on hugetlbfs that would charge hugetlb
+        # pages to THIS pod's cgroup, and this pod deliberately requests
+        # none, so the agent would fault on first use.
+        - name: mount-ctl-tmpfs
+          image: alpine:latest
+          securityContext:
+            privileged: true
+          command:
+            - sh
+            - -c
+            - |
+              apk add --no-cache util-linux >/dev/null && \
+              nsenter -t 1 -m -- sh -c 'mkdir -p {{ .Values.directMemory.hostCtlPath }}/ctl; grep -q " {{ .Values.directMemory.hostCtlPath }}/ctl tmpfs" /proc/mounts || mount -t tmpfs -o size={{ .Values.directMemory.hugetlbfs.ctlTmpfsSizeMi }}m,mode=0777 gpu-cr-ctl {{ .Values.directMemory.hostCtlPath }}/ctl; chmod 0777 {{ .Values.directMemory.hostCtlPath }}/ctl' && \
+              echo "ctl tmpfs mounted at {{ .Values.directMemory.hostCtlPath }}/ctl"
+      {{- end }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -42,16 +140,32 @@ spec:
                   fieldPath: spec.nodeName
             - name: AGENT_PORT
               value: {{ .Values.port | quote }}
-            {{- if .Values.featureGates }}
-            {{- $gates := list }}
+            {{- /* Feature gates: explicit values from .Values.featureGates,
+                 with directMemory.enabled implying DirectMemoryBackend=true
+                 (deploying the GPU-CR machinery is the opt-in). */}}
+            {{- $gates := dict }}
+            {{- if .Values.directMemory.enabled }}
+            {{- $_ := set $gates "DirectMemoryBackend" true }}
+            {{- end }}
             {{- range $name, $enabled := .Values.featureGates }}
             {{- if not (kindIs "bool" $enabled) }}
             {{- fail (printf "featureGates.%s must be true or false, got %q" $name (toString $enabled)) }}
             {{- end }}
-            {{- $gates = append $gates (printf "%s=%t" $name $enabled) }}
+            {{- $_ := set $gates $name $enabled }}
+            {{- end }}
+            {{- if $gates }}
+            {{- $pairs := list }}
+            {{- range $name, $enabled := $gates }}
+            {{- $pairs = append $pairs (printf "%s=%t" $name $enabled) }}
             {{- end }}
             - name: FEATURE_GATES
-              value: {{ join "," $gates | quote }}
+              value: {{ join "," $pairs | quote }}
+            {{- end }}
+            {{- if .Values.directMemory.enabled }}
+            - name: EXPORT_FILE_PATH
+              value: {{ .Values.directMemory.ctlDir | quote }}
+            - name: DIRECT_MEMORY_OP_TIMEOUT_SEC
+              value: {{ .Values.directMemory.opTimeoutSec | quote }}
             {{- end }}
             {{- if .Values.nvidia.driver.enabled }}
             - name: LD_LIBRARY_PATH
@@ -66,7 +180,19 @@ spec:
               containerPort: {{ .Values.port }}
               protocol: TCP
           resources:
+            {{- if and .Values.directMemory.enabled .Values.directMemory.hugepagesResource }}
+            {{- /* Merge hugepages headroom into the configured resources
+                   (k8s requires a memory request alongside hugepages). */}}
+            {{- $hpKey := printf "hugepages-%si" .Values.directMemory.hugetlbfs.pagesize }}
+            {{- $req := deepCopy (default (dict) .Values.resources.requests) }}
+            {{- $lim := deepCopy (default (dict) .Values.resources.limits) }}
+            {{- $_ := set $req $hpKey .Values.directMemory.hugepagesResource }}
+            {{- $_ := set $lim $hpKey .Values.directMemory.hugepagesResource }}
+            {{- if not (hasKey $req "memory") }}{{- $_ := set $req "memory" "256Mi" }}{{- end }}
+            {{- toYaml (dict "requests" $req "limits" $lim) | nindent 12 }}
+            {{- else }}
             {{- toYaml .Values.resources | nindent 12 }}
+            {{- end }}
           volumeMounts:
             {{- if .Values.nvidia.driver.enabled }}
             - name: nvidia-driver
@@ -76,6 +202,13 @@ spec:
             {{- if .Values.nvidia.devices.enabled }}
             - name: nvidia-devices
               mountPath: {{ .Values.nvidia.devices.mountPath }}
+            {{- end }}
+            {{- if .Values.directMemory.enabled }}
+            - name: huge-ckpt
+              mountPath: {{ .Values.directMemory.ctlDir }}
+              # Pick up the hugetlbfs mount made by the init container even
+              # though the hostPath was captured before it ran.
+              mountPropagation: HostToContainer
             {{- end }}
       volumes:
         {{- if .Values.nvidia.driver.enabled }}
@@ -89,6 +222,12 @@ spec:
           hostPath:
             path: {{ .Values.nvidia.devices.hostPath }}
             type: Directory
+        {{- end }}
+        {{- if .Values.directMemory.enabled }}
+        - name: huge-ckpt
+          hostPath:
+            path: {{ .Values.directMemory.hostCtlPath }}
+            type: DirectoryOrCreate
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

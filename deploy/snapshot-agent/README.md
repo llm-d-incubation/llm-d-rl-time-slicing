@@ -171,3 +171,95 @@ helm install snapshot-agent ./snapshot-agent \
   --namespace timeslice-system \
   --create-namespace
 ```
+
+## GPU-CR Direct Memory Backend (`directMemory.*`)
+
+The `direct_memory` backend parks and resumes a workload's **entire GPU
+state** via GPU-CR. The workload's preloader drains the device memory it
+tracked into node-local hugepage-backed files over a pinned DMA path
+*before* the CUDA context is frozen with `cuda-checkpoint`, so the bulk
+bytes bypass that tool's slow pageable copy — park and resume run several
+times faster for the same VRAM, and the parked state lives in files that
+survive independently of the process's memory.
+
+It is gated behind the `directMemory` values block and **disabled by
+default** — with `directMemory.enabled=false` the rendered chart is
+identical to a plain CUDA/app-backend deployment.
+
+```bash
+helm install snapshot-agent ./snapshot-agent \
+  --namespace timeslice-system \
+  --create-namespace \
+  --set directMemory.enabled=true
+```
+
+Enabling it adds:
+
+*   The checkpoint directory shared with workloads, mounted at
+    `directMemory.ctlDir` (default `/mnt/huge-ckpt`) from
+    `directMemory.hostCtlPath` (default `/var/tmp/huge-ckpt`), with
+    `mountPropagation: HostToContainer` so the init containers' mounts are
+    visible. The agent's `EXPORT_FILE_PATH` and per-operation deadline
+    (`DIRECT_MEMORY_OP_TIMEOUT_SEC`, `opTimeoutSec`, default 120 s) are set
+    from this block.
+*   The `DirectMemoryBackend` feature gate, implied by
+    `directMemory.enabled=true` (an explicit `featureGates` entry overrides
+    the implied value).
+*   A `PriorityClass` (`priorityClass.*`) so the pod — and in particular its
+    hugepage bootstrap — wins node placement over GPU workloads.
+*   Three privileged init containers that `nsenter` the host mount
+    namespace, all idempotent per node boot (rendered while
+    `directMemory.hugetlbfs.mount` is on, the default):
+    *   `provision-hugepages` (`hugetlbfs.bootstrap.*`) — writes
+        `vm.nr_hugepages` (`pages2Mi`, default 12288 = 24 Gi; size it to
+        your workloads' dump buffers plus headroom) and restarts the
+        kubelet once so the node publishes `hugepages-2Mi` capacity for
+        WORKLOAD pods. No nodepool hugepage configuration or special node
+        image is needed.
+    *   `mount-hugetlbfs` — mounts hugetlbfs at `hostCtlPath`
+        (`pagesize=2M,mode=0777`). GPU-CR pins its dump and staging files
+        for DMA, which requires hugepage-backed files; without this mount
+        every dump silently degrades to boot-disk page cache. Turn
+        `hugetlbfs.mount` off only if the path already is a hugetlbfs.
+    *   `mount-ctl-tmpfs` — mounts a small tmpfs (`ctlTmpfsSizeMi`, default
+        64) nested at `<hostCtlPath>/ctl` for the control files through
+        which the agent's `cr_client` and the workload's preloader
+        coordinate. Both sides discover it through the store mount they
+        already share — no configuration on either side — and keeping
+        control files off hugetlbfs is what lets the agent run with no
+        hugepage request.
+
+The agent requests **no `hugepages-2Mi` at all**: dump bytes are written by
+the workload's own process, and the agent's control traffic stays on the
+tmpfs. That zero request is what lets the DaemonSet schedule on fresh nodes
+*before* hugepage capacity exists and absorb the hugepage bootstrap as an
+init container. (`directMemory.hugepagesResource` exists only for older
+GPU-CR builds that keep control files on the store, on nodes whose pool is
+already provisioned.)
+
+Misconfigurations fail early:
+
+*   An undersized or unallocatable hugepage pool makes `provision-hugepages`
+    exit 1 **without** the kubelet restart — it surfaces as this pod
+    CrashLooping, never as workload SIGBUS.
+*   `hugetlbfs.bootstrap` combined with a pagesize other than `2M`, or with
+    `hugepagesResource` (a pod that requests hugepages cannot schedule
+    before its own bootstrap publishes capacity), fails at render time.
+
+Workload pods need the GPU-CR preloader (`LD_PRELOAD=vGPU-NVIDIA.so`),
+`hostPID`, the checkpoint dir hostPath mounted at `/mnt/huge-ckpt` with
+`mountPropagation: HostToContainer`, and `hugepages-2Mi` resources sized for
+their dump buffers — see the workload example in
+[guides/snapshot-agent](../../guides/snapshot-agent/README.md).
+
+There is no `cr_client` install step: the binary is built from
+`third_party/gpu-cr` into the agent image at `/usr/local/bin/cr_client`, so
+the agent, `cr_client`, and the preloader source always roll together.
+`grpc.health.v1.Health/Check` with `service: "direct-memory"` reports
+`NOT_SERVING` if the binary is missing.
+
+> [!NOTE]
+> Clusters that previously ran a manually deployed agent may already have a
+> non-Helm `timeslice-snapshot-agent` PriorityClass; `helm install` refuses
+> to adopt it. Delete it once before installing:
+> `kubectl delete priorityclass timeslice-snapshot-agent`.
