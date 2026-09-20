@@ -2667,3 +2667,143 @@ func TestController_Reconcile_PreemptionSafetyGates_ActiveJobTransitioning(t *te
 		t.Errorf("Expected AddRateLimited to be called at least once, got %d", testQueue.getAddRateLimitedCount())
 	}
 }
+
+// TestController_ObserveJobContext_EmptyNodes verifies that ObserveJobContext returns
+// immediately without error when the group has no nodes configured.
+func TestController_ObserveJobContext_EmptyNodes(t *testing.T) {
+	ctx := context.Background()
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+
+	groupID := "group-empty"
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes([]string{})
+
+	mockAgentStore := &controller.MockSnapshotAgentStore{}
+	c := controller.NewController(groupStore, jobStore, nil, nil, mockAgentStore)
+
+	if err := c.ObserveJobContext(ctx, groupID); err != nil {
+		t.Fatalf("ObserveJobContext failed on empty nodes: %v", err)
+	}
+}
+
+// TestController_ObserveJobContext_ConcurrentSuccess verifies that ObserveJobContext queries
+// all nodes concurrently and correctly records each node's context state in the job store.
+func TestController_ObserveJobContext_ConcurrentSuccess(t *testing.T) {
+	ctx := context.Background()
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+
+	groupID := "group-multi"
+	nodeNames := []string{"node-1", "node-2", "node-3", "node-4"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+
+	job1 := store.NewJob(groupID, "job-1")
+	if err := jobStore.Put(ctx, job1); err != nil {
+		t.Fatalf("failed to put job1: %v", err)
+	}
+
+	var mu sync.Mutex
+	visitedNodes := make(map[string]bool)
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error) {
+			mu.Lock()
+			visitedNodes[nodeName] = true
+			mu.Unlock()
+			return &agentpb.StatusResponse{
+				JobStatuses: []*agentpb.JobStatus{
+					{
+						JobId: "job-1",
+						State: agentpb.JobState_JOB_STATE_RUNNING,
+					},
+				},
+			}, nil
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, nil, nil, mockAgentStore)
+
+	if err := c.ObserveJobContext(ctx, groupID); err != nil {
+		t.Fatalf("ObserveJobContext failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, n := range nodeNames {
+		if !visitedNodes[n] {
+			t.Errorf("Expected node %s to be observed", n)
+		}
+	}
+
+	// Verify all node context states were updated in jobStore
+	j, err := jobStore.Get(ctx, groupID, "job-1")
+	if err != nil {
+		t.Fatalf("failed to get job1: %v", err)
+	}
+	ctxState := j.ContextState()
+	for _, n := range nodeNames {
+		state, ok := ctxState[n]
+		if !ok || state != pb.SnapshotAgentJobState_STATE_RUNNING {
+			t.Errorf("Expected node %s state to be RUNNING, got %v (found: %v)", n, state, ok)
+		}
+	}
+}
+
+// TestController_ObserveJobContext_PanicRecovery verifies that if a node observation panics,
+// the panic is caught, an error is returned, and peer node queries are promptly cancelled.
+func TestController_ObserveJobContext_PanicRecovery(t *testing.T) {
+	ctx := context.Background()
+	lockStore := store.NewMemLockStore()
+	groupStore := store.NewGroupStore(lockStore)
+	jobStore := store.NewJobStore()
+
+	groupID := "group-panic"
+	nodeNames := []string{"node-panic", "node-slow"}
+
+	group, _, err := groupStore.GetOrCreate(ctx, groupID)
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+	group.Status().SetNodes(nodeNames)
+
+	peerCancelled := make(chan struct{})
+	mockAgentStore := &controller.MockSnapshotAgentStore{
+		GetStatusFunc: func(ctx context.Context, nodeName string) (*agentpb.StatusResponse, error) {
+			if nodeName == "node-panic" {
+				panic("simulated agent panic")
+			}
+			// Slow node waits for peer context cancellation triggered by panic recovery
+			select {
+			case <-ctx.Done():
+				close(peerCancelled)
+				return nil, ctx.Err()
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("timeout waiting for cancellation")
+			}
+		},
+	}
+
+	c := controller.NewController(groupStore, jobStore, nil, nil, mockAgentStore)
+
+	err = c.ObserveJobContext(ctx, groupID)
+	if err == nil {
+		t.Fatal("Expected error from ObserveJobContext on panic, got nil")
+	}
+
+	select {
+	case <-peerCancelled:
+		// Success: peer context was promptly cancelled by panic recovery
+	case <-time.After(1 * time.Second):
+		t.Fatal("Expected peer node query to be cancelled when sibling node panics")
+	}
+}

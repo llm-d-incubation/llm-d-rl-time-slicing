@@ -9,6 +9,9 @@ import (
 	agentpb "github.com/llm-d-incubation/llm-d-rl-time-slicing/pkg/snapshot-agent/api/v1alpha1"
 )
 
+// TestController_WaitForOperation verifies the polling behavior of waitForOperation,
+// including immediate success/failure, adaptive backoff over pending statuses, context cancellation,
+// and bounding of consecutive GetOperation request failures.
 func TestController_WaitForOperation(t *testing.T) {
 	nodeName := "node-1"
 	opID := "op-123"
@@ -62,8 +65,8 @@ func TestController_WaitForOperation(t *testing.T) {
 				if mock.OperationIndex != 3 {
 					t.Errorf("Expected 3 calls, got %d", mock.OperationIndex)
 				}
-				if duration < 2*time.Second {
-					t.Errorf("Expected test to take at least 2 seconds, took %v", duration)
+				if duration < 30*time.Millisecond {
+					t.Errorf("Expected test to take at least 30ms, took %v", duration)
 				}
 			},
 		},
@@ -78,6 +81,40 @@ func TestController_WaitForOperation(t *testing.T) {
 				return context.WithTimeout(context.Background(), 500*time.Millisecond)
 			},
 			wantErr: context.DeadlineExceeded,
+		},
+		{
+			name: "Exceeds Consecutive Failure Limit",
+			operationFunc: func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+				return nil, errors.New("connection refused")
+			},
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.Background(), func() {}
+			},
+			wantErrMsg: "operation op-123 status check failed 10 consecutive times: connection refused",
+		},
+		{
+			name: "Transient Errors Reset Consecutive Failure Count",
+			operationFunc: func() func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+				calls := 0
+				return func(ctx context.Context, node, operationID string) (*agentpb.GetOperationResponse, error) {
+					calls++
+					// 5 failures, 1 pending success, 5 failures, then complete
+					if (calls >= 1 && calls <= 5) || (calls >= 7 && calls <= 11) {
+						return nil, errors.New("transient error")
+					}
+					if calls == 6 {
+						return &agentpb.GetOperationResponse{
+							Status: agentpb.OperationStatus_OPERATION_STATUS_PENDING,
+						}, nil
+					}
+					return &agentpb.GetOperationResponse{
+						Status: agentpb.OperationStatus_OPERATION_STATUS_COMPLETE,
+					}, nil
+				}
+			}(),
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.Background(), func() {}
+			},
 		},
 	}
 
