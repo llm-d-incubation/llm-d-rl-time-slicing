@@ -17,7 +17,7 @@ public:
     amd();
     ~amd() override;
     
-    // mamory management implementation
+    // memory management implementation
     int allocate(void** ptr, size_t size) override;
     int deallocate(void* ptr) override;
     std::map<void*, size_t>& getMemoryMap() override;
