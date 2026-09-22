@@ -550,21 +550,24 @@ func StartServer(
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
-	// 1. Initialize K8s Client
-	k8sClient, err := podutils.GetK8sClient()
-	if err != nil {
-		return fmt.Errorf("failed to get K8s client: %w", err)
-	}
-
-	// 2. Create Server (which creates StateManager internally)
+	// Create Server (which creates StateManager internally)
 	srv := NewServer(backendMap, defaultBackend, deploymentMode, channelRegistry, featureGates)
 
-	// 3. Start the Watcher internally
-	watcher, err := NewWatcher(k8sClient, srv.state)
-	if err != nil {
-		return fmt.Errorf("failed to create watcher: %w", err)
+	// The K8s client and watcher are only needed in k8s mode. In standalone
+	// mode there is no cluster to connect to, and state-machine transitions are
+	// driven by ensureJobRunningIfOccupied rather than the watcher.
+	if deploymentMode != "standalone" {
+		k8sClient, err := podutils.GetK8sClient()
+		if err != nil {
+			return fmt.Errorf("failed to get K8s client: %w", err)
+		}
+
+		watcher, err := NewWatcher(k8sClient, srv.state)
+		if err != nil {
+			return fmt.Errorf("failed to create watcher: %w", err)
+		}
+		watcher.Start(ctx)
 	}
-	watcher.Start(ctx)
 
 	s := grpc.NewServer()
 	pb.RegisterSnapshotAgentServiceServer(s, srv)
