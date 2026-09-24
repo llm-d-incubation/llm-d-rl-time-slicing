@@ -18,7 +18,9 @@ import (
 )
 
 const (
-	operationPollInterval = 1 * time.Second
+	defaultInitialPollInterval             = 10 * time.Millisecond
+	defaultMaxPollInterval                 = 250 * time.Millisecond
+	defaultMaxConsecutiveOperationFailures = 10
 )
 
 // handleCrash is a helper that recovers from panics, logs the panic and stack trace.
@@ -699,13 +701,34 @@ func (c *Controller) ObserveJobContext(ctx context.Context, groupID string) erro
 		return fmt.Errorf("failed to get group %s from store: %w", groupID, err)
 	}
 	groupNodes := g.Status().Nodes()
-
-	for _, nodeName := range groupNodes {
-		if err := c.observeNodeJobContext(ctx, groupID, nodeName); err != nil {
-			return err
-		}
+	if len(groupNodes) == 0 {
+		return nil
 	}
-	return nil
+
+	opCtx, cancelPeers := context.WithCancel(ctx)
+	defer cancelPeers()
+	nodeErrs := make([]error, len(groupNodes))
+	var wg sync.WaitGroup
+
+	for idx, nodeName := range groupNodes {
+		wg.Add(1)
+		go func(i int, node string) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.ErrorContext(ctx, "Observed a panic", "panic", r, "stack", string(debug.Stack()))
+					nodeErrs[i] = fmt.Errorf("panic while observing node %s: %v", node, r)
+					cancelPeers()
+				}
+			}()
+			if err := c.observeNodeJobContext(opCtx, groupID, node); err != nil {
+				nodeErrs[i] = err
+				cancelPeers()
+			}
+		}(idx, nodeName)
+	}
+	wg.Wait()
+	return errors.Join(nodeErrs...)
 }
 
 // observeNodeJobContext queries the snapshot agent for a single node and updates job context states in the store.
@@ -718,19 +741,16 @@ func (c *Controller) observeNodeJobContext(ctx context.Context, groupID, nodeNam
 	}
 
 	for _, js := range resp.JobStatuses {
-		// Only update if the job is known in this group
-		_, err := c.jobStore.Get(ctx, groupID, js.JobId)
-		if errors.Is(err, store.ErrNotFound) {
-			continue
-		} else if err != nil {
-			return fmt.Errorf("failed to get job %s from store: %w", js.JobId, err)
-		}
-
 		state := translateJobState(js.State)
 		if err := c.jobStore.UpdateContextState(ctx, groupID, js.JobId, nodeName, state); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
 			return fmt.Errorf("failed to update job context state for job %s on node %s: %w", js.JobId, nodeName, err)
 		}
-		slog.DebugContext(ctx, "Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
+		if slog.Default().Enabled(ctx, slog.LevelDebug) {
+			slog.DebugContext(ctx, "Updated job context state", "job", js.JobId, "node", nodeName, "state", state)
+		}
 	}
 	return nil
 }
@@ -753,12 +773,17 @@ func translateJobState(s agentpb.JobState) pb.SnapshotAgentJobState_State {
 }
 
 // waitForOperation blocks until the given operation on the node completes or fails.
+// It polls the agent store using an adaptive backoff and returns an error if
+// consecutive status check failures exceed defaultMaxConsecutiveOperationFailures.
 func (c *Controller) waitForOperation(ctx context.Context, groupID, jobID, nodeName, operationID, operationType string) error {
 	ctx = logging.WithNodeName(ctx, nodeName)
 	ctx = logging.WithOperationID(ctx, operationID)
 
-	ticker := time.NewTicker(operationPollInterval)
-	defer ticker.Stop()
+	pollInterval := defaultInitialPollInterval
+	timer := time.NewTimer(pollInterval)
+	defer timer.Stop()
+
+	consecutiveFailures := 0
 
 	slog.InfoContext(ctx, "Waiting for agent operation to complete")
 
@@ -766,12 +791,19 @@ func (c *Controller) waitForOperation(ctx context.Context, groupID, jobID, nodeN
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("context cancelled while waiting for operation %s: %w", operationID, ctx.Err())
-		case <-ticker.C:
+		case <-timer.C:
 			resp, err := c.agentStore.GetOperation(ctx, nodeName, operationID)
 			if err != nil {
-				slog.WarnContext(ctx, "Failed to get operation status, will retry", "error", err)
+				consecutiveFailures++
+				slog.WarnContext(ctx, "Failed to get operation status, will retry", "error", err, "consecutiveFailures", consecutiveFailures)
+				if consecutiveFailures >= defaultMaxConsecutiveOperationFailures {
+					return fmt.Errorf("operation %s status check failed %d consecutive times: %w", operationID, consecutiveFailures, err)
+				}
+				pollInterval = min(pollInterval*2, defaultMaxPollInterval)
+				timer.Reset(pollInterval)
 				continue
 			}
+			consecutiveFailures = 0
 
 			switch resp.Status {
 			case agentpb.OperationStatus_OPERATION_STATUS_COMPLETE:
@@ -787,8 +819,12 @@ func (c *Controller) waitForOperation(ctx context.Context, groupID, jobID, nodeN
 				return fmt.Errorf("operation %s failed: %s", operationID, errStr)
 			case agentpb.OperationStatus_OPERATION_STATUS_PENDING:
 				slog.DebugContext(ctx, "Operation still pending", "elapsedMs", resp.ElapsedMs)
+				pollInterval = min(pollInterval*2, defaultMaxPollInterval)
+				timer.Reset(pollInterval)
 			default:
 				slog.WarnContext(ctx, "Unknown operation status", "status", resp.Status)
+				pollInterval = min(pollInterval*2, defaultMaxPollInterval)
+				timer.Reset(pollInterval)
 			}
 		}
 	}
