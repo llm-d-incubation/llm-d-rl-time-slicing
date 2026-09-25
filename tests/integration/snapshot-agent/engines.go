@@ -133,6 +133,12 @@ func agentPod(node string) *corev1.Pod {
 					{Name: "NVIDIA_VISIBLE_DEVICES", Value: "all"},
 					{Name: "NVIDIA_DRIVER_CAPABILITIES", Value: "compute,utility"},
 					{Name: "LD_LIBRARY_PATH", Value: "/usr/local/nvidia/lib64"},
+					// For the memory-regions test (see memory_regions.go):
+					// the gate only unlocks request routing and the store
+					// path is inert until that backend is used, so both are
+					// harmless to the other standalone tests.
+					{Name: "FEATURE_GATES", Value: "MemoryRegionsBackend=true"},
+					{Name: "EXPORT_FILE_PATH", Value: "/opt/rlts/mr-store"},
 				},
 				Ports:           []corev1.ContainerPort{{ContainerPort: agentPort}},
 				SecurityContext: &corev1.SecurityContext{Privileged: &privileged},

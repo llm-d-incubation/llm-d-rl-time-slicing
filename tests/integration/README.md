@@ -12,6 +12,28 @@ Tests snapshot-agent backends in standalone and k8s modes. The Go harness deploy
 
 **How the standalone mode works:** since the test suite runs inside a GKE cluster, standalone mode is simulated by deploying a privileged pod with `hostPID` and `hostNetwork` on the test node. The `make standalone` artifacts are built in the test runner and copied into this pod, which then runs the agent binary with the same GPU and PID namespace access as a host process.
 
+### snapshot-agent memory-regions (standalone phase + hermetic tier)
+
+Tests the memory-regions backend with GPU-CR's `cr_client` replaced by a stub
+(`stub_cr_client.sh`) — everything else is real: the agent, the state
+machine, the backend's slot/store bookkeeping, and the Python client. Real
+GPU-CR needs a preloaded workload and a hugetlbfs store, so the stub
+substitutes the one process boundary and models "device memory" as a file it
+dumps/loads, letting the test verify named-slot swaps bitwise and assert the
+exact destination-path invocation shape
+(`-c/-r -p <pid> -s <spec> -o <store>/groups/<slot>/<pid>-<starttime>/<id>`).
+
+Two tiers share the stub and semantics:
+
+- **In-cluster** (`MemoryRegionsSlotSwap`, runs inside `TestStandalone`): the
+  deployed standalone agent with the stub installed at the backend's pinned
+  cr_client path, driven via `agentctl.py` like every other backend.
+- **Hermetic** (`TestCrossLanguageMemoryRegions`, no build tag — compiled by
+  `make test` on every PR): an in-process server driven by the Python client
+  (`memory_regions_driver.py`), guarding Go<->Python codegen drift. Runs when
+  `CROSS_LANG_TEST=1` (needs python3 with grpcio+protobuf and a writable
+  `/usr/local/bin`, both true in the containerized CI test step).
+
 ### snapshot-agent TPU (phase: tpu)
 
 Tests the TPU backend end to end on a real TPU node (e.g. a single-host v5e): the standalone agent plus the gVisor `tpucheckpoint` CLI drive a batched checkpoint/restore of a multi-process libtpu workload (one single-chip JAX process per chip, run with `LIBTPU_CHECKPOINTING_ENABLED=true`). The workload quiesces TPU ops via a flag file before the checkpoint — the libtpu contract a production driver honors before yielding its time slice — and its step counters advancing after restore prove the chips came back. Not part of `--phase all` since it needs a TPU node while the other phases need GPUs.
@@ -27,7 +49,7 @@ Uses a 2-node topology: `TEST_NODE_SAMPLERS` for the samplers group, `TEST_NODE_
 - `run.sh` -- launcher (build images, install chart fixtures, deploy runner, copy source, build `make standalone`, install the Python client, `go test`, cleanup)
 - `runner.yaml` -- test-runner pod + RBAC
 - `harness/` -- shared framework: in-cluster client, node selection, pod lifecycle, exec/HTTP/VRAM helpers
-- `snapshot-agent/` -- the agent suite: `standalone_test.go` / `k8s_test.go` / `tpu_test.go`, plus the agent specifics (`harness.go` agent deployment, `engines.go` engine specs, `tpu.go` + `tpu_workload.py` TPU fixtures, `agentctl.py`)
+- `snapshot-agent/` -- the agent suite: `standalone_test.go` / `k8s_test.go` / `tpu_test.go` / `memory_regions_test.go`, plus the agent specifics (`harness.go` agent deployment, `engines.go` engine specs, `tpu.go` + `tpu_workload.py` TPU fixtures, `memory_regions.go` + `stub_cr_client.sh` + `memory_regions_driver.py` memory-regions fixtures, `agentctl.py`)
 - `orchestrator/` -- the orchestrator suite: `orchestrator_test.go` / `harness.go`
 - `orchestrator/scenarios/` -- scenario drivers shared by both the simulate tier (unit tests) and the composed suite
 - `orchestrator/simulate/` -- fakes tier: in-process orchestrator with fake K8s, runs on every PR
