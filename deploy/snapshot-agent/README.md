@@ -263,3 +263,51 @@ the agent, `cr_client`, and the preloader source always roll together.
 > non-Helm `timeslice-snapshot-agent` PriorityClass; `helm install` refuses
 > to adopt it. Delete it once before installing:
 > `kubectl delete priorityclass timeslice-snapshot-agent`.
+
+## GPU-CR Memory-Regions Backend (`memoryRegions.*`)
+
+The `memory_regions` backend checkpoints and restores **explicit ranges** of
+a workload's device memory into named snapshot slots, while the workload
+keeps running — the use case is swapping one set of weights for another
+(for example alternating LoRA adapters through a single vLLM slot) without
+parking the whole process. `direct_memory` (above) parks everything;
+`memory_regions` touches only the ranges the caller names.
+
+It is gated behind the `memoryRegions` values block and **disabled by
+default** — with `memoryRegions.enabled=false` the rendered chart is
+identical to a plain CUDA/app-backend deployment.
+
+```bash
+helm install snapshot-agent ./snapshot-agent \
+  --namespace timeslice-system \
+  --create-namespace \
+  --set memoryRegions.enabled=true
+```
+
+Both GPU-CR backends run on the same node plumbing, so **this block adds
+almost nothing of its own**. Everything described under
+[Direct Memory](#gpu-cr-direct-memory-backend-directmemory) — the shared
+checkpoint store, the hugetlbfs mount, the control tmpfs, the hugepage
+bootstrap, the PriorityClass, and the agent's zero hugepage request —
+renders identically when `memoryRegions.enabled=true`, configured by the
+same `directMemory.ctlDir` / `hostCtlPath` / `hugetlbfs.*` knobs. Enabling
+this backend does **not** require `directMemory.enabled=true`; enabling
+both renders one copy of the shared machinery, not two.
+
+What is specific to this block:
+
+*   The `MemoryRegionsBackend` feature gate, implied by
+    `memoryRegions.enabled=true` (an explicit `featureGates` entry
+    overrides the implied value).
+*   `GPU_CR_OP_TIMEOUT_SEC` (`memoryRegions.opTimeoutSec`, default 120 s) —
+    the per-`cr_client`-invocation deadline for this backend, separate from
+    `direct_memory`'s so the two can be tuned independently.
+
+Workload requirements are the same as for `direct_memory` (preloader,
+`hostPID`, the shared checkpoint dir, hugepages sized for its buffers),
+plus one addition: the caller must know the device addresses and sizes it
+wants checkpointed, because this backend does no discovery. See the
+backend section and the region/slot API in
+[guides/snapshot-agent](../../guides/snapshot-agent/README.md).
+`grpc.health.v1.Health/Check` with `service: "memory-regions"` reports
+whether `cr_client` is available.

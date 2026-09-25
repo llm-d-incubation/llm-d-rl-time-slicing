@@ -25,14 +25,18 @@ spec:
       serviceAccountName: {{ include "snapshot-agent.serviceAccountName" . }}
       hostNetwork: true
       hostPID: true
-      {{- $bootstrap := and .Values.directMemory.enabled .Values.directMemory.hugetlbfs.mount .Values.directMemory.hugetlbfs.bootstrap.enabled }}
+      {{- /* Both GPU-CR backends need the same node plumbing (shared
+             checkpoint store, control tmpfs, hugepage pool), so it renders
+             once for either, keyed off the directMemory.* knobs. */}}
+      {{- $gpucr := or .Values.directMemory.enabled .Values.memoryRegions.enabled }}
+      {{- $bootstrap := and $gpucr .Values.directMemory.hugetlbfs.mount .Values.directMemory.hugetlbfs.bootstrap.enabled }}
       {{- if and $bootstrap (ne .Values.directMemory.hugetlbfs.pagesize "2M") }}
       {{- fail "directMemory.hugetlbfs.bootstrap provisions 2Mi pages only; disable it or set pagesize: 2M" }}
       {{- end }}
       {{- if and $bootstrap .Values.directMemory.hugepagesResource }}
       {{- fail "directMemory.hugepagesResource cannot be combined with hugetlbfs.bootstrap: a pod that requests hugepages cannot schedule before its own bootstrap publishes capacity. On pre-provisioned nodes set hugetlbfs.bootstrap.enabled=false; otherwise drop hugepagesResource (the ctl tmpfs keeps the agent hugetlb-free)" }}
       {{- end }}
-      {{- if .Values.directMemory.enabled }}
+      {{- if $gpucr }}
       {{- if and $bootstrap .Values.priorityClass.name }}
       # Referenced only when the PriorityClass is also created (see
       # templates/priorityclass.yaml): the bootstrap must win node placement.
@@ -141,11 +145,14 @@ spec:
             - name: AGENT_PORT
               value: {{ .Values.port | quote }}
             {{- /* Feature gates: explicit values from .Values.featureGates,
-                 with directMemory.enabled implying DirectMemoryBackend=true
-                 (deploying the GPU-CR machinery is the opt-in). */}}
+                 with each backend block implying its own gate (deploying
+                 the machinery is the opt-in). */}}
             {{- $gates := dict }}
             {{- if .Values.directMemory.enabled }}
             {{- $_ := set $gates "DirectMemoryBackend" true }}
+            {{- end }}
+            {{- if .Values.memoryRegions.enabled }}
+            {{- $_ := set $gates "MemoryRegionsBackend" true }}
             {{- end }}
             {{- range $name, $enabled := .Values.featureGates }}
             {{- if not (kindIs "bool" $enabled) }}
@@ -161,11 +168,19 @@ spec:
             - name: FEATURE_GATES
               value: {{ join "," $pairs | quote }}
             {{- end }}
-            {{- if .Values.directMemory.enabled }}
+            {{- if $gpucr }}
+            # Shared by both GPU-CR backends: the checkpoint store both the
+            # agent and the workloads see at the same path.
             - name: EXPORT_FILE_PATH
               value: {{ .Values.directMemory.ctlDir | quote }}
+            {{- end }}
+            {{- if .Values.directMemory.enabled }}
             - name: DIRECT_MEMORY_OP_TIMEOUT_SEC
               value: {{ .Values.directMemory.opTimeoutSec | quote }}
+            {{- end }}
+            {{- if .Values.memoryRegions.enabled }}
+            - name: GPU_CR_OP_TIMEOUT_SEC
+              value: {{ .Values.memoryRegions.opTimeoutSec | quote }}
             {{- end }}
             {{- if .Values.nvidia.driver.enabled }}
             - name: LD_LIBRARY_PATH
@@ -180,7 +195,7 @@ spec:
               containerPort: {{ .Values.port }}
               protocol: TCP
           resources:
-            {{- if and .Values.directMemory.enabled .Values.directMemory.hugepagesResource }}
+            {{- if and $gpucr .Values.directMemory.hugepagesResource }}
             {{- /* Merge hugepages headroom into the configured resources
                    (k8s requires a memory request alongside hugepages). */}}
             {{- $hpKey := printf "hugepages-%si" .Values.directMemory.hugetlbfs.pagesize }}
@@ -203,7 +218,7 @@ spec:
             - name: nvidia-devices
               mountPath: {{ .Values.nvidia.devices.mountPath }}
             {{- end }}
-            {{- if .Values.directMemory.enabled }}
+            {{- if $gpucr }}
             - name: huge-ckpt
               mountPath: {{ .Values.directMemory.ctlDir }}
               # Pick up the hugetlbfs mount made by the init container even
@@ -223,7 +238,7 @@ spec:
             path: {{ .Values.nvidia.devices.hostPath }}
             type: Directory
         {{- end }}
-        {{- if .Values.directMemory.enabled }}
+        {{- if $gpucr }}
         - name: huge-ckpt
           hostPath:
             path: {{ .Values.directMemory.hostCtlPath }}

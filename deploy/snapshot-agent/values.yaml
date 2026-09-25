@@ -10,13 +10,19 @@ fullnameOverride: ""
 
 podAnnotations: {}
 
-resources: {}
-#  limits:
-#    cpu: 500m
-#    memory: 1Gi
-#  requests:
-#    cpu: 100m
-#    memory: 256Mi
+# Deliberately NO hugepages request: with either GPU-CR backend the agent
+# moves no dump bytes (the workload's own process writes them) and its
+# control files live on the control tmpfs, so no hugepage is ever charged
+# to this pod. That zero request is what lets the DaemonSet schedule on a
+# fresh node BEFORE hugepage capacity exists, which in turn lets the
+# hugepage bootstrap run as one of its init containers.
+# Memory = 512Mi base + the control tmpfs cap (worst case: tmpfs pages are
+# charged to whichever cgroup first touches them, which can be this pod).
+resources:
+  requests:
+    memory: "576Mi"
+  limits:
+    memory: "576Mi"
 
 nodeSelector: {}
 
@@ -50,6 +56,22 @@ nvidia:
     hostPath: /dev
     mountPath: /dev
 
+# GPU-CR memory-regions backend: selective checkpoint/restore of explicit
+# device-memory ranges into named snapshot slots, while the workload keeps
+# running. Default disabled — the chart is identical to a CUDA/app-backend
+# deployment unless this is turned on.
+#
+# It runs on the SAME node plumbing as directMemory (shared checkpoint
+# store, control tmpfs, hugepage pool), so enabling either block renders
+# that machinery once and the directMemory.* knobs below configure it for
+# both. Turning this on does not require directMemory.enabled.
+memoryRegions:
+  enabled: false
+  # Per-cr_client-invocation timeout (GPU_CR_OP_TIMEOUT_SEC). Separate from
+  # directMemory.opTimeoutSec: the two backends are configured independently
+  # and the agent reads one env var per backend.
+  opTimeoutSec: 120
+
 # Kubernetes-style feature gates (map of Name: bool), rendered into the
 # agent's FEATURE_GATES env var. Experimental capabilities are off by
 # default; requests selecting a gated backend fail with FAILED_PRECONDITION
@@ -57,6 +79,9 @@ nvidia:
 # Known gates:
 #   DirectMemoryBackend — the experimental direct_memory backend (driven by
 #   GPU-CR). Default: false.
+#   MemoryRegionsBackend — the experimental memory_regions backend (driven
+#   by GPU-CR). Default: false. memoryRegions.enabled implies
+#   MemoryRegionsBackend: true; an explicit entry here overrides that.
 # Example:
 #   featureGates:
 #     DirectMemoryBackend: true
@@ -70,6 +95,11 @@ featureGates: {}
 # workloads and implies the DirectMemoryBackend feature gate. The target
 # workloads must run under the GPU-CR vGPU preloader, with hugepage
 # capacity sized for whole-VRAM dumps.
+#
+# NOTE: the knobs in this block (ctlDir, hostCtlPath, hugetlbfs.*) configure
+# the node plumbing for BOTH GPU-CR backends — memoryRegions.enabled renders
+# the same mounts and init containers from these values, whether or not
+# directMemory itself is enabled.
 directMemory:
   enabled: false
   # Shared checkpoint/control dir (EXPORT_FILE_PATH inside the agent). Any
