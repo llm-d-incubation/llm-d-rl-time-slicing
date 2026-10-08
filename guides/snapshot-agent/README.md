@@ -145,6 +145,8 @@ result = client.snapshot_and_wait(job_id="my-k8s-job-id")
 
 A request that carries a `backend_config` uses the backend it names (section 3). A request without one — the TimeSlice Orchestrator's snapshot/restore calls are of this kind — uses the agent's **default backend**, `cuda`, which can be changed per agent with the `-default-backend` flag or the `DEFAULT_BACKEND` environment variable on the DaemonSet. An explicit config always takes precedence over the default.
 
+**Interim** (until the orchestrator passes a per-job `backend_config`): a request without a config for a job that has a **registered workload channel** is served by `app_channel`, as if an empty `AppChannelConfig` had been sent; jobs without a channel fall through to the default backend. Registering the channel is the job's opt-in. This rule will be removed once the orchestrator plumbs the backend config through.
+
 ---
 
 ## 3. Backends

@@ -43,7 +43,9 @@ func main() {
 		"Comma-separated list of Name=bool pairs selecting experimental features, e.g. 'DirectMemoryBackend=true'")
 	defaultBackend := flag.String("default-backend", string(backends.BackendCuda),
 		"Backend used when a request carries no backend_config (the orchestrator never sends one, "+
-			"so this selects the backend for orchestrator-driven snapshots/restores)")
+			"so this selects the backend for orchestrator-driven snapshots/restores) — unless the job "+
+			"has a registered workload channel, which selects app-channel (INTERIM behaviour until the "+
+			"orchestrator passes backend_config)")
 	flag.Parse()
 
 	depMode := *deploymentMode

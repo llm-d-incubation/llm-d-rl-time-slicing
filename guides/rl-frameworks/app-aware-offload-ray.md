@@ -114,6 +114,8 @@ EOF
 
 Only do this while the job is between a lock release and its next acquire (ranks idle). A command issued mid-step queues behind the running actor task and exceeds the fan-out timeout.
 
+**Interim** (until the orchestrator passes a per-job `backend_config`): the agent serves a config-less request for a job that has a registered workload channel through `app_channel`. Registering the proxies is therefore enough for the orchestrator's handoffs to use the application-aware path today; the rule goes away once the orchestrator sends the config explicitly.
+
 ## 7. Composing with cuda-checkpoint
 
 The proxy actor holds no CUDA context, so it survives a `cuda-checkpoint` of the rank processes. To empty the GPU completely: app-level snapshot first (through the channel), then the transparent checkpoint of the ranks; restore in the reverse order. Today the agent's state machine is per job id, so the two steps use distinct job ids (see the snapshot-agent guide, "Composing Backends"); the orchestrator does not drive this composition.

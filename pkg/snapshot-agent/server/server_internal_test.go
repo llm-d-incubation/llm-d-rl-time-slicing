@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -990,5 +991,124 @@ func TestServer_Tpu_NotRegisteredOnNonTpuNodes(t *testing.T) {
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Errorf("Restore() with a tpu config on a non-TPU node = %v, want NotFound", err)
+	}
+}
+
+// recordingBackend captures the requests a backend received.
+type recordingBackend struct {
+	backends.NoopBackend
+	mu        sync.Mutex
+	snapshots []backends.Request
+	restores  []backends.Request
+}
+
+func (r *recordingBackend) Snapshot(_ context.Context, req backends.Request) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.snapshots = append(r.snapshots, req)
+	return nil
+}
+
+func (r *recordingBackend) Restore(_ context.Context, req backends.Request) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.restores = append(r.restores, req)
+	return nil
+}
+
+func (r *recordingBackend) snapshotCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.snapshots)
+}
+
+func (r *recordingBackend) restoreCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.restores)
+}
+
+func waitOperationComplete(t *testing.T, srv *Server, opID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		op, ok := srv.state.GetOperation(opID)
+		if ok && op.Status != pb.OperationStatus_OPERATION_STATUS_PENDING {
+			if op.Status != pb.OperationStatus_OPERATION_STATUS_COMPLETE {
+				t.Fatalf("operation %s ended %v: %s", opID, op.Status, op.Error)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("operation %s did not finish in time", opID)
+}
+
+// INTERIM (see Server.resolveBackendConfig): a request without backend_config
+// for a job that has a registered workload channel is served by app-channel;
+// an explicit config and jobs without a channel keep their routing.
+func TestServer_InterimChannelFallback(t *testing.T) {
+	cudaCfg := &pb.BackendConfig{Backend: &pb.BackendConfig_Cuda{Cuda: &pb.CudaBackendConfig{}}}
+	tests := []struct {
+		name        string
+		register    bool
+		config      *pb.BackendConfig
+		wantChannel bool
+	}{
+		{name: "no config, channel registered -> app-channel", register: true, wantChannel: true},
+		{name: "no config, no channel -> default backend", register: false, wantChannel: false},
+		{name: "explicit cuda config, channel registered -> cuda", register: true, config: cudaCfg, wantChannel: false},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			def := &recordingBackend{}
+			ch := &recordingBackend{}
+			registry := backends.NewChannelRegistry()
+			srv := NewServer(map[backends.BackendType]backends.Backend{
+				backends.BackendCuda:       def,
+				backends.BackendAppChannel: ch,
+			}, backends.BackendCuda, "standalone", registry, nil)
+
+			jobID := fmt.Sprintf("fallback-job-%d", i)
+			if tc.register {
+				registry.Register(jobID, &pb.WorkloadCapabilities{}, func(*pb.AgentCommand) error { return nil })
+			}
+			srv.state.RegisterJob(jobID, "")
+			if err := srv.state.TransitionToRunning(jobID, []int{1}); err != nil {
+				t.Fatalf("TransitionToRunning: %v", err)
+			}
+
+			ctx := context.Background()
+			snap, err := srv.Snapshot(ctx, &pb.SnapshotRequest{JobId: jobID, BackendConfig: tc.config})
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			waitOperationComplete(t, srv, snap.GetOperationId())
+			rest, err := srv.Restore(ctx, &pb.RestoreRequest{JobId: jobID, BackendConfig: tc.config})
+			if err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+			waitOperationComplete(t, srv, rest.GetOperationId())
+
+			chSnaps, chRests := ch.snapshotCount(), ch.restoreCount()
+			defSnaps, defRests := def.snapshotCount(), def.restoreCount()
+			if tc.wantChannel {
+				if chSnaps != 1 || chRests != 1 || defSnaps != 0 || defRests != 0 {
+					t.Fatalf("want app-channel 1/1 and default 0/0, got app-channel %d/%d default %d/%d",
+						chSnaps, chRests, defSnaps, defRests)
+				}
+				ch.mu.Lock()
+				defer ch.mu.Unlock()
+				if ch.snapshots[0].Config.GetAppChannel() == nil || ch.restores[0].Config.GetAppChannel() == nil {
+					t.Fatalf("expected a synthesized app_channel config, got snapshot=%v restore=%v",
+						ch.snapshots[0].Config, ch.restores[0].Config)
+				}
+				return
+			}
+			if defSnaps != 1 || defRests != 1 || chSnaps != 0 || chRests != 0 {
+				t.Fatalf("want default 1/1 and app-channel 0/0, got default %d/%d app-channel %d/%d",
+					defSnaps, defRests, chSnaps, chRests)
+			}
+		})
 	}
 }

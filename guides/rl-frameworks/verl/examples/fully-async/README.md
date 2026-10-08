@@ -301,6 +301,12 @@ Which backend the agent uses for the orchestrator's handoffs is covered in the
 integration guide section linked above; the manual trigger shown there works
 regardless, between a `RELEASE` and the next `ACQUIRE`.
 
+**Interim** (until the orchestrator passes a per-job `backend_config`): with
+the current orchestrator the flag alone is enough — the agent routes the
+handoffs of a channel-registered job through `app_channel`, so the two-job
+alternation above runs on the trainer's own offload and the agent log shows
+`using app-channel` instead of `cuda-checkpoint` lines for that job.
+
 ### Observe time-slicing via the `rlts` CLI
 
 You can also watch the orchestrator's group state directly. Port-forward the

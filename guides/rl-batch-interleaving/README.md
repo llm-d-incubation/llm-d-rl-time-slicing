@@ -204,10 +204,12 @@ cd llm-d-rl-time-slicing
 > `ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/*` images at `latest`).
 > Until the first tagged release is cut, `main` + `latest` is the only
 > option. One constraint specific to this recipe: whatever you pin, the
-> snapshot agent must support **per-job backend resolution** — the workload
-> channel is how the agent drives the batch engine's sleep/wake instead of
-> cuda-checkpointing it (the official images at `latest`, the chart default,
-> do).
+> snapshot agent must include the **interim workload-channel fallback** — a
+> request without a `backend_config` for a job with a registered workload
+> channel is served by `app_channel` — because the workload channel is how
+> the agent drives the batch engine's sleep/wake instead of cuda-checkpointing
+> it (the official images at `latest`, the chart default, do; the rule is
+> interim until the orchestrator passes a per-job backend config).
 
 ### Step 2: Install the Helm Chart
 
@@ -434,8 +436,9 @@ same four behaviors:
 - **Workload-channel registration.** At startup the supervisor registers
   sleep/wake callbacks with the node-local snapshot agent
   (`TIMESLICE_AGENT_ADDR`, the node IP :9001). The agent resolves each job's
-  snapshot backend per job (explicit config → live workload channel → pod
-  annotation → default cuda), so for this job it invokes the registered
+  snapshot backend per job (explicit config → live workload channel →
+  default cuda; the workload-channel step is interim until the orchestrator
+  passes a per-job backend config), so for this job it invokes the registered
   callbacks — `POST /sleep` / `POST /wake_up` — instead of
   cuda-checkpointing the engine process.
 - **Drain before yield — required, not a nicety** (see requirement 2 above).

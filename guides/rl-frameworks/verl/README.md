@@ -245,6 +245,8 @@ EOF
 
 Agent log: `Dispatching snapshot command to workload`, `Workload completed snapshot command ... duration=...`, and the restore counterparts; no `cuda-checkpoint` lines for this job. `nvidia-smi` in the head pod drops to context-only memory while offloaded.
 
+**Interim** (until the orchestrator passes a per-job `backend_config`): with the current orchestrator, setting `TIMESLICE_APP_OFFLOAD=1` is sufficient. The agent serves a config-less request for a job with a registered workload channel through `app_channel`, so the orchestrator's handoffs already use the trainer's own offload, and two-job alternation works end to end. The agent log line for such a handoff reads `No backend_config in request; job has a registered workload channel, using app-channel`.
+
 ---
 
 ## 4. Deploying Time-Sliced verl Jobs

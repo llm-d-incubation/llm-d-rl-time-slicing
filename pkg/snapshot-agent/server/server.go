@@ -85,7 +85,8 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 		return nil, err
 	}
 
-	backendType := s.getSnapshotBackendType(req.GetBackendConfig())
+	config := s.resolveBackendConfig(ctx, req.GetJobId(), req.GetBackendConfig())
+	backendType := s.getSnapshotBackendType(config)
 	slog.InfoContext(ctx, "Snapshot called", "backend", backendType)
 
 	backend, ok := s.backendMap[backendType]
@@ -96,7 +97,6 @@ func (s *Server) Snapshot(ctx context.Context, req *pb.SnapshotRequest) (*pb.Sna
 	s.ensureJobRunningIfOccupied(ctx, req.GetJobId(), req.GetGroup())
 
 	bgCtx := context.WithoutCancel(ctx)
-	config := req.GetBackendConfig()
 
 	snapshotFn, fnErr := s.buildSnapshotFn(bgCtx, req.GetJobId(), backendType, backend, config)
 	if fnErr != nil {
@@ -136,6 +136,26 @@ func (s *Server) getSnapshotBackendType(config *pb.BackendConfig) backends.Backe
 		return backends.BackendTpu
 	}
 	return s.defaultBackend
+}
+
+// resolveBackendConfig returns the config a request should be routed with.
+//
+// INTERIM: the TimeSlice Orchestrator does not yet pass a per-job
+// backend_config to the agent. Until it does, a request WITHOUT one for a job
+// that has a registered workload channel is served by the app-channel backend
+// (registering the channel is the job's opt-in; the synthesized empty
+// AppChannelConfig means "suspend as declared at registration"). Requests
+// that carry a config, and jobs without a channel, are unaffected. Remove this
+// helper once the orchestrator plumbs backend_config through.
+func (s *Server) resolveBackendConfig(ctx context.Context, jobID string, config *pb.BackendConfig) *pb.BackendConfig {
+	if config != nil || s.channelRegistry == nil {
+		return config
+	}
+	if _, err := s.channelRegistry.Session(jobID); err != nil {
+		return nil
+	}
+	slog.InfoContext(ctx, "No backend_config in request; job has a registered workload channel, using app-channel")
+	return &pb.BackendConfig{Backend: &pb.BackendConfig_AppChannel{AppChannel: &pb.AppChannelConfig{}}}
 }
 
 // ensureJobRunningIfOccupied registers the job and, if it is IDLE while the
@@ -417,7 +437,8 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 		return nil, err
 	}
 
-	backendType := s.getSnapshotBackendType(req.GetBackendConfig())
+	restoreConfig := s.resolveBackendConfig(ctx, req.GetJobId(), req.GetBackendConfig())
+	backendType := s.getSnapshotBackendType(restoreConfig)
 	slog.InfoContext(ctx, "Restore called", "backend", backendType)
 
 	backend, ok := s.backendMap[backendType]
@@ -426,7 +447,6 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Resto
 	}
 
 	bgCtx := context.WithoutCancel(ctx)
-	restoreConfig := req.GetBackendConfig()
 
 	restoreFn, fnErr := s.buildRestoreFn(bgCtx, req.GetJobId(), backendType, backend, restoreConfig)
 	if fnErr != nil {
