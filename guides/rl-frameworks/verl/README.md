@@ -4,7 +4,7 @@ This guide provides step-by-step instructions on how to time-slice any two **ver
 
 ### Motivation: Maximizing GPU Utilization
 
-In verl's **fully-async** recipe (`fully_async_policy`), rollout generation runs continuously while the trainer sits idle whenever it waits for the next batch of samples — in our reference runs that idle fraction was ~55–70% of wall-clock. Cooperative time-slicing backfills those valleys: multiple jobs' trainers share one physical GPU pool, and the platform checkpoints the idle trainer's GPU state to host RAM (`cuda-checkpoint`) at every handoff. Rollout engines keep dedicated GPUs and never stop generating: while a job's trainer is checkpointed off the shared GPU, its rollout engine keeps generating samples into the staleness queue.
+In verl's **fully-async** recipe (`fully_async_policy`), rollout generation runs continuously while the trainer sits idle whenever it waits for the next batch of samples — in our reference runs that idle fraction was ~55–70% of wall-clock. Cooperative time-slicing backfills those valleys: multiple jobs' trainers share one physical GPU pool, and at every handoff the platform moves the idle trainer's GPU state to host RAM — by default by checkpointing the whole process (`cuda-checkpoint`), optionally by having the trainer offload its own model and optimizer through the snapshot-agent's workload channel (see [Offloading via the Workload Channel](#offloading-via-the-workload-channel-app_channel)). Rollout engines keep dedicated GPUs and never stop generating: while a job's trainer is off the shared GPU, its rollout engine keeps generating samples into the staleness queue.
 
 This guide covers verl's fully-async trainer (`fully_async_policy`), integrated via the `TimesliceFullyAsyncTrainer` subclass and verl's fully-async lifecycle hooks.
 
@@ -196,6 +196,55 @@ Every time-sliced verl job must carry this contract:
 * **Pod labels** on the head pod ONLY (the trainer is the sole time-sliced process; rollout pods stay unlabeled): `timeslice.io/job-id: <job id>` and `timeslice.io/group: <group>` — the exact keys the platform selects snapshot candidates on.
 * **NCCL environment**: set `NCCL_CUMEM_ENABLE=0` and `NCCL_NVLS_ENABLE=0` on every job pod (the example manifests set both) — precautionary settings around cuda-checkpoint; keep them as set.
 
+### Offloading via the Workload Channel (app_channel)
+
+**Experimental, opt-in.** Instead of letting the platform `cuda-checkpoint` the trainer process at every handoff, the timeslice trainer can offload its own GPU state through the snapshot-agent's `app_channel` backend. The generic mechanism and the contract for other frameworks are described in [Application-Aware GPU Offload for Ray-Based RL Frameworks](../app-aware-offload-ray.md); this section is the verl instantiation.
+
+**How it works.** At the end of `init_workers`, before the lock is yielded, `TimesliceFullyAsyncTrainer` spawns one zero-CPU proxy actor per trainer node (`timeslice.snapshot_agent.rayworker`). Each proxy registers the job with its node-local snapshot-agent and, when the agent sends a snapshot or restore command, calls verl's manual offload RPC on the ranks of its node: `actor_to(device="cpu", model=True, optimizer=True, grad=True)` to offload and `actor_to(device="device", model=True, optimizer=True, grad=False)` to reload (`actor_rollout_to` for hybrid layouts). The RPC is implemented by every verl engine backend (FSDP and Megatron) regardless of the job's own offload settings. Under the lock protocol the offload command arrives after the trainer yielded and the reload inside the next acquire, so the ranks are idle at both moments; the reload is handshaked with the orchestrator rather than timed.
+
+**Enabling it.** On **both** pods (the trainer driver actor inherits the raylet env of whichever node it lands on; the proxies read the agent address on their own node):
+
+```yaml
+- name: TIMESLICE_APP_OFFLOAD
+  value: "1"
+- name: NODE_IP
+  valueFrom:
+    fieldRef:
+      fieldPath: status.hostIP
+- name: TIMESLICE_AGENT_ADDR
+  value: "$(NODE_IP):9001"          # snapshot-agent is hostNetwork on :9001
+```
+
+The example manifests ship these with `TIMESLICE_APP_OFFLOAD: "0"`; flip it to `"1"`. `timeslice` and `llm-d-timeslice-verl` must be installed on every node that hosts trainer ranks (the install script already does this on both pods). Everything else in the contract above stays as is, including `trainer.save_freq=-1` and the NCCL settings.
+
+**Multi-node trainers** (`trainer.nnodes > 1`): the proxies are per node, so every Ray worker pod on a trainer node needs the `timeslice.io/job-id` and `timeslice.io/group` labels (each node's agent gates snapshots on a labeled pod with GPU activity on that node) and the three env vars above; the snapshot-agent must run on every trainer node.
+
+**What stays on the GPU.** The CUDA context, NCCL communicators and allocator residue (about 1–2 GiB per GPU for this demo) remain resident after an offload; the co-tenant must tolerate that, or the transparent path must be composed on top (see the generic guide, section 7).
+
+**How the backend is selected.** The orchestrator addresses this job with an `app_channel` backend config (per-job plumbing); an explicit config always takes precedence over the agent's node-wide default backend. To exercise the path directly, issue the request yourself from the head pod while the job is between a `RELEASE` and its next `ACQUIRE` (ranks idle):
+
+```bash
+kubectl exec job-a-head -- python3 - <<'EOF'
+import os
+from timeslice.snapshot_agent import SnapshotAgentClient, app_channel_config
+with SnapshotAgentClient(os.environ["TIMESLICE_AGENT_ADDR"]) as c:
+    print(c.snapshot_and_wait("job-a-trainer", backend_config=app_channel_config()).status)
+    print(c.restore_and_wait("job-a-trainer", backend_config=app_channel_config()).status)
+EOF
+```
+
+**What to expect.** Head pod log:
+
+```
+[timeslice] job=job-a-trainer OFFLOAD-PROXIES ready nodes=1 ranks=1 method=actor_to took=1.3s
+[timeslice] job=job-a-trainer RELEASE group=trainers pending_waiters=1 snapshot_deferred=False
+[timeslice] job=job-a-trainer OFFLOAD node=3f2a9c1e ranks=1 method=actor_to took=1.9s
+[timeslice] job=job-a-trainer RELOAD node=3f2a9c1e ranks=1 method=actor_to took=1.6s
+[timeslice] job=job-a-trainer ACQUIRE group=trainers waited=...ms context_restored=True
+```
+
+Agent log: `Dispatching snapshot command to workload`, `Workload completed snapshot command ... duration=...`, and the restore counterparts; no `cuda-checkpoint` lines for this job. `nvidia-smi` in the head pod drops to context-only memory while offloaded.
+
 ---
 
 ## 4. Deploying Time-Sliced verl Jobs
@@ -268,3 +317,7 @@ For failures specific to the runnable demo's topology and manifests, see the [ex
 | Hydra error `Key 'use_trainer_do_validate' is not in struct trainer` | Wrong config key path | These flags live under `async_training.*`, not `trainer.*` (the example manifests are correct) |
 | `save_freq` / checkpoint-save-skipped warning in log | Checkpoint saving would RPC a possibly-frozen worker | By design: the timeslice trainer vetoes saves when `save_freq > 0`; keep `trainer.save_freq=-1` |
 | Steps complete but one job's staleness queue near `staleness_threshold × batch` | Very asymmetric job speeds | Raise `async_training.staleness_threshold` (we use 8) or budget shorter runs; queue overflow drops samples |
+| (app_channel) `no workload channel registered for job "<id>"` | `TIMESLICE_APP_OFFLOAD` is off, no `OFFLOAD-PROXIES ready` line (proxies not spawned), the proxy died, or `TIMESLICE_AGENT_ADDR` points at another node's agent | Set the three env vars on both pods; check the head log for `OFFLOAD-PROXIES ready`; `ray list actors \| grep timeslice-offload-proxy` |
+| (app_channel) `offload proxies ... did not connect to the snapshot-agent within 60s`, job exits during init | Agent not running on that trainer node, not on host networking, or `NODE_IP` unset | `kubectl -n timeslice-system get pods -o wide`; compare with the pod's `TIMESLICE_AGENT_ADDR` |
+| (app_channel) `timed out waiting for workload ... to complete command` / `GetTimeoutError` in the error text | A rank did not return within 100 s: command issued while the trainer was mid-step, or the state is too large for the window | Trigger only between `RELEASE` and `ACQUIRE`; the per-command budget is `OffloadSpec.call_timeout_sec` (the agent allows 120 s) |
+| (app_channel) `workload does not support suspend mode SUSPEND_MODE_DISCARD` | The trainer advertises offload only | Request `offload` or leave the mode unspecified |

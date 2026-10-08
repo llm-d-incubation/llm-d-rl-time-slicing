@@ -9,11 +9,14 @@ from .configs import (
     tpu_config,
     vllm_config,
 )
+from .rayworker import OffloadProxySet, OffloadSpec, spawn_offload_proxies
 from .types import MemoryRegion
 from .workload import WorkloadHandle, register_workload
 
 __all__ = [
     "MemoryRegion",
+    "OffloadProxySet",
+    "OffloadSpec",
     "SnapshotAgentClient",
     "WorkloadHandle",
     "app_channel_config",
@@ -23,6 +26,7 @@ __all__ = [
     "memory_regions_config",
     "register_workload",
     "sglang_config",
+    "spawn_offload_proxies",
     "tpu_config",
     "vllm_config",
 ]

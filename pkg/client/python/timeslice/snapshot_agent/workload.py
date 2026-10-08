@@ -30,6 +30,9 @@ _INITIAL_BACKOFF_SEC = 0.5
 _MAX_BACKOFF_SEC = 30.0
 # A connection that survived this long resets the backoff.
 _STABLE_CONNECTION_SEC = 5.0
+# How long to wait for the agent's transport to come up before opening the
+# stream; an unreachable agent then fails fast and goes through backoff.
+_CONNECT_TIMEOUT_SEC = 10.0
 
 
 class WorkloadHandle:
@@ -48,6 +51,7 @@ class WorkloadHandle:
         self._adapter = adapter
         self._loop = loop
         self._stop = threading.Event()
+        self._connected = threading.Event()
         self._call: Optional[Any] = None
         self._call_lock = threading.Lock()
         self._thread = threading.Thread(
@@ -56,6 +60,22 @@ class WorkloadHandle:
             daemon=True,
         )
         self._thread.start()
+
+    @property
+    def connected(self) -> bool:
+        """True while a stream to the agent is open (see wait_connected)."""
+        return self._connected.is_set()
+
+    def wait_connected(self, timeout: Optional[float] = None) -> bool:
+        """Blocks until the workload channel is open, or the timeout expires.
+
+        "Connected" means the gRPC stream to the agent is established and the
+        RegisterWorkload message is queued on it. The agent registers the job
+        on its first Recv of that stream, so the window between this returning
+        True and the registry entry existing is sub-millisecond. Returns False
+        on timeout; the handle keeps retrying in the background either way.
+        """
+        return self._connected.wait(timeout)
 
     def close(self, timeout: float = 5.0) -> None:
         """Stops servicing commands and closes the channel."""
@@ -73,6 +93,14 @@ class WorkloadHandle:
             started = time.monotonic()
             try:
                 self._connect_and_serve()
+            except grpc.FutureTimeoutError:
+                if not self._stop.is_set():
+                    logger.warning(
+                        "workload channel for job %s: agent %s not reachable within %.0fs",
+                        self._register_msg.job_id,
+                        self._agent,
+                        _CONNECT_TIMEOUT_SEC,
+                    )
             except grpc.RpcError as err:
                 if not self._stop.is_set():
                     logger.warning(
@@ -109,10 +137,14 @@ class WorkloadHandle:
                 yield item
 
         with grpc.insecure_channel(self._agent) as channel:
+            # Fail fast (into backoff) when the agent is not reachable, rather
+            # than letting the stream call hang on a connecting channel.
+            grpc.channel_ready_future(channel).result(timeout=_CONNECT_TIMEOUT_SEC)
             stub = snapshot_agent_pb2_grpc.SnapshotAgentServiceStub(channel)
             call = stub.WorkloadChannel(requests())
             with self._call_lock:
                 self._call = call
+            self._connected.set()
             logger.info(
                 "registering workload for job %s with agent %s",
                 self._register_msg.job_id,
@@ -123,6 +155,7 @@ class WorkloadHandle:
                     result = self._execute(command)
                     sendq.put(snapshot_agent_pb2.WorkloadMessage(result=result))
             finally:
+                self._connected.clear()
                 with self._call_lock:
                     self._call = None
                 # Unblock the request generator so grpc's consumer thread exits.

@@ -40,6 +40,30 @@ with SnapshotAgentClient(endpoint="localhost:9001") as client:
     print(f"Snapshot finished with status: {result.status}")
 ```
 
+### Ray workloads: per-node offload proxies
+
+For workloads whose accelerator state lives in Ray actors (one actor per rank,
+busy in long tasks), `timeslice.snapshot_agent.rayworker` registers the job on
+the workload channel from one zero-CPU proxy actor per Ray node and relays the
+agent's snapshot/restore commands to that node's ranks as Ray RPCs:
+
+```python
+from timeslice.snapshot_agent import OffloadSpec, spawn_offload_proxies
+
+spec = OffloadSpec(
+    method="actor_to",   # remote method on every rank handle
+    snapshot_kwargs={"device": "cpu", "model": True, "optimizer": True, "grad": True},
+    restore_kwargs={"device": "device", "model": True, "optimizer": True, "grad": False},
+)
+proxies = spawn_offload_proxies(rank_handles, spec, job_id="my-trainer", group="trainers")
+# agent=None: each proxy reads TIMESLICE_AGENT_ADDR on its own node.
+# ... the agent can now snapshot/restore "my-trainer" through app_channel ...
+proxies.close()          # crash paths; the proxies otherwise die with their owner
+```
+
+`ray` is imported lazily, so the package stays importable without it. Design
+and framework-binding contract: `guides/rl-frameworks/app-aware-offload-ray.md`.
+
 ### Memory-Regions Backend
 
 To selectively snapshot/restore explicit device-memory ranges of a running

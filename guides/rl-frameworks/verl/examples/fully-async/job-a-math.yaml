@@ -249,7 +249,7 @@ data:
     echo "=== Phase 4: fully-async long-CoT training ==="
     echo "  Model: DeepSeek-R1-Distill-Qwen-1.5B | Dataset: DAPO-Math-17k (512 prompts)"
     echo "  lr=${ACTOR_LR:-1e-6} exp=${EXP_NAME:-unnamed} staleness=${STALENESS_THRESHOLD:-8}"
-    echo "  timeslice: job=${TIMESLICE_JOB_ID:-?} group=${TIMESLICE_GROUP:-?} orch=${TIMESLICE_ORCH_ADDR:-?}"
+    echo "  timeslice: job=${TIMESLICE_JOB_ID:-?} group=${TIMESLICE_GROUP:-?} orch=${TIMESLICE_ORCH_ADDR:-?} app_offload=${TIMESLICE_APP_OFFLOAD:-0} agent=${TIMESLICE_AGENT_ADDR:-?}"
     nvidia-smi
 
     export PYTHONUNBUFFERED=1
@@ -444,6 +444,20 @@ spec:
       value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
     - name: TIMESLICE_GROUP
       value: "trainers"
+    # --- app-channel offload (experimental; opt-in) ---
+    # "1": the timeslice trainer spawns one zero-CPU proxy actor per trainer
+    # node that registers with the node-local snapshot-agent and offloads /
+    # reloads the FSDP ranks' model+optimizer on command, instead of the
+    # transparent cuda-checkpoint path. See the verl guide, "Offloading via
+    # the Workload Channel".
+    - name: TIMESLICE_APP_OFFLOAD
+      value: "0"
+    - name: NODE_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+    - name: TIMESLICE_AGENT_ADDR
+      value: "$(NODE_IP):9001"       # agent is hostNetwork on :9001; resolved on the proxy's own node
     command: ["/bin/bash", "-c"]
     args:
     - |
@@ -535,6 +549,20 @@ spec:
       value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
     - name: TIMESLICE_GROUP
       value: "trainers"
+    # --- app-channel offload (experimental; opt-in) ---
+    # "1": the timeslice trainer spawns one zero-CPU proxy actor per trainer
+    # node that registers with the node-local snapshot-agent and offloads /
+    # reloads the FSDP ranks' model+optimizer on command, instead of the
+    # transparent cuda-checkpoint path. See the verl guide, "Offloading via
+    # the Workload Channel".
+    - name: TIMESLICE_APP_OFFLOAD
+      value: "0"
+    - name: NODE_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+    - name: TIMESLICE_AGENT_ADDR
+      value: "$(NODE_IP):9001"       # agent is hostNetwork on :9001; resolved on the proxy's own node
     command: ["/bin/bash", "-c"]
     args:
     - |

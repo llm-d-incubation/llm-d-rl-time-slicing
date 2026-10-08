@@ -23,7 +23,8 @@ job + one code job, ~2.5 h window):
 | Shared trainer GPU duty cycle | 41.6% | **86.6% (2.08×)** |
 | Training steps completed | 10 | **22 (13 + 9)** |
 | Median step time | 627 s | 554 s (A) / 570 s (B) |
-| Median swap cost | — | 21 s snapshot + 9 s restore |
+| Median swap cost (`cuda-checkpoint`, default) | — | 21 s snapshot + 9 s restore |
+| Median swap cost (app-channel offload, opt-in, §6) | — | not yet measured |
 
 The two jobs in this guide are real, distinct workloads:
 
@@ -276,6 +277,29 @@ kubectl logs job-a-head --tail=2000 | grep -E "ACQUIRE|RELEASE" | tail -5
 # snapshot/restore operations on the shared trainer GPU:
 kubectl -n timeslice-system logs "$AGENT_POD" --tail=100 | grep -i "cuda-checkpoint"
 ```
+
+### Option: app-channel offload instead of cuda-checkpoint
+
+Both job manifests carry the opt-in for the trainer to offload its own model
+and optimizer through the snapshot-agent's workload channel (`app_channel`),
+described in the [integration guide](../../README.md#offloading-via-the-workload-channel-app_channel).
+To try it, set `TIMESLICE_APP_OFFLOAD` to `"1"` on **both** pods of a job
+before applying it (the `NODE_IP` / `TIMESLICE_AGENT_ADDR` env is already
+there), then look for:
+
+```bash
+kubectl logs job-a-head --tail=2000 | grep -E "OFFLOAD-PROXIES|OFFLOAD |RELOAD " | tail -5
+# [timeslice] job=job-a-trainer OFFLOAD-PROXIES ready nodes=1 ranks=1 method=actor_to took=1.3s
+# [timeslice] job=job-a-trainer OFFLOAD node=3f2a9c1e ranks=1 method=actor_to took=1.9s
+# [timeslice] job=job-a-trainer RELOAD node=3f2a9c1e ranks=1 method=actor_to took=1.6s
+kubectl -n timeslice-system logs "$AGENT_POD" --tail=100 | grep -iE "workload|app-channel"
+```
+
+The `took=` values of `OFFLOAD` / `RELOAD` are this path's swap cost; record
+their medians against the `cuda-checkpoint` row of the results table above.
+Which backend the agent uses for the orchestrator's handoffs is covered in the
+integration guide section linked above; the manual trigger shown there works
+regardless, between a `RELEASE` and the next `ACQUIRE`.
 
 ### Observe time-slicing via the `rlts` CLI
 

@@ -21,5 +21,6 @@ hooks.py for the complete environment contract).
 
 from timeslice_verl.hooks import TimesliceHooksMixin
 from timeslice_verl.locks import PhaseLocks
+from timeslice_verl.offload import offload_spec_for_role
 
-__all__ = ["TimesliceHooksMixin", "PhaseLocks"]
+__all__ = ["TimesliceHooksMixin", "PhaseLocks", "offload_spec_for_role"]

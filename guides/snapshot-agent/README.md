@@ -141,6 +141,10 @@ Since the agent automatically discovers the PIDs based on the `job_id`, you do n
 result = client.snapshot_and_wait(job_id="my-k8s-job-id")
 ```
 
+#### Backend selection for requests without `backend_config`
+
+A request that carries a `backend_config` uses the backend it names (section 3). A request without one — the TimeSlice Orchestrator's snapshot/restore calls are of this kind — uses the agent's **default backend**, `cuda`, which can be changed per agent with the `-default-backend` flag or the `DEFAULT_BACKEND` environment variable on the DaemonSet. An explicit config always takes precedence over the default.
+
 ---
 
 ## 3. Backends
@@ -345,6 +349,19 @@ A request for a job with no registered channel fails fast with
 `no workload channel registered for job "..."`. If the workload's suspend
 raises, the operation fails with the workload's error text.
 
+#### Ray workloads: registering from a per-node proxy actor
+
+When the process that owns the accelerator memory is not the process that can
+hold the channel — an RL trainer, for instance, is one Ray actor per rank,
+each busy in long blocking tasks — the `timeslice` client ships a relay:
+`spawn_offload_proxies` starts one zero-CPU proxy actor per Ray node, pinned
+there, which registers the job with its node-local agent and relays each
+command to that node's ranks as Ray RPCs (an `OffloadSpec` names the method
+and arguments). One proxy per node is what the one-registration-per-job-per-node
+rule requires. The verl integration uses it; the design and the contract for
+other frameworks are in
+[Application-Aware GPU Offload for Ray-Based RL Frameworks](../rl-frameworks/app-aware-offload-ray.md).
+
 ### Direct Memory (direct_memory)
 
 Full-process GPU park/resume driven by GPU-CR's `cr_client`. Like the CUDA
@@ -518,6 +535,13 @@ client.snapshot_and_wait(job_id="cuda-job", backend_config=cuda_config)
 
 # Restore: 3. CUDA restore, then 4. application-level resume
 ```
+
+The composition is caller-driven: the agent's state machine is per job id,
+which is why the two steps above use distinct job ids, and the TimeSlice
+Orchestrator issues one snapshot and one restore per job per handoff. A
+workload that registered a channel from a helper process (such as the Ray
+proxy above) keeps that helper out of the CUDA checkpoint by construction —
+the helper holds no CUDA context — so the channel survives step 2.
 
 ---
 
