@@ -193,6 +193,7 @@ Every time-sliced verl job must carry this contract:
   * `TIMESLICE_JOB_ID` — unique per job; must equal the head pod's `timeslice.io/job-id` label.
   * `TIMESLICE_GROUP` — the group whose lock the trainer takes (e.g. `trainers`).
   * `TIMESLICE_ORCH_ADDR` — orchestrator gRPC address (`timeslice-timesliceorchestrator.timeslice-system.svc:50051`).
+  * Optional: `TIMESLICE_PERSIST_WEIGHT_BUFFERS=1` — the rollout side allocates its weight-sync buffers (2 NCCL receive buffers and 1 CUDA IPC buffer, each `update_weights_bucket_megabytes`) once and reuses them at every sync, instead of allocating them fresh each time on a GPU whose vLLM cache may have grown into the free memory. Costs 3 buckets held for the whole run. Independent of `TIMESLICE_FULLY_ASYNC`, so a run without time-slicing can set it too.
 * **Pod labels** on the head pod ONLY (the trainer is the sole time-sliced process; rollout pods stay unlabeled): `timeslice.io/job-id: <job id>` and `timeslice.io/group: <group>` — the exact keys the platform selects snapshot candidates on.
 * **NCCL environment**: set `NCCL_CUMEM_ENABLE=0` and `NCCL_NVLS_ENABLE=0` on every job pod (the example manifests set both) — precautionary settings around cuda-checkpoint; keep them as set.
 
@@ -267,4 +268,5 @@ For failures specific to the runnable demo's topology and manifests, see the [ex
 | `Found multiple active Ray instances` warning on a shared node | Ray's `address='auto'` discovery found more than one GCS — a driver can join the wrong ray cluster when two jobs' head pods share the trainer node | `export RAY_ADDRESS="$(hostname -i):6379"` right after `ray start --head` (the example manifests do) — keep that line if you edit |
 | Hydra error `Key 'use_trainer_do_validate' is not in struct trainer` | Wrong config key path | These flags live under `async_training.*`, not `trainer.*` (the example manifests are correct) |
 | `save_freq` / checkpoint-save-skipped warning in log | Checkpoint saving would RPC a possibly-frozen worker | By design: the timeslice trainer vetoes saves when `save_freq > 0`; keep `trainer.save_freq=-1` |
+| CUDA out of memory in the rollout's `CheckpointEngineWorker` during a weight sync | The sync allocates its buffers fresh on the rollout GPU, after vLLM's cache has grown into the free memory | Set `TIMESLICE_PERSIST_WEIGHT_BUFFERS=1` on the rollout pods (§3) |
 | Steps complete but one job's staleness queue near `staleness_threshold × batch` | Very asymmetric job speeds | Raise `async_training.staleness_threshold` (we use 8) or budget shorter runs; queue overflow drops samples |

@@ -122,6 +122,45 @@ def test_park_survives_a_failing_cache_free(env, events):
     assert park.parked
 
 
+def test_trim_before_sync_runs_only_while_resident(env, events, capsys):
+    def trim_cache(wg):
+        events.append(("trim", tuple(wg.workers)))
+        return [{"reserved_before": 70 << 30, "reserved_after": 23 << 30}]
+
+    park = app_aware.TrainerPark(FakeWG(events), is_safe=lambda: True, trim_cache=trim_cache)
+    park.trim_before_sync()
+    assert events == [("trim", ("w0", "w1"))]
+    assert "pre-sync torch cache trim" in capsys.readouterr().out
+    park.snapshot("offload", [])
+    del events[:]
+    park.trim_before_sync()  # parked: the workers hold nothing on the GPU to trim
+    assert events == []
+
+
+def test_trim_before_sync_survives_a_failing_trim(env, events):
+    def trim_cache(_wg):
+        raise RuntimeError("worker gone")
+
+    park = app_aware.TrainerPark(FakeWG(events), is_safe=lambda: True, trim_cache=trim_cache)
+    park.trim_before_sync()  # the sync itself decides
+    app_aware.TrainerPark(FakeWG(events), is_safe=lambda: True).trim_before_sync()  # no trim: no-op
+
+
+def test_trim_torch_cache_empties_the_cache(monkeypatch):
+    reserved = [48 << 30]
+    cuda = SimpleNamespace(
+        is_initialized=lambda: True,
+        memory_reserved=lambda: reserved[0],
+        empty_cache=lambda: reserved.__setitem__(0, 23 << 30),
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
+    assert app_aware._trim_torch_cache(None) == {"reserved_before": 48 << 30, "reserved_after": 23 << 30}
+    cuda.is_initialized = lambda: False
+    assert app_aware._trim_torch_cache(None) == {}
+    monkeypatch.setitem(sys.modules, "torch", None)
+    assert "error" in app_aware._trim_torch_cache(None)
+
+
 def test_free_device_cache_frees_an_imported_cupy_pool(monkeypatch):
     class Pool:
         def __init__(self):
@@ -357,6 +396,28 @@ def test_hooks_app_channel_park_only_while_yielded(env, events, registered, monk
     asyncio.run(update())
     park.snapshot("offload", [])  # yielded again
     assert park.parked
+
+
+def test_hooks_app_channel_trim_before_each_weight_sync(env, events, registered, monkeypatch):
+    monkeypatch.setenv(app_aware.ENV_DONOR_BACKEND, "app_channel")
+    monkeypatch.setattr(app_aware, "trim_worker_torch_caches", lambda wg: events.append("trim"))
+    t = FakeTrainer(events)
+
+    async def seq():
+        await t.on_init_workers_begin()
+        await t.on_init_workers_end()
+        t._park.snapshot("offload", [])  # lent while yielded
+        await t.on_update_weights_begin()  # pre-fit initial sync: acquire, restore, then trim
+        await t.on_update_weights_end(synced=True)
+        await t.on_sample_end()
+        await t.on_update_weights_begin()  # steady state: lock already held
+        await t.on_update_weights_end(synced=True)
+
+    asyncio.run(seq())
+    assert events.count("trim") == 2
+    first = events.index("trim")
+    assert events.index(("acquire", GROUP), 1) < events.index(("to", "cuda", True, True, True)) < first
+    assert events[first + 1] == ("release", GROUP)
 
 
 def test_hooks_app_channel_park_while_yield_rpc_in_flight(env, events, registered, monkeypatch):

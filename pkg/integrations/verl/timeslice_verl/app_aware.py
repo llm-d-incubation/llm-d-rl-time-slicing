@@ -172,6 +172,25 @@ def _free_device_cache(_worker) -> dict:
     return stats
 
 
+def _trim_torch_cache(_worker) -> dict:
+    """Return torch's unused cached blocks to the driver before the weight
+    sync; runs inside each actor worker. The park frees cupy's pools, so the
+    NCCL checkpoint engine's next prepare() allocates its cupy buckets with a
+    fresh cudaMalloc after the training step has grown torch's cache to the
+    whole GPU; without this trim that allocation can fail although torch holds
+    gigabytes it does not use. Never raises."""
+    try:
+        import torch  # noqa: PLC0415 - only inside the workers
+
+        if not torch.cuda.is_initialized():
+            return {}
+        before = int(torch.cuda.memory_reserved())
+        torch.cuda.empty_cache()
+        return {"reserved_before": before, "reserved_after": int(torch.cuda.memory_reserved())}
+    except Exception as e:  # noqa: BLE001 - best effort
+        return {"error": repr(e)}
+
+
 def _resync_views(_worker) -> int:
     return _resync_fsdp_views()
 
@@ -186,6 +205,11 @@ def _on_workers(worker_group, fn) -> list:
 def free_worker_caches(worker_group) -> list[dict]:
     """Run _free_device_cache in every actor worker of the group."""
     return _on_workers(worker_group, _free_device_cache)
+
+
+def trim_worker_torch_caches(worker_group) -> list[dict]:
+    """Run _trim_torch_cache in every actor worker of the group."""
+    return _on_workers(worker_group, _trim_torch_cache)
 
 
 def resync_worker_views(worker_group) -> list[int]:
@@ -211,9 +235,11 @@ class TrainerPark:
         clock=_now,
         free_cache: Callable[[object], object] | None = None,
         after_restore: Callable[[object], object] | None = None,
+        trim_cache: Callable[[object], object] | None = None,
     ):
         self._wg = worker_group
         self._free_cache = free_cache
+        self._trim_cache = trim_cache
         self._after_restore = after_restore
         self._is_safe = is_safe
         self._device = device
@@ -255,6 +281,17 @@ class TrainerPark:
             self.parks += 1
             self.last_park_s = self._clock() - t0
             _log(f"app-park took={self.last_park_s:.3f}s parks={self.parks}{caches}")
+
+    def trim_before_sync(self) -> None:
+        """Empty torch's cache in the workers before the weight sync (see
+        _trim_torch_cache). Only while resident; never raises."""
+        with self._lock:
+            if self._parked or self._trim_cache is None:
+                return
+            try:
+                _log(f"pre-sync torch cache trim: {self._trim_cache(self._wg)}")
+            except Exception as e:  # noqa: BLE001 - the sync itself decides
+                _log(f"pre-sync torch cache trim failed (ignored): {e!r}")
 
     def restore(self, tags: list[str]) -> None:
         self._restore(source="agent")
@@ -339,7 +376,13 @@ def start(
     if register is None:
         from timeslice.snapshot_agent.workload import register_workload as register  # noqa: PLC0415, N813
 
-    park = TrainerPark(worker_group, is_safe, free_cache=free_worker_caches, after_restore=resync_worker_views)
+    park = TrainerPark(
+        worker_group,
+        is_safe,
+        free_cache=free_worker_caches,
+        after_restore=resync_worker_views,
+        trim_cache=trim_worker_torch_caches,
+    )
     addrs = agent_addresses(node_ips(worker_group))
     if not addrs:
         raise RuntimeError("app_channel donor: no node found for the actor workers; set TIMESLICE_AGENT_ADDRS")

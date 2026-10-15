@@ -20,11 +20,14 @@ from verl.experimental.fully_async_policy.fully_async_trainer import (
     register_trainer,
 )
 
-from timeslice_verl import defaults
+from timeslice_verl import defaults, weight_buffers
 from timeslice_verl.hooks import TimesliceHooksMixin
 
 # With the env gate on, default the settings time-slicing needs (see defaults.py).
 defaults.apply()
+# With its own gate on (TIMESLICE_PERSIST_WEIGHT_BUFFERS=1), keep the rollout
+# side's weight-sync buffers allocated across syncs (see weight_buffers.py).
+weight_buffers.apply()
 
 
 @register_trainer("timeslice")

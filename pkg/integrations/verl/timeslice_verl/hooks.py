@@ -66,8 +66,10 @@ Environment contract:
                                memory) when the snapshot agent asks, instead
                                of being cuda-checkpointed (timeslice_verl.
                                app_aware; registered at on_init_workers_end,
-                               and every granted acquire makes sure the
-                               trainer is resident again)
+                               every granted acquire makes sure the trainer
+                               is resident again, and on_update_weights_begin
+                               empties the workers' torch cache before the
+                               sync)
   TIMESLICE_EXPECTED_IDLE      expected_idle hint sent with each yield
                                (timeslice_verl.estimator): "off" (default,
                                no hint), "auto" (per yield point, EWMA of the
@@ -76,6 +78,12 @@ Environment contract:
                                yield) or a fixed number of seconds. The
                                orchestrator lends the GPU to guests on a hint
                                >= its --min-bubble (--lend-policy=hint).
+  TIMESLICE_PERSIST_WEIGHT_BUFFERS=1
+                               opt-in, independent of TIMESLICE_FULLY_ASYNC:
+                               the rollout side allocates its weight-sync
+                               buffers once and reuses them at every sync
+                               (timeslice_verl.weight_buffers; set it on the
+                               rollout pods)
 
 Config this module depends on directly: async_training.trainer_name=timeslice
 selects the subclass (see trainer.py); trainer.save_freq (checkpoints are
@@ -167,6 +175,11 @@ class TimesliceHooksMixin:
         # init_workers, where we yielded). In steady state the lock is already
         # held from on_sample_end, so this is a no-op.
         await self._ensure_lock(point="update_weights")
+        park = self._park
+        if park is not None:
+            # The park freed cupy's pools: let the sync's cupy buckets get the
+            # memory torch's cache holds unused after the training step.
+            await asyncio.to_thread(park.trim_before_sync)
 
     async def on_update_weights_end(self, synced: bool) -> None:
         if not enabled():
