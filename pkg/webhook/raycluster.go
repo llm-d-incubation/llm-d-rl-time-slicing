@@ -24,9 +24,6 @@ import (
 //     every container: the same job id and group the donor pods derive (job id = the RayCluster
 //     name = ray.io/cluster, group = <ns>.<cluster>.<donor group>), or the donor template's
 //     explicit timeslice.io/job-id and timeslice.io/group labels;
-//   - in the same case sets NCCL_CUMEM_ENABLE=0 and NCCL_NVLS_ENABLE=0 in every container: NCCL
-//     then allocates no cuMem/NVLS buffers, which cuda-checkpoint does not handle, in the trainer
-//     and in the rollout side of the weight-sync group;
 //   - in the same case, when the donor template is annotated timeslice.io/backend: app_channel
 //     (an application-aware donor: the trainer parks itself through a workload channel to the
 //     node's snapshot agent instead of being cuda-checkpointed), also sets
@@ -41,9 +38,6 @@ import (
 const (
 	// EnvFullyAsync is the activation gate of the verl lifecycle hooks.
 	EnvFullyAsync = "TIMESLICE_FULLY_ASYNC"
-	// EnvNCCLCuMem and EnvNCCLNVLS turn off NCCL's cuMem and NVLS allocations (set to "0").
-	EnvNCCLCuMem = "NCCL_CUMEM_ENABLE"
-	EnvNCCLNVLS  = "NCCL_NVLS_ENABLE"
 	// EnvDonorBackend selects how the trainer is parked ("app_channel": by the trainer itself).
 	EnvDonorBackend = "TIMESLICE_DONOR_BACKEND"
 	// EnvAgentPort is the port of the node's snapshot agent (host network) the trainer
@@ -151,8 +145,6 @@ func reviewRayCluster(req *admissionv1.AdmissionRequest, cfg *Config, out Outcom
 				{Name: EnvJobID, Value: jobID},
 				{Name: EnvGroup, Value: group},
 				{Name: EnvOrchAddr, Value: cfg.OrchestratorAddr},
-				{Name: EnvNCCLCuMem, Value: "0"},
-				{Name: EnvNCCLNVLS, Value: "0"},
 			}
 			switch backend := donorGroup.Template.Annotations[AnnotationBackend]; backend {
 			case "", "cuda":

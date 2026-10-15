@@ -133,8 +133,7 @@ func TestRayCluster_WiresEveryGroup(t *testing.T) {
 	for name, tmpl := range templates {
 		env := rcEnv(tmpl)
 		if env[webhook.EnvFullyAsync] != "1" || env[webhook.EnvJobID] != "longcot-abc12" ||
-			env[webhook.EnvGroup] != wantGroup || env[webhook.EnvOrchAddr] != orchAddr ||
-			env[webhook.EnvNCCLCuMem] != "0" || env[webhook.EnvNCCLNVLS] != "0" {
+			env[webhook.EnvGroup] != wantGroup || env[webhook.EnvOrchAddr] != orchAddr {
 			t.Errorf("%s env = %v", name, env)
 		}
 		rl := tmpl.Metadata.Labels[webhook.LabelRLIntegration]

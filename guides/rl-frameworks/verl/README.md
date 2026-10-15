@@ -194,7 +194,7 @@ Every time-sliced verl job must carry this contract:
   * `TIMESLICE_GROUP` — the group whose lock the trainer takes (e.g. `trainers`).
   * `TIMESLICE_ORCH_ADDR` — orchestrator gRPC address (`timeslice-timesliceorchestrator.timeslice-system.svc:50051`).
 * **Pod labels** on the head pod ONLY (the trainer is the sole time-sliced process; rollout pods stay unlabeled): `timeslice.io/job-id: <job id>` and `timeslice.io/group: <group>` — the exact keys the platform selects snapshot candidates on.
-* **NCCL environment**: set `NCCL_CUMEM_ENABLE=0` and `NCCL_NVLS_ENABLE=0` on every job pod (the example manifests set both) — precautionary settings around cuda-checkpoint; keep them as set.
+* **NCCL environment**: set `NCCL_CUMEM_ENABLE=0` and `NCCL_NVLS_ENABLE=0` on every job pod (the example manifests set both) — required by the cuda-checkpoint hand-over, otherwise the checkpoint fails.
 
 ### Optional: Application-Aware Parking of the Trainer
 

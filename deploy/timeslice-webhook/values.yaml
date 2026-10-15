@@ -61,9 +61,10 @@ failurePolicy:
 # the head and the other worker groups timeslice.io/rl-integration=true and,
 # with donor-client-wiring=env and one donor group, sets TIMESLICE_FULLY_ASYNC=1,
 # TIMESLICE_JOB_ID, TIMESLICE_GROUP and TIMESLICE_ORCH_ADDR in every group (the
-# trainer's driver actor can run in any Ray pod of the job), plus
-# NCCL_CUMEM_ENABLE=0 and NCCL_NVLS_ENABLE=0 (no NCCL buffers cuda-checkpoint
-# cannot handle). Settings the user already has are kept. Needs no RBAC; harmless without KubeRay.
+# trainer's driver actor can run in any Ray pod of the job). Settings the user
+# already has are kept. Needs no RBAC; harmless without KubeRay. A job parked
+# with cuda-checkpoint (the default) must set NCCL_CUMEM_ENABLE=0 and
+# NCCL_NVLS_ENABLE=0 itself, otherwise the checkpoint fails.
 # A donor group template annotated timeslice.io/backend: app_channel (opt-in;
 # cuda-checkpoint stays the default) also gets TIMESLICE_DONOR_BACKEND=app_channel,
 # TIMESLICE_AGENT_PORT (flags.agent-port, default 9001 = the snapshot agent's

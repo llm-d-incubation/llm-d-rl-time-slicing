@@ -158,7 +158,7 @@ The VRAM Freed and Resume Time figures are illustrative, measured with a small m
 
 ### CUDA Checkpoint
 
-Saves and restores the entire CUDA context of a process. Works with any GPU workload regardless of framework.
+Saves and restores the entire CUDA context of a process. Works with any GPU workload regardless of framework. A workload that uses NCCL must set `NCCL_CUMEM_ENABLE=0` and `NCCL_NVLS_ENABLE=0` itself, otherwise the checkpoint fails.
 
 ```python
 from timeslice.snapshot_agent import SnapshotAgentClient

@@ -426,7 +426,7 @@ spec:
       value: "5400"
     - name: HF_HOME
       value: "/workspace/hf"         # model + dataset cache, per node (no shared volume)
-    # Precautionary NCCL settings around cuda-checkpoint; keep as set.
+    # Required by the cuda-checkpoint hand-over (otherwise the checkpoint fails).
     - name: NCCL_CUMEM_ENABLE
       value: "0"
     - name: NCCL_NVLS_ENABLE
