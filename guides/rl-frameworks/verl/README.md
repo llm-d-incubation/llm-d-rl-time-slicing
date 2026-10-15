@@ -100,7 +100,7 @@ git clone https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git
 cd llm-d-rl-time-slicing
 ```
 
-> **Release pin:** the chart is not published to a registry — you install it from the clone. To pin a release, clone the repo at the release tag (`git clone --branch <version> https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git`) so the chart matches the pinned images, and pin the images with `--set timesliceorchestrator.image.tag=<version> --set snapshot-agent.image.tag=<version>` (the chart defaults pull the official `ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/*` images at `latest`). Until the first tagged release is cut, `main` + `latest` is the only option.
+> **Release pin:** the chart is not published to a registry — you install it from the clone. To pin a release, clone the repo at the release tag (`git clone --branch <version> https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git`) so the chart matches the pinned images, and pin the images with `--set global.imageTag=<version>` (on the `demo/batch` branch the chart pulls the official `ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/*` images at `demo-batch`, that branch's newest release; each of its commits is also published as `demo-<short sha>`, see `deploy/README.md`).
 
 ### Step 2: Install the Helm Chart
 
@@ -183,7 +183,7 @@ Every time-sliced verl job must carry this contract:
 * **Hydra overrides** on the verl launch command:
   * `async_training.trainer_name=timeslice` — selects the registered timeslice trainer.
   * `"ray_pg_extra_resources={trainer_pool: {trainer_node: 1}, rollout_pool: {rollout_node: 1}}"` — pins the placement groups (see [Placement-Group Pinning](#placement-group-pinning)).
-  * `trainer.save_freq=-1` — checkpoint saving is disabled under time-slicing: a save RPCs the FSDP worker, which may be checkpointed off the GPU at that moment. The timeslice trainer vetoes saves (with a warning) if this is left `> 0`. Note the consequence: time-sliced runs write no training checkpoints.
+  * `trainer.save_freq` works as usual. verl saves after the trainer yields its GPU, when the FSDP worker may be checkpointed off or parked, so the timeslice trainer saves a due checkpoint inside the update's locked window instead (before the yield), takes the lock for a save outside it (the final one) and before a resume loads a checkpoint, and vetoes (with a warning) any save that would still run without the lock.
   * `+actor_rollout_ref.rollout.checkpoint_engine.engine_kwargs.nccl.rebuild_group=true` — tears down and rebuilds the trainer↔rollout weight-sync NCCL communicator around each sync, so no communicator exists outside lock-held windows.
   * `async_training.trigger_parameter_sync_step=1` — yield the GPU once per training step; larger values hold the lock across sample-queue waits.
   * `async_training.use_dynamic_resource_scheduling=false` and `async_training.use_trainer_do_validate=false` — keep dynamic rescheduling and validation off the time-sliced trainer GPU (both would touch the GPU outside the lock protocol).
@@ -195,6 +195,16 @@ Every time-sliced verl job must carry this contract:
   * `TIMESLICE_ORCH_ADDR` — orchestrator gRPC address (`timeslice-timesliceorchestrator.timeslice-system.svc:50051`).
 * **Pod labels** on the head pod ONLY (the trainer is the sole time-sliced process; rollout pods stay unlabeled): `timeslice.io/job-id: <job id>` and `timeslice.io/group: <group>` — the exact keys the platform selects snapshot candidates on.
 * **NCCL environment**: set `NCCL_CUMEM_ENABLE=0` and `NCCL_NVLS_ENABLE=0` on every job pod (the example manifests set both) — precautionary settings around cuda-checkpoint; keep them as set.
+
+### Optional: Application-Aware Parking of the Trainer
+
+By default the snapshot agent parks the trainer while its GPU is lent by checkpointing the whole CUDA state of its processes with `cuda-checkpoint`. A trainer can instead park itself: annotate the donor (trainer) pods with `timeslice.io/backend: app_channel` (on a RayCluster, the donor worker group's pod template). The admission webhook then sets `TIMESLICE_DONOR_BACKEND=app_channel`, `TIMESLICE_AGENT_PORT` and `TIMESLICE_NODE_IP` (the pod's host IP) in the job's containers, and the plugin:
+
+* after `init_workers`, registers a park/restore workload with the snapshot agent of every node that runs an actor worker (the agent listens on the host network, so its address is the worker's host IP (`TIMESLICE_NODE_IP`; in a KubeRay pod the Ray node IP is the pod IP) and `TIMESLICE_AGENT_PORT`; `TIMESLICE_AGENT_ADDRS=host:port,...` overrides the discovery);
+* parks on the agent's command by moving the actor's optimizer state, then its model and gradients, to host memory with verl's manual offload control (`actor_wg.to("cpu", ...)`), then re-points FSDP1's unsharded parameter views at the moved flat parameters (with one rank FSDP1 runs `NO_SHARD`, and with `use_orig_params=False` those views otherwise keep the whole model on the GPU), empties torch's allocator cache and, when cupy is loaded (verl's NCCL checkpoint engine allocates its weight-sync buckets with cupy), cupy's memory pools, which `torch.cuda.empty_cache()` does not touch; it restores with `actor_wg.to("device", ...)` ("device" is verl's name for the accelerator; set `TIMESLICE_DEVICE` to override), then re-points the views again;
+* refuses a park while it holds the group lock, and after every granted acquire restores itself if the agent's restore never came (for example after an agent restart).
+
+The agent waits up to 30 s for the trainer's registration, sends the park, and lends the GPU only if the trainer's processes keep at most 4 GiB of GPU memory (the CUDA context and allocator residue); otherwise the park fails and the GPU is not lent. No verl change is needed beyond the fork above, and nothing changes in the training config. Keep `rebuild_group=true`: the weight-sync communicator must not exist while the trainer is parked. The trainer pods need host RAM for the model and optimizer state, as with `cuda-checkpoint`.
 
 ---
 
@@ -266,5 +276,5 @@ For failures specific to the runnable demo's topology and manifests, see the [ex
 | Rollout throughput collapses when the other job trains; agent log shows cuda-checkpoint activity on a ROLLOUT node | A rollout pod carries `timeslice.io/*` labels, or a rollout node is labeled into the group | Rollout pods/nodes must stay unlabeled — only head pods and the trainer node (§1). A rollout node must never show cuda-checkpoint activity |
 | `Found multiple active Ray instances` warning on a shared node | Ray's `address='auto'` discovery found more than one GCS — a driver can join the wrong ray cluster when two jobs' head pods share the trainer node | `export RAY_ADDRESS="$(hostname -i):6379"` right after `ray start --head` (the example manifests do) — keep that line if you edit |
 | Hydra error `Key 'use_trainer_do_validate' is not in struct trainer` | Wrong config key path | These flags live under `async_training.*`, not `trainer.*` (the example manifests are correct) |
-| `save_freq` / checkpoint-save-skipped warning in log | Checkpoint saving would RPC a possibly-frozen worker | By design: the timeslice trainer vetoes saves when `save_freq > 0`; keep `trainer.save_freq=-1` |
+| `vetoing a checkpoint save without the group lock` in log | A save would RPC a possibly-frozen worker | Should not happen: due saves run inside the locked window or take the lock; report it with the trainer log |
 | Steps complete but one job's staleness queue near `staleness_threshold × batch` | Very asymmetric job speeds | Raise `async_training.staleness_threshold` (we use 8) or budget shorter runs; queue overflow drops samples |
