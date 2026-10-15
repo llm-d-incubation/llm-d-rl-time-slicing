@@ -121,7 +121,11 @@ shadowPolicy:
 # order. "" = not rendered (the webhook default). --port and --cert-dir come
 # from the values above.
 flags:
-  # required | preferred: how a guest is steered to virtual Nodes.
+  # preferred | required: how a guest is steered to virtual Nodes. "" =
+  # preferred: a guest prefers lent GPUs and otherwise schedules on a regular
+  # GPU node and stays there (placement is decided once); while it is Pending
+  # it may make the cluster autoscaler add a GPU node. required: lent GPUs
+  # only; a guest stays Pending until a GPU is lent.
   guest-steering: ""
   # <namespace>:<name> of the guest kubelet's ServiceAccount (W7); the CEL
   # policies exempt the same identity. "" = the umbrella chart's guest kubelet

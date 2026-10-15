@@ -10,7 +10,7 @@ import (
 func TestConfigFromFlags_Defaults(t *testing.T) {
 	cfg := mustConfig(t, nil)
 	want := webhook.Config{
-		GuestSteering: webhook.SteeringRequired, VirtualNodeLabel: "timeslice.io/virtual-node",
+		GuestSteering: webhook.SteeringPreferred, VirtualNodeLabel: "timeslice.io/virtual-node",
 		DonorClientWiring: webhook.WiringNone, PodinfoPath: "/etc/timeslice/podinfo",
 		GroupFormat: webhook.GroupFormatNsJobGroup, Port: 8443, CertDir: "/etc/timeslice-webhook/certs",
 		RLIntegrationPath: webhook.DefaultRLIntegrationPath, DonorGPUMemory: webhook.DonorGPUMemoryAuto,

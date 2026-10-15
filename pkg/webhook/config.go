@@ -21,9 +21,12 @@ import (
 
 // Guest steering modes (--guest-steering).
 const (
-	// SteeringRequired sets nodeSelector <virtual-node-label>=true on the guest.
+	// SteeringRequired sets nodeSelector <virtual-node-label>=true on the guest: it runs only on
+	// lent GPUs and stays Pending while none is lent.
 	SteeringRequired = "required"
-	// SteeringPreferred adds a weight-100 preferred node affinity term <virtual-node-label> In [true].
+	// SteeringPreferred (the default) adds a weight-100 preferred node affinity term
+	// <virtual-node-label> In [true]: the guest prefers lent GPUs and otherwise schedules on a
+	// regular GPU node, where it stays (placement is decided once, at scheduling).
 	SteeringPreferred = "preferred"
 )
 
@@ -42,7 +45,7 @@ const GroupFormatNsJobGroup = "ns.job.group"
 
 // Config is the webhook configuration, built by ConfigFromFlags.
 type Config struct {
-	// GuestSteering is SteeringRequired or SteeringPreferred.
+	// GuestSteering is SteeringPreferred (default) or SteeringRequired.
 	GuestSteering string
 	// VirtualNodeLabel is the node label key the guest is steered to (value "true").
 	VirtualNodeLabel string
@@ -89,8 +92,9 @@ func ConfigFromFlags(args []string) (Config, error) {
 	var vkSA string
 	fs := flag.NewFlagSet("timeslice-webhook", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&cfg.GuestSteering, "guest-steering", SteeringRequired,
-		"How guests are steered to the virtual node: required (nodeSelector) or preferred (node affinity).")
+	fs.StringVar(&cfg.GuestSteering, "guest-steering", SteeringPreferred,
+		"How guests are steered to the virtual node: preferred (node affinity; falls back to regular GPU nodes) "+
+			"or required (nodeSelector; lent GPUs only).")
 	fs.StringVar(&cfg.VirtualNodeLabel, "virtual-node-label", "timeslice.io/virtual-node",
 		"Node label key (value \"true\") that guests are steered to.")
 	fs.StringVar(&cfg.DonorClientWiring, "donor-client-wiring", WiringNone,

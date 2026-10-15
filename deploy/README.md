@@ -78,8 +78,14 @@ What each team does after that:
     per GPU (`timeslice-webhook.flags.donor-gpu-memory`, default: by GPU model),
     because the trainer's checkpoint lands in pod memory.
 *   **Batch team**: label guest pods `timeslice.io/guest: "true"`. The webhook
-    steers them onto the virtual nodes and gives them the pooled
-    `timeslice.io/gpu-shadow` resource.
+    steers them onto the virtual nodes, where the guest kubelet runs them on the
+    pooled `timeslice.io/gpu-shadow` resource. By default
+    (`timeslice-webhook.flags.guest-steering=preferred`) a guest prefers lent
+    GPUs and, when none is lent, schedules on a regular GPU node and stays
+    there (placement is decided once), so batch and RL jobs can be submitted
+    in any order; a Pending guest may make the cluster autoscaler add a GPU
+    node. `guest-steering=required` keeps guests on lent GPUs only: they stay
+    Pending until a GPU is lent.
 
 How it fits together:
 

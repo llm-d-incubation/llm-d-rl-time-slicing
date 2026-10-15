@@ -303,6 +303,19 @@ func TestAdmit_GuestPreferredSteering(t *testing.T) {
 	}
 }
 
+// The default steering is preferred: a guest may fall back to a regular GPU node.
+func TestAdmit_GuestDefaultSteering(t *testing.T) {
+	pod := mustAllow(t, create(t, mustConfig(t, nil), guest()))
+	terms := preferredTerms(pod)
+	if len(terms) != 1 || len(terms[0].Preference.MatchExpressions) != 1 ||
+		terms[0].Preference.MatchExpressions[0].Key != "timeslice.io/virtual-node" {
+		t.Fatalf("preferred terms = %+v", terms)
+	}
+	if len(pod.Spec.NodeSelector) != 0 || pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		t.Errorf("default steering added a hard constraint: %+v %v", pod.Spec.Affinity, pod.Spec.NodeSelector)
+	}
+}
+
 func TestAdmit_GuestKeepsUserFields(t *testing.T) {
 	pod := guest(func(p *corev1.Pod) {
 		p.Spec.Tolerations = []corev1.Toleration{{Key: "nvidia.com/gpu", Operator: corev1.TolerationOpExists}}
