@@ -4,7 +4,7 @@ This guide provides step-by-step instructions on how to time-slice any two **ver
 
 ### Motivation: Maximizing GPU Utilization
 
-In verl's **fully-async** recipe (`fully_async_policy`), rollout generation runs continuously while the trainer sits idle whenever it waits for the next batch of samples — in our reference runs that idle fraction was ~55–70% of wall-clock. Cooperative time-slicing backfills those valleys: multiple jobs' trainers share one physical GPU pool, and the platform checkpoints the idle trainer's GPU state to host RAM (`cuda-checkpoint`) at every handoff. Rollout engines keep dedicated GPUs and never stop generating: while a job's trainer is checkpointed off the shared GPU, its rollout engine keeps generating samples into the staleness queue.
+In verl's **fully-async** recipe (`fully_async_policy`), rollout generation runs continuously while the trainer sits idle whenever it waits for the next batch of samples — in our reference runs that idle fraction was ~55–70% of wall-clock. Cooperative time-slicing backfills those valleys: multiple jobs' trainers share one physical GPU pool, and at every handoff the platform moves the idle trainer's GPU state to host RAM — by default by checkpointing the whole process (`cuda-checkpoint`), optionally by having the trainer offload its own model and optimizer through the snapshot-agent's workload channel (see [Offloading via the Workload Channel](#offloading-via-the-workload-channel-app_channel)). Rollout engines keep dedicated GPUs and never stop generating: while a job's trainer is off the shared GPU, its rollout engine keeps generating samples into the staleness queue.
 
 This guide covers verl's fully-async trainer (`fully_async_policy`), integrated via the `TimesliceFullyAsyncTrainer` subclass and verl's fully-async lifecycle hooks.
 
@@ -196,6 +196,39 @@ Every time-sliced verl job must carry this contract:
 * **Pod labels** on the head pod ONLY (the trainer is the sole time-sliced process; rollout pods stay unlabeled): `timeslice.io/job-id: <job id>` and `timeslice.io/group: <group>` — the exact keys the platform selects snapshot candidates on.
 * **NCCL environment**: set `NCCL_CUMEM_ENABLE=0` and `NCCL_NVLS_ENABLE=0` on every job pod (the example manifests set both) — precautionary settings around cuda-checkpoint; keep them as set.
 
+### Offloading via the Workload Channel (app_channel)
+
+**Experimental, opt-in.** Instead of letting the platform `cuda-checkpoint` the trainer process at every handoff, the timeslice trainer can offload its own model and optimizer through the snapshot-agent's `app_channel` backend. The mechanism, the pod/node contract and the troubleshooting table are in [Application-Aware GPU Offload for Ray-Based RL Frameworks](../app-aware-offload-ray.md); this section is the verl instantiation.
+
+At the end of `init_workers`, before the lock is yielded, `TimesliceFullyAsyncTrainer` spawns one zero-CPU proxy actor per trainer node. On the agent's snapshot command each proxy calls verl's manual offload RPC on the ranks of its node, `actor_to(device="cpu", model=True, optimizer=True, grad=True)`, and on restore `actor_to(device="device", model=True, optimizer=True, grad=False)` (`actor_rollout_to` for hybrid layouts). The RPC is implemented by every verl engine backend (FSDP and Megatron) regardless of the job's own offload settings. Only the trainer worker group is relayed; the rollout engine and verl's rollout sleep/wake handling are untouched. Once the proxies are registered every `RELEASE` carries `backend_config=app_channel`, which the orchestrator forwards to the agents on this job's snapshot and restore; if they were not spawned (flag off, env missing) the agent's default, `cuda-checkpoint`, applies as before. The CUDA context, NCCL communicators and allocator residue (about 1–2 GiB per GPU for this demo) stay resident.
+
+**Enabling it.** On **both** pods (the driver actor inherits the raylet env of whichever node it lands on; each proxy reads the agent address on its own node):
+
+```yaml
+- name: TIMESLICE_APP_OFFLOAD
+  value: "1"
+- name: NODE_IP
+  valueFrom:
+    fieldRef:
+      fieldPath: status.hostIP
+- name: TIMESLICE_AGENT_ADDR
+  value: "$(NODE_IP):9001"          # snapshot-agent is hostNetwork on :9001
+```
+
+The example manifests ship these with `TIMESLICE_APP_OFFLOAD: "0"`; flip it to `"1"`. `timeslice` and `llm-d-timeslice-verl` must be installed on every node that hosts trainer ranks (the install script already does this on both pods). For `trainer.nnodes > 1`, every Ray worker pod on a trainer node also needs the `timeslice.io/job-id` and `timeslice.io/group` labels and the env above. Everything else in the contract stays as is.
+
+**What to expect** in the head pod log:
+
+```
+[timeslice] job=job-a-trainer OFFLOAD-PROXIES ready nodes=1 ranks=1 method=actor_to backend=app_channel took=1.3s
+[timeslice] job=job-a-trainer RELEASE group=trainers pending_waiters=1 snapshot_deferred=False backend=app_channel
+[timeslice] job=job-a-trainer OFFLOAD node=3f2a9c1e ranks=1 method=actor_to took=1.9s
+[timeslice] job=job-a-trainer RELOAD node=3f2a9c1e ranks=1 method=actor_to took=1.6s
+[timeslice] job=job-a-trainer ACQUIRE group=trainers waited=...ms context_restored=True
+```
+
+Agent log: `Snapshot called backend=app_channel`, `Workload completed snapshot command ... duration=...`, and the restore counterparts; no `cuda-checkpoint` lines for this job.
+
 ---
 
 ## 4. Deploying Time-Sliced verl Jobs
@@ -268,3 +301,5 @@ For failures specific to the runnable demo's topology and manifests, see the [ex
 | Hydra error `Key 'use_trainer_do_validate' is not in struct trainer` | Wrong config key path | These flags live under `async_training.*`, not `trainer.*` (the example manifests are correct) |
 | `save_freq` / checkpoint-save-skipped warning in log | Checkpoint saving would RPC a possibly-frozen worker | By design: the timeslice trainer vetoes saves when `save_freq > 0`; keep `trainer.save_freq=-1` |
 | Steps complete but one job's staleness queue near `staleness_threshold × batch` | Very asymmetric job speeds | Raise `async_training.staleness_threshold` (we use 8) or budget shorter runs; queue overflow drops samples |
+| (app_channel) `no workload channel registered for job "<id>"` | `TIMESLICE_APP_OFFLOAD` is off, the proxies were not spawned (no `OFFLOAD-PROXIES ready` line), or `TIMESLICE_AGENT_ADDR` points at another node's agent | Set the three env vars on both pods; `ray list actors \| grep timeslice-offload-proxy` |
+| (app_channel) Proxies did not connect, command timed out, a finished job marked FAULTED, restore after an orchestrator restart | See the generic guide | [Observing and troubleshooting](../app-aware-offload-ray.md#8-observing-and-troubleshooting) |

@@ -345,6 +345,15 @@ A request for a job with no registered channel fails fast with
 `no workload channel registered for job "..."`. If the workload's suspend
 raises, the operation fails with the workload's error text.
 
+#### Ray workloads: registering from a per-node proxy actor
+
+When the ranks that own the accelerator memory cannot hold the channel
+themselves (an RL trainer is one Ray actor per rank, busy in long tasks), the
+`timeslice` client's `spawn_offload_proxies` starts one zero-CPU proxy actor
+per Ray node that registers the job with its node-local agent and relays each
+command to that node's ranks as Ray RPCs. See
+[Application-Aware GPU Offload for Ray-Based RL Frameworks](../rl-frameworks/app-aware-offload-ray.md).
+
 ### Direct Memory (direct_memory)
 
 Full-process GPU park/resume driven by GPU-CR's `cr_client`. Like the CUDA

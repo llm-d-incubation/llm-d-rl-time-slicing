@@ -117,6 +117,10 @@ data:
     # (override via VERL_REPO/VERL_REF pod env).
     VERL_REPO="${VERL_REPO:-https://github.com/aishukamal/verl.git}"
     VERL_REF="${VERL_REF:-feat/fully-async-lifecycle-hooks}"
+    # Where the timeslice client + llm-d-timeslice-verl come from (override to
+    # test a branch of the platform, e.g. TIMESLICE_REF=my-branch).
+    TIMESLICE_REPO="${TIMESLICE_REPO:-https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git}"
+    TIMESLICE_REF="${TIMESLICE_REF:-main}"
 
     echo "=== Phase 1: install verl @ $VERL_REPO $VERL_REF ==="
     pip install datasets TransferQueue 2>&1 | tail -5
@@ -134,7 +138,7 @@ data:
     python3 -c "import transfer_queue; print('transfer_queue OK')"
 
     echo "=== Phase 1b: install timeslice lock client + verl plugin wrapper ==="
-    pip install "git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/client/python" 2>&1 | tail -3
+    pip install "git+${TIMESLICE_REPO}@${TIMESLICE_REF}#subdirectory=pkg/client/python" 2>&1 | tail -3
     # The client's generated stubs need grpcio>=1.81 and protobuf gencode
     # 7.35; the image ships grpcio 1.80.0 / protobuf 6.33.6. Upgrade both
     # before the import check below.
@@ -151,7 +155,7 @@ data:
     # run_head.sh).
     # --no-deps: the timeslice client is already installed above and the
     # package declares no other dependencies.
-    pip install --no-cache-dir --no-deps "llm-d-timeslice-verl @ git+https://github.com/llm-d-incubation/llm-d-rl-time-slicing.git#subdirectory=pkg/integrations/verl" 2>&1 | tail -3
+    pip install --no-cache-dir --no-deps "llm-d-timeslice-verl @ git+${TIMESLICE_REPO}@${TIMESLICE_REF}#subdirectory=pkg/integrations/verl" 2>&1 | tail -3
     python3 <<'CHK'
     import importlib.metadata as md
     eps = list(md.entry_points(group="verl.plugins"))
@@ -249,7 +253,7 @@ data:
     echo "=== Phase 4: fully-async long-CoT training ==="
     echo "  Model: DeepSeek-R1-Distill-Qwen-1.5B | Dataset: DAPO-Math-17k (512 prompts)"
     echo "  lr=${ACTOR_LR:-1e-6} exp=${EXP_NAME:-unnamed} staleness=${STALENESS_THRESHOLD:-8}"
-    echo "  timeslice: job=${TIMESLICE_JOB_ID:-?} group=${TIMESLICE_GROUP:-?} orch=${TIMESLICE_ORCH_ADDR:-?}"
+    echo "  timeslice: job=${TIMESLICE_JOB_ID:-?} group=${TIMESLICE_GROUP:-?} orch=${TIMESLICE_ORCH_ADDR:-?} app_offload=${TIMESLICE_APP_OFFLOAD:-0} agent=${TIMESLICE_AGENT_ADDR:-?}"
     nvidia-smi
 
     export PYTHONUNBUFFERED=1
@@ -444,6 +448,17 @@ spec:
       value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
     - name: TIMESLICE_GROUP
       value: "trainers"
+    # --- app-channel offload (experimental; opt-in): "1" parks the trainer by
+    # offloading its own state via the node-local snapshot-agent instead of
+    # cuda-checkpoint. See the verl guide, "Offloading via the Workload Channel".
+    - name: TIMESLICE_APP_OFFLOAD
+      value: "0"
+    - name: NODE_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+    - name: TIMESLICE_AGENT_ADDR
+      value: "$(NODE_IP):9001"       # agent is hostNetwork on :9001; resolved on the proxy's own node
     command: ["/bin/bash", "-c"]
     args:
     - |
@@ -535,6 +550,17 @@ spec:
       value: "timeslice-timesliceorchestrator.timeslice-system.svc:50051"
     - name: TIMESLICE_GROUP
       value: "trainers"
+    # --- app-channel offload (experimental; opt-in): "1" parks the trainer by
+    # offloading its own state via the node-local snapshot-agent instead of
+    # cuda-checkpoint. See the verl guide, "Offloading via the Workload Channel".
+    - name: TIMESLICE_APP_OFFLOAD
+      value: "0"
+    - name: NODE_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+    - name: TIMESLICE_AGENT_ADDR
+      value: "$(NODE_IP):9001"       # agent is hostNetwork on :9001; resolved on the proxy's own node
     command: ["/bin/bash", "-c"]
     args:
     - |

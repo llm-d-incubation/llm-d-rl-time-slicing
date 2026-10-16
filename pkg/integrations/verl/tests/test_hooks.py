@@ -20,6 +20,14 @@ What is covered:
   * experimental TIMESLICE_EMPTY_CACHE_BEFORE_YIELD (inert by default)
   * timeslice_verl.trainer registers under "timeslice" and wraps
     _fit_update_weights with crash-release (against a stubbed verl trainer)
+  * app-channel offload (TIMESLICE_APP_OFFLOAD, experimental): inert by
+    default; per-node proxies are spawned at the end of init_workers BEFORE
+    the yield and closed on crash; the offload spec targets f"{train_role}_to";
+    missing env degrades to warn-once; spawn failures propagate (against a
+    stubbed timeslice.snapshot_agent.rayworker, no ray/grpc); once the proxies
+    are up every release carries backend_config="app_channel" (the per-job
+    backend the orchestrator forwards to the agents), degraded paths and the
+    crash path yield without one
 """
 
 import asyncio
@@ -36,6 +44,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import timeslice_verl.hooks as hooks_mod  # noqa: E402
 import timeslice_verl.locks as locks_mod  # noqa: E402
+import timeslice_verl.offload as offload_mod  # noqa: E402
 from timeslice_verl.hooks import TimesliceHooksMixin  # noqa: E402
 
 JOB = "job-a"
@@ -71,9 +80,12 @@ class FakeClient:
         self.events.append(("acquire", group_id))
         return FakeAcquireResult()
 
-    def release(self, group_id):
+    def release(self, group_id, backend_config=None):
         assert group_id == self.group_id
-        self.events.append(("release", group_id))
+        if backend_config is None:
+            self.events.append(("release", group_id))
+        else:
+            self.events.append(("release", group_id, backend_config))
         return FakeYieldResult()
 
     def close(self):
@@ -83,11 +95,14 @@ class FakeClient:
 class FakeTrainer(TimesliceHooksMixin):
     """The hooks mixin over a stand-in for verl's FullyAsyncTrainer state."""
 
-    def __init__(self, save_freq=-1, client_factory=None):
-        super().__init__(client_factory=client_factory)
+    def __init__(self, save_freq=-1, client_factory=None, proxy_spawner=None):
+        super().__init__(client_factory=client_factory, proxy_spawner=proxy_spawner)
         self.current_param_version = 3
         self.metrics = {}
         self.config = SimpleNamespace(trainer=SimpleNamespace(save_freq=save_freq))
+        # what the fully-async trainer exposes after init_workers
+        self.actor_wg = SimpleNamespace(workers=[object(), object()])
+        self.train_role = "actor"
 
 
 @pytest.fixture
@@ -103,6 +118,8 @@ def ts_env(monkeypatch, events):
     monkeypatch.setenv("TIMESLICE_ORCH_ADDR", ADDR)
     monkeypatch.setenv("TIMESLICE_GROUP", GROUP)
     monkeypatch.delenv(hooks_mod.ENV_EMPTY_CACHE, raising=False)
+    monkeypatch.delenv(hooks_mod.ENV_APP_OFFLOAD, raising=False)
+    monkeypatch.delenv(hooks_mod.ENV_AGENT_ADDR, raising=False)
     return SimpleNamespace(events=events)
 
 
@@ -534,6 +551,240 @@ class TestTrainerRegistration:
         assert events == [("acquire", GROUP)]
         with pytest.raises(RuntimeError, match="param sync blew up"):
             asyncio.run(t._fit_update_weights())
+        assert events == [("acquire", GROUP), ("release", GROUP)]
+
+
+# ======================================================================
+# app-channel offload (TIMESLICE_APP_OFFLOAD) — stubbed relay, no ray/grpc
+# ======================================================================
+
+AGENT = "10.0.0.1:9001"
+
+
+class FakeOffloadSpec:
+    """Stand-in for timeslice.snapshot_agent.rayworker.OffloadSpec."""
+
+    def __init__(self, method, snapshot_kwargs=None, restore_kwargs=None, **extra):
+        self.method = method
+        self.snapshot_kwargs = snapshot_kwargs
+        self.restore_kwargs = restore_kwargs
+        self.extra = extra
+
+
+@pytest.fixture
+def stub_rayworker(monkeypatch):
+    """Install a stub timeslice.snapshot_agent.rayworker so offload.py's lazy
+    imports resolve without the client package (or ray) installed."""
+    spawns = []
+
+    def spawn_offload_proxies(handles, spec, **kwargs):
+        spawns.append((list(handles), spec, kwargs))
+        return SimpleNamespace(nodes=["node-1"], actors=[], close=lambda timeout=5.0: None)
+
+    for name in ("timeslice", "timeslice.snapshot_agent"):
+        mod = types.ModuleType(name)
+        mod.__path__ = []
+        monkeypatch.setitem(sys.modules, name, mod)
+    rw = types.ModuleType("timeslice.snapshot_agent.rayworker")
+    rw.OffloadSpec = FakeOffloadSpec
+    rw.spawn_offload_proxies = spawn_offload_proxies
+    monkeypatch.setitem(sys.modules, "timeslice.snapshot_agent.rayworker", rw)
+    return SimpleNamespace(spawns=spawns, module=rw)
+
+
+@pytest.fixture
+def offload_env(ts_env, stub_rayworker, monkeypatch):
+    monkeypatch.setenv(hooks_mod.ENV_APP_OFFLOAD, "1")
+    monkeypatch.setenv(hooks_mod.ENV_AGENT_ADDR, AGENT)
+    return ts_env
+
+
+class FakeProxySet:
+    def __init__(self, events, fail_close=False):
+        self.events = events
+        self.nodes = ["node-1"]
+        self.actors = []
+        self.fail_close = fail_close
+
+    def close(self, timeout=5.0):
+        self.events.append(("close_proxies",))
+        if self.fail_close:
+            raise RuntimeError("ray is gone")
+
+
+def make_offload_trainer(events, fail_spawn=None, fail_close=False):
+    def spawner(handles, spec, *, job_id, group):
+        events.append(("spawn_proxies", spec.method, len(handles), job_id, group))
+        if fail_spawn is not None:
+            raise fail_spawn
+        return FakeProxySet(events, fail_close=fail_close)
+
+    return FakeTrainer(
+        client_factory=lambda target, job_id, group_id: FakeClient(events, job_id, group_id),
+        proxy_spawner=spawner,
+    )
+
+
+class RoleLike:
+    """verl's Role enum stringifies to the worker prefix ("actor", "actor_rollout")."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def __str__(self):
+        return self.name
+
+
+class TestAppOffload:
+    def test_inert_without_flag(self, ts_env, events):
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        assert events == [("acquire", GROUP), "orig_init_workers", ("release", GROUP)]
+        assert t._offload_proxies is None
+
+    def test_proxies_spawned_before_init_workers_yield(self, offload_env, events):
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        assert events == [
+            ("acquire", GROUP),
+            "orig_init_workers",
+            ("spawn_proxies", "actor_to", 2, JOB, GROUP),
+            ("release", GROUP, "app_channel"),  # the init yield already names the backend
+        ]
+        assert t._offload_proxies is not None
+
+    def test_yields_with_app_channel_after_proxies_spawn(self, offload_env, events):
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        assert t._locks.backend_config == "app_channel"
+        run_sample_end(t, events)
+        run_update_weights(t, events, {"t": 1})
+        releases = [e for e in events if e[0] == "release"]
+        assert releases == [("release", GROUP, "app_channel")] * 2  # every later release repeats it
+
+    def test_degraded_paths_yield_without_backend_config(self, offload_env, events, monkeypatch):
+        monkeypatch.delenv(hooks_mod.ENV_AGENT_ADDR)
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        assert events[-1] == ("release", GROUP)
+        assert t._locks.backend_config is None
+
+    def test_crash_close_resets_backend_config(self, offload_env, events):
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        asyncio.run(t.on_exception("fit", RuntimeError("boom")))
+        assert t._locks.backend_config is None
+        run_sample_end(t, events)
+        del events[:]
+        run_update_weights(t, events, {"t": 1})
+        assert events[-1] == ("release", GROUP)  # no channel left: plain release
+
+    def test_spec_method_derived_from_train_role(self, offload_env, events):
+        t = make_offload_trainer(events)
+        t.train_role = RoleLike("actor_rollout")
+        run_init_workers(t, events)
+        assert ("spawn_proxies", "actor_rollout_to", 2, JOB, GROUP) in events
+
+        spec = offload_mod.offload_spec_for_role(RoleLike("actor"))
+        assert spec.method == "actor_to"
+        assert spec.snapshot_kwargs == {"device": "cpu", "model": True, "optimizer": True, "grad": True}
+        assert spec.restore_kwargs == {"device": "device", "model": True, "optimizer": True, "grad": False}
+        with pytest.raises(ValueError):
+            offload_mod.offload_spec_for_role("")
+
+    def test_missing_agent_addr_warns_once_and_noops(self, offload_env, events, monkeypatch):
+        monkeypatch.delenv(hooks_mod.ENV_AGENT_ADDR)
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        run_init_workers(t, events)
+        assert [e for e in events if e[0] == "spawn_proxies"] == []
+        assert "app_offload_misconfigured" in t._warned
+        assert events.count(("release", GROUP)) == 2  # the lock protocol is unaffected
+
+    def test_missing_job_id_warns_once(self, offload_env, events, monkeypatch):
+        monkeypatch.delenv("TIMESLICE_JOB_ID")
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        assert [e for e in events if e[0] == "spawn_proxies"] == []
+        assert "app_offload_misconfigured" in t._warned
+
+    def test_missing_workers_warns_once(self, offload_env, events):
+        t = make_offload_trainer(events)
+        t.actor_wg = None
+        run_init_workers(t, events)
+        assert events == [("acquire", GROUP), "orig_init_workers", ("release", GROUP)]
+        assert "app_offload_no_workers" in t._warned
+
+    def test_spawn_failure_propagates_and_lock_released_on_exception(self, offload_env, events):
+        t = make_offload_trainer(events, fail_spawn=TimeoutError("proxies did not connect"))
+        with pytest.raises(TimeoutError):
+            run_init_workers(t, events)
+        # still holding the lock: verl's catch-all fires on_exception next
+        assert events == [("acquire", GROUP), "orig_init_workers", ("spawn_proxies", "actor_to", 2, JOB, GROUP)]
+        asyncio.run(t.on_exception("init_workers", TimeoutError()))
+        assert events[-1] == ("release", GROUP)
+        assert ("close_proxies",) not in events  # nothing was created
+        assert t._offload_proxies is None
+
+    def test_on_exception_closes_proxies(self, offload_env, events):
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        asyncio.run(t.on_exception("fit", RuntimeError("boom")))
+        assert events[-1] == ("close_proxies",)
+        assert t._offload_proxies is None
+
+    def test_on_exception_never_raises_when_close_fails(self, offload_env, events):
+        t = make_offload_trainer(events, fail_close=True)
+        run_init_workers(t, events)
+        run_sample_end(t, events)  # hold the lock so the crash-release has work to do
+        asyncio.run(t.on_exception("fit", RuntimeError("boom")))  # must not raise
+        assert ("close_proxies",) in events
+        assert not t._locks.held
+
+    def test_spawn_is_idempotent(self, offload_env, events):
+        t = make_offload_trainer(events)
+        run_init_workers(t, events)
+        run_init_workers(t, events)
+        assert len([e for e in events if e[0] == "spawn_proxies"]) == 1
+
+    def test_default_spawner_lazy_imports_client(self, stub_rayworker):
+        spec = FakeOffloadSpec("actor_to")
+        offload_mod.default_proxy_spawner(["h0", "h1"], spec, job_id="j", group="g")
+        (handles, got_spec, kwargs) = stub_rayworker.spawns[0]
+        assert handles == ["h0", "h1"] and got_spec is spec
+        assert kwargs["agent"] is None  # resolved per node inside the proxy
+        assert (kwargs["job_id"], kwargs["group"]) == ("j", "g")
+        assert kwargs["ready_timeout"] == offload_mod.OFFLOAD_READY_TIMEOUT_SEC
+        assert "log" not in kwargs  # nothing from the driver is shipped into the proxies
+
+
+class TestBackendConfigOnRelease:
+    """PhaseLocks passes backend_config to release() only when set, so
+    orchestrator clients without the kwarg keep working."""
+
+    def test_passed_only_when_set(self, events):
+        locks = locks_mod.PhaseLocks(
+            JOB, ADDR, GROUP, client_factory=lambda target, job_id, group_id: FakeClient(events, job_id, group_id)
+        )
+        locks.ensure()
+        locks.drop_all()
+        assert events[-1] == ("release", GROUP)
+        locks.backend_config = offload_mod.YIELD_BACKEND_CONFIG
+        locks.ensure()
+        locks.drop_all()
+        assert events[-1] == ("release", GROUP, "app_channel")
+
+    def test_old_client_without_kwarg_still_works_when_unset(self, events):
+        class OldClient(FakeClient):
+            def release(self, group_id):  # no backend_config parameter at all
+                self.events.append(("release", group_id))
+                return FakeYieldResult()
+
+        locks = locks_mod.PhaseLocks(
+            JOB, ADDR, GROUP, client_factory=lambda target, job_id, group_id: OldClient(events, job_id, group_id)
+        )
+        locks.ensure()
+        locks.drop_all()
         assert events == [("acquire", GROUP), ("release", GROUP)]
 
 

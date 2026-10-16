@@ -7,6 +7,11 @@ Configuration comes from the environment:
 
 If any variable is missing the helper runs in NO-OP mode (with a one-time warning)
 so the same image works without the time-slicing platform.
+
+``backend_config`` (default None) is sent with every release: the orchestrator
+stores it per job and forwards it to the snapshot agents on this job's snapshot
+and restore. None means "agent default" (cuda-checkpoint); the app-channel
+offload path sets it to "app_channel" once its proxies are registered.
 """
 
 import atexit
@@ -60,6 +65,9 @@ class PhaseLocks:
         self.orch_addr = orch_addr
         self.group = group
         self.enabled = bool(job_id and orch_addr and group)
+        # Snapshot backend the orchestrator should use for this job, sent on
+        # every release (None = agent default). See the module docstring.
+        self.backend_config = None
         self._held: set = set()
         self._client = None
         self._closed = False
@@ -131,11 +139,16 @@ class PhaseLocks:
             return
         for g in list(self._held):
             try:
-                result = self._client.release(group_id=g)
+                kwargs = {"group_id": g}
+                if self.backend_config is not None:
+                    # Only when set, so clients without the kwarg keep working.
+                    kwargs["backend_config"] = self.backend_config
+                result = self._client.release(**kwargs)
+                backend = f" backend={self.backend_config}" if self.backend_config is not None else ""
                 _log(
                     f"job={self.job_id} RELEASE group={g} "
                     f"pending_waiters={getattr(result, 'pending_waiters', '?')} "
-                    f"snapshot_deferred={getattr(result, 'snapshot_deferred', '?')}"
+                    f"snapshot_deferred={getattr(result, 'snapshot_deferred', '?')}{backend}"
                 )
             except Exception as e:  # noqa: BLE001 - never let a release error kill the job
                 _log(f"job={self.job_id} RELEASE group={g} FAILED: {e}")

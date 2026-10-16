@@ -23,7 +23,8 @@ job + one code job, ~2.5 h window):
 | Shared trainer GPU duty cycle | 41.6% | **86.6% (2.08×)** |
 | Training steps completed | 10 | **22 (13 + 9)** |
 | Median step time | 627 s | 554 s (A) / 570 s (B) |
-| Median swap cost | — | 21 s snapshot + 9 s restore |
+| Median swap cost (`cuda-checkpoint`, default) | — | 21 s snapshot + 9 s restore |
+| Median swap cost (app-channel offload, opt-in, §6) | — | 3.3 s offload + 0.3 s reload (H200) |
 
 The two jobs in this guide are real, distinct workloads:
 
@@ -276,6 +277,22 @@ kubectl logs job-a-head --tail=2000 | grep -E "ACQUIRE|RELEASE" | tail -5
 # snapshot/restore operations on the shared trainer GPU:
 kubectl -n timeslice-system logs "$AGENT_POD" --tail=100 | grep -i "cuda-checkpoint"
 ```
+
+### Option: app-channel offload instead of cuda-checkpoint
+
+Both job manifests carry the opt-in for the trainer to offload its own model
+and optimizer through the snapshot-agent's workload channel (`app_channel`),
+described in the [integration guide](../../README.md#offloading-via-the-workload-channel-app_channel).
+Set `TIMESLICE_APP_OFFLOAD` to `"1"` on **both** pods of a job before applying
+it (the `NODE_IP` / `TIMESLICE_AGENT_ADDR` env is already there), then:
+
+```bash
+kubectl logs job-a-head --tail=2000 | grep -E "OFFLOAD-PROXIES|OFFLOAD |RELOAD " | tail -5
+kubectl -n timeslice-system logs "$AGENT_POD" --tail=100 | grep -iE "workload|app-channel"
+```
+
+The `took=` values of `OFFLOAD` / `RELOAD` are this path's swap cost (the
+app-channel row of the results table above).
 
 ### Observe time-slicing via the `rlts` CLI
 

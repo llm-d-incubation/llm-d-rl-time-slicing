@@ -50,6 +50,12 @@ Environment contract:
                                experimental: torch.cuda.empty_cache() right
                                before each yield's release (best-effort probe
                                for smaller cuda-checkpoint snapshots)
+  TIMESLICE_APP_OFFLOAD=1      experimental: park the trainer through the
+                               snapshot-agent's workload channel instead of
+                               cuda-checkpoint (per-node proxy actors spawned
+                               at the end of init_workers; see offload.py)
+  TIMESLICE_AGENT_ADDR         node-local snapshot-agent for the proxies, e.g.
+                               "$(NODE_IP):9001"; unset => warn-once, no proxies
 
 Config this module depends on directly: async_training.trainer_name=timeslice
 selects the subclass (see trainer.py); trainer.save_freq=-1 is enforced by the
@@ -61,8 +67,17 @@ verl integration guide (guides/rl-frameworks/verl/).
 import asyncio
 import os
 import threading
+import time
 
-from timeslice_verl.locks import PhaseLocks, _log
+from timeslice_verl.locks import ENV_GROUP, ENV_JOB_ID, PhaseLocks, _log
+from timeslice_verl.offload import (
+    ENV_AGENT_ADDR,
+    ENV_APP_OFFLOAD,
+    YIELD_BACKEND_CONFIG,
+    app_offload_requested,
+    default_proxy_spawner,
+    offload_spec_for_role,
+)
 
 ENV_ENABLE = "TIMESLICE_FULLY_ASYNC"
 # EXPERIMENTAL: when "1", call torch.cuda.empty_cache() immediately before each
@@ -86,13 +101,17 @@ class TimesliceHooksMixin:
     ``timeslice_verl.trainer.TimesliceFullyAsyncTrainer`` (mixin first in the
     MRO, so these overrides win over the trainer's empty template methods).
     Every hook runs inside the trainer driver actor. `client_factory(target,
-    job_id, group_id)` is injectable for grpc-free tests.
+    job_id, group_id)` is injectable for grpc-free tests, as is
+    `proxy_spawner(handles, spec, *, job_id, group)` for ray-free tests of the
+    app-channel offload path.
     """
 
-    def __init__(self, client_factory=None):
+    def __init__(self, client_factory=None, proxy_spawner=None):
         self._client_factory = client_factory
+        self._proxy_spawner = proxy_spawner
         self._state_lock = threading.Lock()
         self._locks: PhaseLocks | None = None
+        self._offload_proxies = None
         self._warned: set = set()
         if enabled():
             _log("fully_async: timeslice lifecycle hooks active (TIMESLICE_FULLY_ASYNC=1)")
@@ -107,6 +126,9 @@ class TimesliceHooksMixin:
     async def on_init_workers_end(self) -> None:
         if not enabled():
             return
+        # Before the yield: once the lock is released a snapshot command can
+        # arrive at any moment, and it must find a registered channel.
+        await asyncio.to_thread(self._maybe_spawn_offload_proxies)
         await self._yield_lock(point="init_workers")
 
     async def on_sample_end(self) -> None:
@@ -163,13 +185,16 @@ class TimesliceHooksMixin:
             return
         try:
             locks = self._locks
-            if locks is None or not locks.enabled:
-                return
-            _log(f"crash-release at point={point}: {exc!r:.500}")
-            await asyncio.to_thread(locks.drop_all)  # idempotent; RPC errors swallowed
+            if locks is not None and locks.enabled:
+                _log(f"crash-release at point={point}: {exc!r:.500}")
+                await asyncio.to_thread(locks.drop_all)  # idempotent; RPC errors swallowed
         except Exception as release_err:  # noqa: BLE001
             # Crash hygiene must never mask the original error.
             _log(f"crash-release failed (ignored): {release_err!r}")
+        try:
+            await asyncio.to_thread(self._close_offload_proxies)
+        except Exception as close_err:  # noqa: BLE001
+            _log(f"closing offload proxies failed (ignored): {close_err!r}")
 
     # ------------------------------------------------------------ lock plumbing
 
@@ -197,6 +222,60 @@ class TimesliceHooksMixin:
             return
         await asyncio.to_thread(self._maybe_empty_cache, point)  # experimental, inert by default
         await asyncio.to_thread(locks.drop_all)
+
+    # ------------------------------------------------------------ app-channel offload (TIMESLICE_APP_OFFLOAD)
+
+    def _maybe_spawn_offload_proxies(self) -> None:
+        """Spawns the per-node offload proxies once, if TIMESLICE_APP_OFFLOAD=1.
+
+        Missing configuration degrades to a warn-once no-op (the job stays on
+        the agent's default backend). On success the lock helper yields with
+        backend_config=app_channel from the very next release on. A spawn
+        *failure* propagates: the job dies while it still holds the lock
+        (verl's catch-all fires on_exception, which releases it).
+        """
+        if not app_offload_requested() or self._offload_proxies is not None:
+            return
+        missing = [v for v in (ENV_AGENT_ADDR, ENV_JOB_ID) if not os.environ.get(v)]
+        if missing:
+            self._warn_once(
+                "app_offload_misconfigured",
+                f"{ENV_APP_OFFLOAD}=1 but {' and '.join(missing)} unset; app-channel offload disabled",
+            )
+            return
+        job_id = os.environ[ENV_JOB_ID]
+        handles = getattr(getattr(self, "actor_wg", None), "workers", None)
+        if not handles:
+            self._warn_once(
+                "app_offload_no_workers",
+                f"{ENV_APP_OFFLOAD}=1 but the trainer has no actor_wg.workers yet; app-channel offload disabled",
+            )
+            return
+        spec = offload_spec_for_role(getattr(self, "train_role", "actor"))
+        spawner = self._proxy_spawner or default_proxy_spawner
+        started = time.monotonic()
+        self._offload_proxies = spawner(handles, spec, job_id=job_id, group=os.environ.get(ENV_GROUP, ""))
+        nodes = len(getattr(self._offload_proxies, "nodes", ()))
+        # From now on every release tells the orchestrator to park this job
+        # through the registered channel.
+        self._get_locks().backend_config = YIELD_BACKEND_CONFIG
+        _log(
+            f"job={job_id} OFFLOAD-PROXIES ready nodes={nodes} ranks={len(handles)} "
+            f"method={spec.method} backend={YIELD_BACKEND_CONFIG} took={time.monotonic() - started:.1f}s"
+        )
+
+    def _close_offload_proxies(self) -> None:
+        """Best-effort teardown of the proxies (crash path). Normal exit needs
+        nothing: the proxies are non-detached actors owned by the trainer and
+        die with it, and the dropped stream deregisters them at the agent."""
+        proxies, self._offload_proxies = self._offload_proxies, None
+        if self._locks is not None:
+            # No channel left to serve an app_channel request.
+            self._locks.backend_config = None
+        if proxies is None:
+            return
+        _log("closing offload proxies")
+        proxies.close()
 
     # ------------------------------------------------------------ misc
 

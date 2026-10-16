@@ -1,4 +1,3 @@
-import queue
 import threading
 import unittest
 from concurrent import futures
@@ -8,47 +7,13 @@ import grpc
 from timeslice.snapshot_agent import register_workload
 from timeslice.snapshot_agent import snapshot_agent_pb2 as pb2
 from timeslice.snapshot_agent import snapshot_agent_pb2_grpc as pb2_grpc
+from timeslice.snapshot_agent import workload as workload_mod
 from timeslice.snapshot_agent.adapters import resolve_adapter
 
-_END = object()
-
-
-class FakeAgent(pb2_grpc.SnapshotAgentServiceServicer):
-    """In-process agent: records registrations, pushes queued commands,
-    collects results. drop_streams ends that many streams right after
-    registration to exercise reconnect."""
-
-    def __init__(self, drop_streams=0):
-        self.registrations = []
-        self.registered = threading.Event()
-        self.results = queue.Queue()
-        self.commands = queue.Queue()
-        self.drop_streams = drop_streams
-
-    def WorkloadChannel(self, request_iterator, context):  # noqa: N802 - grpc method name
-        first = next(request_iterator)
-        self.registrations.append(first.register)
-        self.registered.set()
-        if self.drop_streams > 0:
-            self.drop_streams -= 1
-            return
-
-        def read_results():
-            for msg in request_iterator:
-                self.results.put(msg.result)
-
-        reader = threading.Thread(target=read_results, daemon=True)
-        reader.start()
-        # Poll so the worker thread is released when the test stops the
-        # server (a blocking get would pin a non-daemon grpc thread forever).
-        while context.is_active():
-            try:
-                cmd = self.commands.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if cmd is _END:
-                return
-            yield cmd
+try:  # pytest imports this file as a package module, unittest discover as a top-level one
+    from ._fake_agent import FakeAgent
+except ImportError:
+    from _fake_agent import FakeAgent
 
 
 class RecordingWorkload:
@@ -179,6 +144,64 @@ class WorkloadChannelTest(unittest.TestCase):
         caps = self.agent.registrations[0].capabilities
         self.assertEqual(list(caps.supported_modes), [pb2.SUSPEND_MODE_OFFLOAD])
         self.assertEqual(list(caps.tags), ["weights"])
+
+    def test_wait_connected_true_after_register(self):
+        address = self.start_agent()
+        handle = self.register(address, RecordingWorkload())
+        self.assertTrue(handle.wait_connected(timeout=10))
+        self.assertTrue(handle.connected)
+        self.assertTrue(self.agent.registered.wait(timeout=10))
+
+    def test_wait_connected_false_when_unreachable(self):
+        # Nothing listens on port 1; the handle must report not-connected
+        # instead of hanging, and close() must return promptly.
+        original = workload_mod._CONNECT_TIMEOUT_SEC
+        workload_mod._CONNECT_TIMEOUT_SEC = 0.2
+        self.addCleanup(setattr, workload_mod, "_CONNECT_TIMEOUT_SEC", original)
+        handle = register_workload(
+            "127.0.0.1:1", job_id="unreachable", workload=RecordingWorkload()
+        )
+        self.addCleanup(handle.close)
+        self.assertFalse(handle.wait_connected(timeout=0.5))
+        self.assertFalse(handle.connected)
+
+    def test_close_while_connecting_leaves_no_open_stream(self):
+        # close() before the agent is reachable: the connect that completes
+        # afterwards must not leave a registered stream behind.
+        self.agent = FakeAgent()
+        self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+        pb2_grpc.add_SnapshotAgentServiceServicer_to_server(self.agent, self.server)
+        port = self.server.add_insecure_port("127.0.0.1:0")  # bound, not serving yet
+        self.addCleanup(self.server.stop, 0)
+        handle = register_workload(
+            f"127.0.0.1:{port}", job_id="closing", workload=RecordingWorkload()
+        )
+        handle.close(
+            timeout=0.2
+        )  # returns while the thread still waits for the channel
+        self.server.start()
+        handle._thread.join(timeout=5)
+        self.assertFalse(handle._thread.is_alive())
+        for stream in self.agent.wait_streams(1, timeout=1.0):
+            self.assertTrue(
+                stream.closed.wait(timeout=5), "stream left open after close()"
+            )
+        self.assertFalse(handle.connected)
+
+    def test_connected_clears_on_disconnect(self):
+        address = self.start_agent(drop_streams=1)
+        handle = self.register(address, RecordingWorkload())
+        # The first stream is dropped right after registration; the client
+        # reconnects and registers again.
+        self.assertTrue(self.agent.wait_streams(1, timeout=10))
+        for _ in range(100):
+            if len(self.agent.registrations) >= 2:
+                break
+            threading.Event().wait(0.1)
+        self.assertGreaterEqual(len(self.agent.registrations), 2)
+        self.assertTrue(handle.wait_connected(timeout=10))
+        handle.close()
+        self.assertFalse(handle.connected)
 
 
 class FakeVLLMEngines:

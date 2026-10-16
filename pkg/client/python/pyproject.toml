@@ -14,6 +14,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# timeslice.snapshot_agent.rayworker (per-node offload proxies for Ray actors)
+ray = ["ray"]
 dev = [
     # Pinned: gencode floor toolchain; regenerating with a newer
     # grpcio-tools raises the runtime floors above.

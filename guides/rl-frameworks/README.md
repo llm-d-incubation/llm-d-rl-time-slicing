@@ -8,7 +8,7 @@ This guide is for **framework owners and developers** who want to build a time-s
 
 Time-slicing works by acquiring and releasing GPU locks at **phase boundaries** in the training loop. Every phase that touches the GPU — initialization, training, generation, weight sync — must hold its pool's lock. Between phases (during idle waits), the lock is released so another job can use the GPU.
 
-The platform handles GPU state transparently via [cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint): when a job yields its lock, the snapshot agent saves its GPU state to host memory; when it re-acquires, the state is restored. The framework doesn't need to manage GPU memory — it just signals when it starts and stops using the GPU.
+By default the platform handles GPU state transparently via [cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint): when a job yields its lock, the snapshot agent saves its GPU state to host memory; when it re-acquires, the state is restored. The framework doesn't need to manage GPU memory — it just signals when it starts and stops using the GPU. Optionally, a framework whose trainer ranks are Ray actors can offload its own state through the snapshot agent's workload channel instead, which is faster and selective but leaves the CUDA context resident — see [Application-Aware GPU Offload for Ray-Based RL Frameworks](app-aware-offload-ray.md).
 
 ## Step 1: Identify Phase Boundaries
 
@@ -89,6 +89,7 @@ Trainer-only time-slicing, per-job sampler groups. See [Pattern C in the Orchest
 3. Confirm `update_weights` succeeds after context restore
 4. Set `NCCL_CUMEM_ENABLE=0` and `NCCL_NVLS_ENABLE=0` as container-level env vars (not just runtime env) so they propagate to subprocesses
 5. Ensure worker pod memory limits are large enough to hold checkpointed GPU state in host memory (at least 2× GPU memory footprint per time-sliced pool)
+6. If using app-channel offload ([guide](app-aware-offload-ray.md)): verify an `OFFLOAD-PROXIES ready` line before the first yield, `OFFLOAD` / `RELOAD` lines on every trainer node per handoff, and `Workload completed ... command` in the agent log
 
 ## Example: Manual Slime Integration
 
