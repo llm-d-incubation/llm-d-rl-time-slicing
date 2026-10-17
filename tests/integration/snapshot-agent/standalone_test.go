@@ -2,7 +2,10 @@
 
 package integration
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestStandalone exercises all backends in standalone mode against an agent
 // running from the `make standalone` artifacts (bin/snapshot-agent +
@@ -21,6 +24,47 @@ func TestStandalone(t *testing.T) {
 			if before != after {
 				t.Errorf("inference changed after restore: before=%q after=%q", before, after)
 			}
+		})
+
+		// Memory-regions slot swap: real agent + state machine + Python
+		// client, with stub_cr_client.sh standing in for GPU-CR (see
+		// memory_regions.go). Runs inside the engine group because
+		// standalone-mode job bootstrap requires an occupied GPU; the
+		// engine itself is not touched.
+		t.Run("MemoryRegionsSlotSwap", func(t *testing.T) {
+			h.WithMemoryRegionsFixture(t, func(t *testing.T, f *MemoryRegionsFixture) {
+				const jobID = "s-mr"
+				contentA := strings.Repeat("A", 64)
+				contentB := strings.Repeat("B", 64)
+
+				// Snapshot state A into slot-a; restore returns the job
+				// to RUNNING.
+				h.WriteMRDevice(t, "A")
+				h.SnapshotOK(t, jobID, memoryRegionsConfig(f.PID, "slot-a"))
+				h.RestoreOK(t, jobID, memoryRegionsConfig(f.PID, "slot-a"))
+
+				// Snapshot state B into slot-b.
+				h.WriteMRDevice(t, "B")
+				h.SnapshotOK(t, jobID, memoryRegionsConfig(f.PID, "slot-b"))
+
+				// Live slot swap while RUNNING, verified bitwise.
+				for _, step := range []struct{ slot, want string }{
+					{"slot-a", contentA},
+					{"slot-b", contentB},
+					{"slot-a", contentA},
+					{"slot-b", contentB},
+				} {
+					h.RestoreOK(t, jobID, memoryRegionsConfig(f.PID, step.slot))
+					if got := h.ReadMRDevice(t); got != step.want {
+						t.Fatalf("device bytes after restoring %s: got %q, want %q",
+							step.slot, got[:8], step.want[:8])
+					}
+				}
+
+				// Every call must carry the destination-path shape with
+				// the slot's <pid>-<starttime> owner directory.
+				h.AssertMRCallShapes(t, f.PID, []string{"slot-a", "slot-b"})
+			})
 		})
 
 		t.Run("VLLMSleepWake", func(t *testing.T) {

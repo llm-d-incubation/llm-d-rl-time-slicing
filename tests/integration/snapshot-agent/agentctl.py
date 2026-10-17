@@ -8,10 +8,12 @@ constructed here, in Python, the same way a real workload would build them.
 
 Usage:
   agentctl.py --agent HOST:PORT snapshot|restore --job-id ID
-              --backend cuda|tpu|app|channel
+              --backend cuda|tpu|app|channel|memory-regions
               [--pids 1,2,3]                       (cuda, tpu)
               [--app vllm|sglang] [--endpoints URL,URL]
               [--mode offload|discard] [--tags a,b] (app, channel)
+              [--regions pid:0xADDR:size,...]      (memory-regions)
+              [--snapshot-name SLOT]               (memory-regions)
 
 Exits 0 when the operation completes, 1 otherwise.
 """
@@ -19,7 +21,11 @@ Exits 0 when the operation completes, 1 otherwise.
 import argparse
 import sys
 
-from timeslice.snapshot_agent import SnapshotAgentClient, snapshot_agent_pb2
+from timeslice.snapshot_agent import (
+    SnapshotAgentClient,
+    memory_regions_config,
+    snapshot_agent_pb2,
+)
 
 APPS = {
     "vllm": snapshot_agent_pb2.APP_VLLM,
@@ -64,6 +70,11 @@ def build_config(args: argparse.Namespace) -> snapshot_agent_pb2.BackendConfig:
             app_channel.tags.extend(args.tags.split(","))
         return snapshot_agent_pb2.BackendConfig(app_channel=app_channel)
 
+    if args.backend == "memory-regions":
+        if not args.regions:
+            raise ValueError("--regions is required for --backend memory-regions")
+        return memory_regions_config(args.regions.split(","), snapshot_name=args.snapshot_name)
+
     raise ValueError(f"unknown backend {args.backend!r}")
 
 
@@ -73,12 +84,14 @@ def main() -> int:
     parser.add_argument("--agent", required=True, help="agent endpoint HOST:PORT")
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--group", default="test")
-    parser.add_argument("--backend", required=True, choices=["cuda", "tpu", "app", "channel"])
+    parser.add_argument("--backend", required=True, choices=["cuda", "tpu", "app", "channel", "memory-regions"])
     parser.add_argument("--pids", default="", help="comma-separated PIDs (cuda, tpu)")
     parser.add_argument("--app", default="", choices=["", "vllm", "sglang"], help="application (app backend)")
     parser.add_argument("--endpoints", default="", help="comma-separated application URLs")
     parser.add_argument("--mode", default="", choices=["", "offload", "discard"], help="suspend mode")
     parser.add_argument("--tags", default="", help="comma-separated region tags")
+    parser.add_argument("--regions", default="", help="comma-separated pid:0xADDR:size specs (memory-regions)")
+    parser.add_argument("--snapshot-name", default="", help="snapshot slot name (memory-regions; empty = job id)")
     args = parser.parse_args()
 
     config = build_config(args)
