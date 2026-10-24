@@ -373,9 +373,11 @@ survive independently of the process's memory.
 Requirements:
 
 * The target workload runs under the GPU-CR vGPU preloader
-  (`LD_PRELOAD=vGPU-NVIDIA.so`), built from the same `third_party/gpu-cr`
-  tree as the `cr_client` shipped in the agent image — the two share
-  compiled-in constants and are version-locked.
+  (`LD_PRELOAD=vGPU-NVIDIA.so`), taken from the released `gpu-cr` package
+  (`ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/gpu-cr`) at the SAME tag
+  as the agent image, whose `cr_client` ships from that package — the two
+  share compiled-in constants and are version-locked (see
+  [Setting up a workload pod](#setting-up-a-workload-pod)).
 * Agent and workload share the GPU-CR checkpoint/control directory (the
   agent's `EXPORT_FILE_PATH`; in Kubernetes, the `directMemory` block in
   the Helm chart under `deploy/snapshot-agent` renders the shared mount
@@ -416,16 +418,20 @@ label — omit `pids` (i.e. `direct_memory_config()`).
 
 #### Setting up a workload pod
 
-Bake the preloader into your workload image, copied from the artifact image
-that `third_party/gpu-cr/Dockerfile.build` produces (building both it and
-the agent's `cr_client` from the same tree is what keeps them compatible):
+Bake the preloader into your workload image, copied from the released
+`gpu-cr` package at the same tag as the agent image (taking both binaries
+from one package tag is what keeps them compatible):
 
 ```dockerfile
-FROM <registry>/gpucr-so:<tag> AS gpucr
 FROM vllm/vllm-openai:v0.22.0
-COPY --from=gpucr /vGPU-NVIDIA.so /usr/local/lib/vGPU-NVIDIA.so
+COPY --from=ghcr.io/llm-d-incubation/llm-d-rl-time-slicing/gpu-cr:<agent image tag> \
+    /opt/gpu-cr/vGPU-NVIDIA.so /usr/local/lib/vGPU-NVIDIA.so
 RUN chmod 755 /usr/local/lib/vGPU-NVIDIA.so
 ```
+
+For an image you can't rebuild, run the package image as an init container
+that copies `/opt/gpu-cr/vGPU-NVIDIA.so` into a shared volume instead (see
+`deploy/snapshot-agent/README.md`).
 
 Then the pod needs the job-id label, the shared checkpoint-dir mount, a
 hugepage allowance for its dumps, and a handful of env vars:
@@ -632,5 +638,5 @@ grpcurl -plaintext \
 - **GPU Not Found:** Check that the `nvidia.driver.hostPath` in the agent's configuration matches your node's setup.
 - **Garbage inference after resume (vLLM):** The workload was suspended with `SUSPEND_MODE_DISCARD`, which drops weights. Suspend with `SUSPEND_MODE_OFFLOAD` (vLLM's default when the mode is unspecified), or have the application push new weights after resume.
 - **Garbage inference after SGLang resume:** The SGLang server was started without `--enable-weights-cpu-backup`. Restart with this flag.
-- **`cr_client not found at /usr/local/bin/cr_client` (direct_memory):** The agent image was built without the GPU-CR builder stage. Deploy the standard snapshot-agent image; there is no path override.
-- **direct_memory operation times out:** `cr_client` talks to the workload's preloader over a shared-memory control channel; a timeout usually means the workload is not running under `LD_PRELOAD=vGPU-NVIDIA.so`, the preloader and `cr_client` were built from different GPU-CR trees, or the target process died mid-operation. The deadline is `DIRECT_MEMORY_OP_TIMEOUT_SEC` (default 120 s).
+- **`cr_client not found at /usr/local/bin/cr_client` (direct_memory):** The agent image was built without the released `gpu-cr` package stage. Deploy the standard snapshot-agent image; there is no path override.
+- **direct_memory operation times out:** `cr_client` talks to the workload's preloader over a shared-memory control channel; a timeout usually means the workload is not running under `LD_PRELOAD=vGPU-NVIDIA.so`, the preloader and `cr_client` came from different `gpu-cr` package tags (they are version-locked — take both from the same tag), or the target process died mid-operation. The deadline is `DIRECT_MEMORY_OP_TIMEOUT_SEC` (default 120 s).

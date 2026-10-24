@@ -27,6 +27,10 @@ inputs:
     required: false
     description: If true, skip tagging as 'latest'
     default: "false"
+  build-args:
+    required: false
+    description: Newline-separated KEY=VALUE pairs passed as --build-arg
+    default: ""
 
 runs:
   using: "composite"
@@ -48,8 +52,13 @@ runs:
         else
           LATEST_TAG="-t ${{ inputs.registry }}/${{ inputs.image-name }}:latest"
         fi
+        BUILD_ARGS=()
+        while IFS= read -r arg; do
+          [[ -n "${arg}" ]] && BUILD_ARGS+=(--build-arg "${arg}")
+        done <<< "${INPUT_BUILD_ARGS}"
         docker buildx build \
           -f ${{ inputs.dockerfile }} \
+          "${BUILD_ARGS[@]}" \
           --platform ${{ inputs.platforms }} \
           --push \
           --annotation "index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
@@ -57,3 +66,5 @@ runs:
           -t ${{ inputs.registry }}/${{ inputs.image-name }}:${{ inputs.tag }} \
           ${LATEST_TAG} .
       shell: bash
+      env:
+        INPUT_BUILD_ARGS: ${{ inputs.build-args }}
