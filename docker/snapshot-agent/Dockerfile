@@ -32,7 +32,11 @@ RUN chmod +x /workspace/bin/cuda-checkpoint
 
 # --- Runtime stage ---
 # distroless/cc (base + libgcc/libstdc++): cr_client is a dynamically linked
-# C++ binary.
+# C++ binary. It is compiled in docker/gpu-cr/Dockerfile on Ubuntu 22.04
+# (glibc 2.35); this unpinned distroless/cc tag tracks the current Debian
+# release (glibc 2.41 at the time of writing). Keep the gpu-cr builder's
+# glibc at or below this image's when changing either base, or cr_client
+# fails to start with a missing GLIBC_x.y symbol.
 FROM gcr.io/distroless/cc
 
 WORKDIR /
