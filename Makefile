@@ -7,6 +7,8 @@ ORCHESTRATOR_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/timesliceorchestrator
 ORCHESTRATOR_DOCKERFILE ?= docker/timesliceorchestrator/Dockerfile
 SNAPSHOT_AGENT_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/snapshot-agent
 SNAPSHOT_AGENT_DOCKERFILE ?= docker/snapshot-agent/Dockerfile
+GPU_CR_IMAGE ?= $(REGISTRY)/$(PROJECT_NAME)/gpu-cr
+GPU_CR_DOCKERFILE ?= docker/gpu-cr/Dockerfile
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 # amd64-only, same as CI: the snapshot-agent needs the x86_64 cuda-checkpoint
 # binary and a CGO build; the platform is adopted as a unit.
@@ -116,19 +118,45 @@ image-push-orchestrator: ## Build and push timesliceorchestrator container image
 		-f $(ORCHESTRATOR_DOCKERFILE) \
 		.
 
-.PHONY: snapshot-agent-image-build
-snapshot-agent-image-build: ## Build snapshot-agent container image (local only)
+.PHONY: gpu-cr-image-build
+gpu-cr-image-build: ## Build the gpu-cr package image (cr_client + vGPU-NVIDIA.so) from third_party/gpu-cr (local only)
 	docker buildx build \
 		--platform $(PLATFORMS) \
+		--tag $(GPU_CR_IMAGE):$(VERSION) \
+		--tag $(GPU_CR_IMAGE):latest \
+		-f $(GPU_CR_DOCKERFILE) \
+		.
+
+.PHONY: gpu-cr-image-push
+gpu-cr-image-push: ## Build and push the gpu-cr package image
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--push \
+		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d-incubation/$(PROJECT_NAME)" \
+		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \
+		--tag $(GPU_CR_IMAGE):$(VERSION) \
+		--tag $(GPU_CR_IMAGE):latest \
+		-f $(GPU_CR_DOCKERFILE) \
+		.
+
+# The snapshot-agent image copies cr_client from the gpu-cr image, so both
+# agent targets build gpu-cr from the local tree first and pin to that tag:
+# local third_party/gpu-cr changes always reach the agent.
+.PHONY: snapshot-agent-image-build
+snapshot-agent-image-build: gpu-cr-image-build ## Build snapshot-agent container image (local only)
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--build-arg GPU_CR_IMAGE=$(GPU_CR_IMAGE):$(VERSION) \
 		--tag $(SNAPSHOT_AGENT_IMAGE):$(VERSION) \
 		--tag $(SNAPSHOT_AGENT_IMAGE):latest \
 		-f $(SNAPSHOT_AGENT_DOCKERFILE) \
 		.
 
 .PHONY: snapshot-agent-image-push
-snapshot-agent-image-push: ## Build and push snapshot-agent container image
+snapshot-agent-image-push: gpu-cr-image-push ## Build and push snapshot-agent container image
 	docker buildx build \
 		--platform $(PLATFORMS) \
+		--build-arg GPU_CR_IMAGE=$(GPU_CR_IMAGE):$(VERSION) \
 		--push \
 		--annotation "index:org.opencontainers.image.source=https://github.com/llm-d-incubation/$(PROJECT_NAME)" \
 		--annotation "index:org.opencontainers.image.licenses=Apache-2.0" \

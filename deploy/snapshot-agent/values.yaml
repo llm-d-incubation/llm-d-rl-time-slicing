@@ -99,8 +99,10 @@ featureGates: {}
 # the chart is identical to a CUDA/app-backend deployment unless this is
 # turned on. Enabling it deploys the checkpoint-dir mount shared with
 # workloads and implies the DirectMemoryBackend feature gate. The target
-# workloads must run under the GPU-CR vGPU preloader, with hugepage
-# capacity sized for whole-VRAM dumps.
+# workloads must run under the GPU-CR vGPU preloader (vGPU-NVIDIA.so from
+# the released gpu-cr package, same tag as image.tag above — the agent's
+# cr_client ships from that package too and the pair is version-locked),
+# with hugepage capacity sized for whole-VRAM dumps.
 #
 # NOTE: the knobs in this block (ctlDir, hostCtlPath, hugetlbfs.*) configure
 # the node plumbing for BOTH GPU-CR backends — memoryRegions.enabled renders
